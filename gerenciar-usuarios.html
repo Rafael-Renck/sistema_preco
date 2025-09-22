@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciar Usuários - Sistema de Preços</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- O menu lateral é exatamente o mesmo -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h3>Banco de Preços</h3>
+            </div>
+            <ul class="menu-list">
+                <li><a href="index.html">Início</a></li>
+                <li><a href="#">Consultar e Comparar</a></li>
+                <li><a href="#">Gerenciar Tabelas</a></li>
+                <li><a href="#">Gerenciar Operadoras</a></li>
+                <li><a href="gerenciar-usuarios.html">Gerenciar Usuários</a></li>
+            </ul>
+        </nav>
+
+        <!-- Conteúdo Principal - Agora com a nossa tabela! -->
+        <main class="main-content">
+            <header class="main-header">
+                <h1>Gerenciamento de Usuários</h1>
+                <a href="login.html" class="logout-button">Sair</a>
+            </header>
+
+            <div class="content-body">
+                <div class="actions-bar">
+                    <button class="btn-primary">Adicionar Novo Usuário</button>
+                </div>
+
+                <!-- Tabela para listar os usuários -->
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nome</th>
+                            <th>E-mail</th>
+                            <th>Nível de Acesso</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Dados de exemplo (vamos conectar ao banco depois) -->
+                        <tr>
+                            <td>1</td>
+                            <td>Ana Silva</td>
+                            <td>ana.silva@email.com</td>
+                            <td>Administrador</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>Bruno Costa</td>
+                            <td>bruno.costa@email.com</td>
+                            <td>Usuário Padrão</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                         <tr>
+                            <td>3</td>
+                            <td>Carlos Souza</td>
+                            <td>carlos.souza@email.com</td>
+                            <td>Usuário Padrão</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+</body>
+</html>

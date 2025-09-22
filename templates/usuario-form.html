@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+{% block title %}{% if modo=='editar' %}Editar Usuário{% else %}Novo Usuário{% endif %}{% endblock %}
+{% block content %}
+<div class="content-narrow">
+  <div class="page-header">
+    <h4 class="mb-0">{% if modo=='editar' %}Editar Usuário{% else %}Novo Usuário{% endif %}</h4>
+  </div>
+
+  {% if erro %}<div class="alert alert-danger">{{ erro }}</div>{% endif %}
+
+  <form method="post" class="card p-3">
+    <div class="row g-3">
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="nome">Nome</label>
+        <input class="form-control" id="nome" name="nome" required
+               value="{{ (usuario.nome if usuario else (form.get('nome') if form is defined else '')) }}">
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="email">E-mail</label>
+        <input class="form-control" id="email" type="email" name="email" required
+               value="{{ (usuario.email if usuario else (form.get('email') if form is defined else '')) }}">
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="senha">Senha {% if modo=='editar' %}(deixe em branco para manter){% endif %}</label>
+        <input class="form-control" id="senha" type="password" name="senha" {% if modo!='editar' %}required{% endif %}>
+      </div>
+      <div class="col-12 col-md-6">
+        <label class="form-label" for="perfil">Perfil</label>
+        {% set atual = (usuario.perfil if usuario else (form.get('perfil') if form is defined else '')) %}
+        <select class="form-select" id="perfil" name="perfil" required>
+          <option value="adm" {% if atual=='adm' %}selected{% endif %}>Administrador</option>
+          <option value="adm de contrato" {% if atual=='adm de contrato' %}selected{% endif %}>Adm de Contrato</option>
+          <option value="auditor" {% if atual=='auditor' %}selected{% endif %}>Auditor</option>
+          <option value="operadora" {% if atual=='operadora' %}selected{% endif %}>Operadora</option>
+        </select>
+      </div>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-primary" type="submit">Salvar</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('gerenciar_usuarios') }}">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

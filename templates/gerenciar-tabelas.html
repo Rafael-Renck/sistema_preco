@@ -1,0 +1,230 @@
+{% extends 'base.html' %}
+{% block title %}Tabelas{% endblock %}
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <h4 class="mb-0">Gerenciamento de Tabelas</h4>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-primary" href="#imp-diarias">Importar DTP</a>
+    <a class="btn btn-outline-primary" href="#imp-cbhpm">Importar CBHPM</a>
+    <a class="btn btn-outline-primary" href="#imp-porte">Importar Porte</a>
+    <a class="btn btn-outline-primary" href="#imp-porte-an">Importar Porte AN</a>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-12">
+    <div class="card p-3" id="imp-diarias">
+      <h6 class="mb-3">Importar: Diárias, Taxas e Pacotes</h6>
+      <!-- formulário igual ao seu, apenas estilizado -->
+      <form method="post" action="{{ url_for('importar_diarias_taxas_pacotes') }}" enctype="multipart/form-data" class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for op in operadoras %}<option value="{{ op.id }}">{{ op.nome }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Nome da Tabela</label>
+          <input class="form-control" name="nome_tabela" required>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Prestador (opcional)</label>
+          <input class="form-control" name="prestador">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" name="uf">
+            <option value="">—</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">Vigência</label>
+          <input class="form-control" type="date" name="data_vigencia">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Arquivo (.csv/.xlsx)</label>
+          <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="substituir" id="dtp_subst">
+            <label class="form-check-label" for="dtp_subst">Substituir existentes</label>
+          </div>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Importar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card p-3" id="imp-cbhpm">
+      <h6 class="mb-3">Importar: CBHPM</h6>
+      <form method="post" action="{{ url_for('importar_cbhpm') }}" enctype="multipart/form-data" class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for op in operadoras %}<option value="{{ op.id }}">{{ op.nome }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Nome da Tabela (ex.: CBHPM 2023)</label>
+          <input class="form-control" name="nome_tabela" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" name="uf">
+            <option value="">—</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Vigência</label>
+          <input class="form-control" type="date" name="data_vigencia">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Arquivo (.csv/.xlsx)</label>
+          <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="substituir" id="cbhpm_subst">
+            <label class="form-check-label" for="cbhpm_subst">Substituir existente com o mesmo nome</label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="small muted">Colunas aceitas: Código, Procedimento, Porte, Fração Porte, Valor Porte, Total Porte, Incidências, Filme, Total Filme, UCO, Total UCO, Porte Anestésico, Valor Porte Anestésico, Total Porte Anestésico, Nº Auxiliares, Totais Auxiliares, Subtotal, etc.</div>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Importar CBHPM</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card p-3" id="imp-porte">
+      <h6 class="mb-3">Importar: Tabela de Porte</h6>
+      <form method="post" action="{{ url_for('importar_porte') }}" enctype="multipart/form-data" class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for op in operadoras %}<option value="{{ op.id }}">{{ op.nome }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Nome da Tabela (ex.: Porte 2023)</label>
+          <input class="form-control" name="nome_tabela" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" name="uf">
+            <option value="">—</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Vigência</label>
+          <input class="form-control" type="date" name="data_vigencia">
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Arquivo (.csv/.xlsx) — colunas: PORTE, VALOR</label>
+          <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
+        </div>
+        <div class="col-12 col-md-6 d-flex align-items-end">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="substituir" id="porte_subst">
+            <label class="form-check-label" for="porte_subst">Substituir existente</label>
+          </div>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Importar Porte</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card p-3" id="imp-porte-an">
+      <h6 class="mb-3">Importar: Porte Anestésico</h6>
+      <form method="post" action="{{ url_for('importar_porte_anestesico') }}" enctype="multipart/form-data" class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for op in operadoras %}<option value="{{ op.id }}">{{ op.nome }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Nome da Tabela (ex.: Porte AN 2023)</label>
+          <input class="form-control" name="nome_tabela" required>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" name="uf">
+            <option value="">—</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Vigência</label>
+          <input class="form-control" type="date" name="data_vigencia">
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Arquivo (.csv/.xlsx) — colunas: PORTE AN, VALOR</label>
+          <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
+        </div>
+        <div class="col-12 col-md-6 d-flex align-items-end">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="substituir" id="portean_subst">
+            <label class="form-check-label" for="portean_subst">Substituir existente</label>
+          </div>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Importar Porte AN</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-12">
+    <div class="card p-0">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th><th>Nome</th><th>Operadora</th><th>Prestador</th><th>Tipo</th><th>UF</th><th>Vigência</th><th class="text-end">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for t in tabelas %}
+            <tr>
+              <td>{{ t.id }}</td>
+              <td>{{ t.nome }}</td>
+              <td>{{ t.operadora.nome if t.operadora else '-' }}</td>
+              <td>{{ t.prestador or 'Vários' }}</td>
+              <td>{{ t.tipo_tabela or '-' }}</td>
+              <td>{{ t.uf or '-' }}</td>
+              <td>{{ t.data_vigencia|date_br }}</td>
+              <td class="text-end">
+                <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('tabela_itens', tid=t.id) }}">Ver Itens</a>
+                <form method="post" action="{{ url_for('tabela_excluir', tid=t.id) }}" class="d-inline" onsubmit="return confirm('Excluir a tabela {{ t.nome }}? Esta ação não pode ser desfeita.');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">Excluir</button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8" class="text-center text-secondary py-4">Nenhuma tabela cadastrada</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

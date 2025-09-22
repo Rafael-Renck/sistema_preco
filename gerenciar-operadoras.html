@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciar Operadoras - Sistema de Preços</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- O menu lateral será atualizado depois -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h3>Banco de Preços</h3>
+            </div>
+            <ul class="menu-list">
+                <li><a href="index.html">Início</a></li>
+                <li><a href="#">Consultar e Comparar</a></li>
+                <li><a href="#">Gerenciar Tabelas</a></li>
+                <li><a href="gerenciar-operadoras.html">Gerenciar Operadoras</a></li>
+                <li><a href="gerenciar-usuarios.html">Gerenciar Usuários</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content">
+            <header class="main-header">
+                <h1>Gerenciamento de Operadoras</h1>
+                <a href="login.html" class="logout-button">Sair</a>
+            </header>
+
+            <div class="content-body">
+                <div class="actions-bar">
+                    <button class="btn-primary">Adicionar Nova Operadora</button>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nome da Operadora</th>
+                            <th>CNPJ</th>
+                            <th>Status</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>SulAmérica</td>
+                            <td>01.685.053/0001-56</td>
+                            <td>Ativa</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>Bradesco Saúde</td>
+                            <td>92.693.118/0001-60</td>
+                            <td>Ativa</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                         <tr>
+                            <td>3</td>
+                            <td>Amil</td>
+                            <td>29.309.127/0001-79</td>
+                            <td>Inativa</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+</body>
+</html>

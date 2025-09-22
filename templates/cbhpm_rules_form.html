@@ -1,0 +1,338 @@
+{% extends 'base.html' %}
+{% block title %}{{ 'Editar' if ruleset else 'Nova' }} Regra CBHPM{% endblock %}
+{% block head %}
+<style>
+  .rule-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);padding:20px}
+  .rule-badge{font-size:.75rem;letter-spacing:.05em;text-transform:uppercase}
+  .rule-json{background:#0f172a0d;border:1px solid var(--border);border-radius:12px;padding:16px;font-family:monospace;font-size:.82rem;white-space:pre-wrap}
+  .rule-table{width:100%;font-size:.78rem}
+  .rule-table th,.rule-table td{padding:4px 6px;border-bottom:1px solid var(--border)}
+  .rule-table th{font-weight:600;color:var(--muted)}
+  .chip-list{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:rgba(14,165,233,.14);border-radius:999px;padding:4px 10px;font-size:.78rem;font-weight:500;color:var(--ink)}
+  .card-section{border:1px dashed var(--border);border-radius:12px;padding:12px;background:var(--shell);margin-top:12px} .invalid{border-color:var(--danger)!important; box-shadow:0 0 0 .2rem rgba(239,68,68,.15)!important}
+</style>
+{% endblock %}
+
+{% macro format_percent(value) %}
+  {% if value is number %}
+    {% set float_val = value|float %}
+    {% if float_val > 1 %}
+      {{ float_val }}%
+    {% else %}
+      {{ (float_val * 100)|round(2) }}%
+    {% endif %}
+  {% else %}
+    {{ value }}
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between mb-3">
+  <h4 class="mb-0">{{ 'Editar' if ruleset else 'Nova' }} Regra CBHPM</h4>
+  <a class="btn btn-outline-secondary" href="{{ url_for('cbhpm_rules') }}">
+    <i class="bi bi-arrow-left"></i> Voltar
+  </a>
+</div>
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form id="rulesForm" method="post" class="row g-3">
+  <div class="col-12 col-lg-4">
+    <div class="card p-3 h-100">
+      <h6 class="fw-semibold">Informacoes gerais</h6>
+      <div class="mb-3">
+        <label class="form-label">Nome</label>
+        <input class="form-control" name="nome" value="{{ form_data.nome }}" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Versao</label>
+        <input class="form-control" name="versao" value="{{ form_data.versao }}" placeholder="Ex.: 2024">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Descricao</label>
+        <textarea class="form-control" rows="3" name="descricao">{{ form_data.descricao }}</textarea>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Descricao interna das regras</label>
+        <input class="form-control" data-rules-field="descricao" placeholder="Ex.: Base operadora X">
+      </div>
+      <div class="form-check">
+        <input class="form-check-input" type="checkbox" id="ativo" name="ativo" {% if form_data.ativo %}checked{% endif %}>
+        <label class="form-check-label" for="ativo">Marcar como regra ativa</label>
+      </div>
+    </div>
+  </div>
+  <div class="col-12 col-lg-8">
+    <div class="card p-3 mb-3">
+      <h6 class="fw-semibold">Auxiliares</h6>
+      <div class="card-section">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="fw-semibold small text-uppercase text-muted">Percentuais por auxiliar</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="addAuxPercent">
+            <i class="bi bi-plus"></i> Adicionar
+          </button>
+        </div>
+        <div id="auxPercentContainer"></div>
+        <div class="form-text">Informe percentuais em % (ex.: 30 para 30%).</div>
+      </div>
+      <div class="card-section">
+        <span class="fw-semibold small text-uppercase text-muted">Limite por porte</span>
+        <div class="table-responsive">
+          <table class="rule-table">
+            <thead>
+              <tr><th>Porte</th><th>Auxiliares maximos</th></tr>
+            </thead>
+            <tbody>
+              {% for porte in ['0','1','2','3','4','5','6','default'] %}
+              <tr>
+                <td>{{ 'Default' if porte == 'default' else porte }}</td>
+                <td><input type="number" min="0" step="1" class="form-control form-control-sm" data-max-porte="{{ porte }}"></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card p-3 mb-3">
+      <h6 class="fw-semibold">Multiplicadores</h6>
+      <div class="row g-3">
+        <div class="col-sm-6">
+          <label class="form-label">Porte cirurgico</label>
+          <input type="number" step="0.01" class="form-control" data-mult="porte" placeholder="Ex.: 1.0">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label">Porte anestesico</label>
+          <input type="number" step="0.01" class="form-control" data-mult="porte_an" placeholder="Ex.: 1.0">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label">Filme</label>
+          <input type="number" step="0.01" class="form-control" data-mult="filme" placeholder="Ex.: 1.0">
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label">UCO</label>
+          <input type="number" step="0.01" class="form-control" data-mult="uco" placeholder="Ex.: 1.0">
+        </div>
+      </div>
+      <div class="form-text mt-2">Deixe em branco para usar os valores da tabela.</div>
+    </div>
+
+    <div class="card p-3 mb-3">
+      <h6 class="fw-semibold">Reducao por procedimentos simultaneos</h6>
+      <div class="card-section">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <span class="fw-semibold small text-uppercase text-muted">Percentuais aplicados na ordem dos procedimentos</span>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="addReducao">
+            <i class="bi bi-plus"></i> Adicionar
+          </button>
+        </div>
+        <div id="reducoesContainer"></div>
+        <div class="form-text">Informe em % (ex.: primeiro 100, segundo 50...).</div>
+      </div>
+    </div>
+
+    <div class="card p-3">
+      <h6 class="fw-semibold">Revisao</h6>
+      <p class="text-muted small mb-2">Ao salvar, as informacoes acima serao convertidas em JSON de regras.</p>
+      <details class="rule-json-details">
+        <summary>Visualizar JSON que sera salvo</summary>
+        <pre class="rule-json mt-2 mb-0" id="previewJson">{{ form_data.regras }}</pre>
+      </details>
+    </div>
+  </div>
+
+  <textarea id="rulesJsonField" name="regras" hidden>{{ form_data.regras }}</textarea>
+
+  <div class="col-12">
+    <div class="d-flex justify-content-end gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('cbhpm_rules') }}">Cancelar</a>
+      <button type="submit" class="btn btn-primary">Salvar</button>
+    </div>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  const RULES_DATA = {{ (form_data.regras_dict or {}) | tojson }};
+  document.addEventListener('DOMContentLoaded', () => {
+    const auxPercentContainer = document.getElementById('auxPercentContainer');
+    const reducoesContainer = document.getElementById('reducoesContainer');
+    const previewJson = document.getElementById('previewJson');
+    const hiddenField = document.getElementById('rulesJsonField');
+    const form = document.getElementById('rulesForm');
+
+    function asPercentDisplay(val){
+      if(val === null || val === undefined || val === '') return '';
+      const num = Number(val);
+      if(!Number.isFinite(num)) return '';
+      if(num > 1) return num;
+      return (num * 100).toFixed(Number((num * 100) % 1 === 0 ? 0 : 2));
+    }
+
+    function parsePercentInput(input){
+      let raw = input.value.trim();
+      if(!raw) return null;
+      let num = Number(raw.replace(',', '.'));
+      if(!Number.isFinite(num)) return null;
+      if(num < 0) return null;
+      if(num > 5) {
+        num = num / 100;
+      }
+      return Number(num.toFixed(4));
+    }
+
+    function addPercentRow(container, value=''){ 
+      const row = document.createElement('div');
+      row.className = 'input-group input-group-sm mb-2';
+      row.innerHTML = `<input type="number" step="0.01" class="form-control" placeholder="Percentual (%)" value="${value}"><button class="btn btn-outline-danger" type="button"><i class="bi bi-x"></i></button>`;
+      row.querySelector('button').addEventListener('click', () => row.remove());
+      container.appendChild(row);
+    }
+
+    function populatePercentRows(container, values){
+      container.innerHTML = '';
+      if(values.length === 0){
+        addPercentRow(container, '');
+        return;
+      }
+      values.forEach(v => addPercentRow(container, asPercentDisplay(v)));
+    }
+
+    populatePercentRows(auxPercentContainer, ((RULES_DATA.auxiliares || {}).percentuais || []));
+    populatePercentRows(reducoesContainer, ((RULES_DATA.porte || {}).reducoes_simultaneos || []));
+
+    document.getElementById('addAuxPercent').addEventListener('click', () => addPercentRow(auxPercentContainer, ''));
+    document.getElementById('addReducao').addEventListener('click', () => addPercentRow(reducoesContainer, ''));
+
+    const maxPorPorte = (RULES_DATA.auxiliares || {}).max_por_porte || {};
+    document.querySelectorAll('[data-max-porte]').forEach(input => {
+      const key = input.dataset.maxPorte;
+      if(maxPorPorte[key] !== undefined && maxPorPorte[key] !== null){
+        input.value = maxPorPorte[key];
+      }
+    });
+
+    const multInputs = document.querySelectorAll('[data-mult]');
+    multInputs.forEach(input => {
+      const key = input.dataset.mult;
+      const mult = ((RULES_DATA[key] || {}).multiplicador);
+      if(mult !== undefined && mult !== null){
+        input.value = mult;
+      }
+    });
+
+    const rulesDescriptionField = document.querySelector('[data-rules-field="descricao"]');
+    if(rulesDescriptionField && RULES_DATA.descricao){
+      rulesDescriptionField.value = RULES_DATA.descricao;
+    }
+
+    function buildRulesObject(){
+      const out = {};
+      if(rulesDescriptionField){
+        const descVal = rulesDescriptionField.value.trim();
+        if(descVal){ out.descricao = descVal; }
+      }
+
+      const auxPercentValues = [];
+      auxPercentContainer.querySelectorAll('input').forEach(input => {
+        const v = parsePercentInput(input);
+        if(v !== null){ auxPercentValues.push(v); }
+      });
+
+      const auxMax = {};
+      document.querySelectorAll('[data-max-porte]').forEach(input => {
+        const raw = input.value.trim();
+        if(raw === '') return;
+        const num = Number(raw);
+        if(Number.isFinite(num)){
+          auxMax[input.dataset.maxPorte] = num;
+        }
+      });
+
+      if(auxPercentValues.length || Object.keys(auxMax).length){
+        out.auxiliares = {};
+        if(auxPercentValues.length){ out.auxiliares.percentuais = auxPercentValues; }
+        if(Object.keys(auxMax).length){ out.auxiliares.max_por_porte = auxMax; }
+      }
+
+      const reducoesVals = [];
+      reducoesContainer.querySelectorAll('input').forEach(input => {
+        const v = parsePercentInput(input);
+        if(v !== null){ reducoesVals.push(v); }
+      });
+      if(reducoesVals.length){
+        out.porte = Object.assign({}, out.porte || {}, { reducoes_simultaneos: reducoesVals });
+      }
+
+      multInputs.forEach(input => {
+        const raw = input.value.trim();
+        if(!raw) return;
+        const num = Number(raw.replace(',', '.'));
+        if(!Number.isFinite(num)) return;
+        const key = input.dataset.mult;
+        out[key] = { multiplicador: num };
+      });
+
+      return out;
+    }
+
+    function validateForm(){
+      let ok = true;
+      const mark = el => el.classList.add('invalid');
+      const unmark = el => el.classList.remove('invalid');
+      document.querySelectorAll('.invalid').forEach(unmark);
+
+      const nameField = form.querySelector('[name=\'nome\']');
+      if(!nameField.value.trim()){ mark(nameField); ok = false; }
+
+      const percentInputs = auxPercentContainer.querySelectorAll('input');
+      percentInputs.forEach(input => {
+        const raw = input.value.trim();
+        if(!raw) { return; }
+        if(parsePercentInput(input) === null){ mark(input); ok = false; }
+      });
+
+      reducoesContainer.querySelectorAll('input').forEach(input => {
+        const raw = input.value.trim();
+        if(!raw) { return; }
+        if(parsePercentInput(input) === null){ mark(input); ok = false; }
+      });
+
+      document.querySelectorAll('[data-max-porte]').forEach(input => { const raw = input.value.trim(); if(raw !== ''){ const num = Number(raw); if(!Number.isInteger(num) || num < 0){ mark(input); ok = false; }} });
+
+      document.querySelectorAll('[data-mult]').forEach(input => { const raw = input.value.trim(); if(!raw) return; const num = Number(raw.replace(',', '.')); if(!Number.isFinite(num) || num <= 0){ mark(input); ok = false; }});
+
+      return ok;
+    }
+
+    function refreshPreview(){
+      const rules = buildRulesObject();
+      const json = JSON.stringify(rules, null, 2);
+      previewJson.textContent = json;
+      hiddenField.value = json;
+    }
+
+    auxPercentContainer.addEventListener('input', refreshPreview);
+    reducoesContainer.addEventListener('input', refreshPreview);
+    document.querySelectorAll('[data-max-porte], [data-mult], [data-rules-field="descricao"]').forEach(el => {
+      el.addEventListener('input', refreshPreview);
+    });
+
+    refreshPreview();
+
+    form.addEventListener('submit', ev => {
+      refreshPreview();
+      if(!validateForm()){
+        ev.preventDefault();
+        alert('Revise os campos destacados.');
+      }
+    });
+  });
+</script>
+{% endblock %}

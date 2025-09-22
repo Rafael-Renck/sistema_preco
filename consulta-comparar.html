@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consultar e Comparar - Sistema de Preços</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- O menu lateral com o link atualizado -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h3>Banco de Preços</h3>
+            </div>
+            <ul class="menu-list">
+                <li><a href="index.html">Início</a></li>
+                <li><a href="consultar-comparar.html">Consultar e Comparar</a></li>
+                <li><a href="gerenciar-tabelas.html">Gerenciar Tabelas</a></li>
+                <li><a href="gerenciar-operadoras.html">Gerenciar Operadoras</a></li>
+                <li><a href="gerenciar-usuarios.html">Gerenciar Usuários</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content">
+            <header class="main-header">
+                <h1>Consulta e Comparação de Preços</h1>
+                <a href="login.html" class="logout-button">Sair</a>
+            </header>
+
+            <div class="content-body">
+                <!-- Seção de Filtros e Busca -->
+                <div class="filters-container">
+                    <div class="filter-group">
+                        <label for="search-term">Buscar por Código ou Nome</label>
+                        <input type="text" id="search-term" placeholder="Digite o código ou nome do procedimento...">
+                    </div>
+                    <div class="filter-group">
+                        <label for="operadoras">Comparar entre Operadoras</label>
+                        <select id="operadoras" multiple>
+                            <option value="1">SulAmérica</option>
+                            <option value="2">Bradesco Saúde</option>
+                            <option value="3">Amil</option>
+                        </select>
+                    </div>
+                    <button class="btn-primary">Buscar</button>
+                </div>
+
+                <!-- Tabela de Resultados da Comparação -->
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Código</th>
+                            <th>Procedimento</th>
+                            <th>Tabela Padrão 2024 (SulAmérica)</th>
+                            <th>Plano Executivo (Bradesco)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <!-- Dados de exemplo -->
+                        <tr>
+                            <td>30101018</td>
+                            <td>Visita hospitalar (paciente internado)</td>
+                            <td>R$ 100,00</td>
+                            <td>R$ 115,50</td>
+                        </tr>
+                        <tr>
+                            <td>10101012</td>
+                            <td>Consulta em consultório</td>
+                            <td>R$ 95,00</td>
+                            <td>R$ 110,00</td>
+                        </tr>
+                        <tr>
+                            <td>40304330</td>
+                            <td>Hemograma completo</td>
+                            <td>R$ 25,00</td>
+                            <td>R$ 28,90</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+</body>
+</html>

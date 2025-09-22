@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciar Tabelas - Sistema de Preços</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <!-- O menu lateral também será atualizado -->
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h3>Banco de Preços</h3>
+            </div>
+            <ul class="menu-list">
+                <li><a href="index.html">Início</a></li>
+                <li><a href="#">Consultar e Comparar</a></li>
+                <li><a href="gerenciar-tabelas.html">Gerenciar Tabelas</a></li>
+                <li><a href="gerenciar-operadoras.html">Gerenciar Operadoras</a></li>
+                <li><a href="gerenciar-usuarios.html">Gerenciar Usuários</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content">
+            <header class="main-header">
+                <h1>Gerenciamento de Tabelas de Preços</h1>
+                <a href="login.html" class="logout-button">Sair</a>
+            </header>
+
+            <div class="content-body">
+                <div class="actions-bar">
+                    <button class="btn-primary">Adicionar Nova Tabela</button>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nome da Tabela</th>
+                            <th>Operadora Associada</th>
+                            <th>Data de Vigência</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>1</td>
+                            <td>Tabela Padrão 2024</td>
+                            <td>SulAmérica</td>
+                            <td>01/01/2024</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Ver Itens</button>
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>2</td>
+                            <td>Plano Executivo Nacional</td>
+                            <td>Bradesco Saúde</td>
+                            <td>15/07/2023</td>
+                            <td class="action-buttons">
+                                <button class="btn-secondary">Ver Itens</button>
+                                <button class="btn-secondary">Editar</button>
+                                <button class="btn-danger">Excluir</button>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+</body>
+</html>

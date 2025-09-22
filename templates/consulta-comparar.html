@@ -1,0 +1,1289 @@
+{% extends 'base.html' %}
+
+{% block title %}Consulta & Comparar{% endblock %}
+{% block page_title %}Consulta &amp; Comparar{% endblock %}
+
+{% block page_css %}
+<style>
+  /* Esconde a busca global do topo nesta tela */
+  #globalSearch{ display:none !important; }
+
+  :root { --ap-border:#e5e7eb; --ap-muted:#6b7280; --ap-bg-soft:#f8fafc; }
+  .section-title{ font-weight:600; margin-bottom:.25rem; letter-spacing:.2px; }
+  .soft{ color:var(--ap-muted); font-size:.875rem; }
+  .mini-label{ font-size:.8rem; color:var(--ap-muted); }
+  .pill{ border:1px solid var(--ap-border); background:#fff; border-radius:999px; padding:.25rem .6rem; font-size:.75rem; }
+  .kbd{ border:1px solid var(--ap-border); background:#fff; border-radius:6px; padding:.05rem .35rem; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.75rem; }
+
+  /* Deixa o SVG do Lucide “transparente” ao clique: evita bugs de evento no ícone */
+  .lucide, [data-lucide], .btn svg, .nav-item svg { pointer-events:none; }
+
+  .card-toolbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.5rem .75rem;border-bottom:1px solid var(--ap-border);background:linear-gradient(180deg,rgba(0,0,0,.02),transparent)}
+  .btn-icon{display:inline-flex;align-items:center;gap:.35rem}
+  .btn-icon i{width:16px;height:16px}
+
+  /* Tabela */
+  .table-smart thead th{position:sticky;top:0;z-index:2;background:var(--ap-bg-soft);backdrop-filter:blur(2px)}
+  .table-smart tbody td,.table-smart thead th{white-space:nowrap;vertical-align:middle}
+  .table-sticky-first td:first-child,.table-sticky-first th:first-child{position:sticky;left:0;z-index:1;background:#fff;box-shadow:1px 0 0 var(--ap-border)}
+  .table-hover tbody tr:hover td{background:rgba(32,132,125,.06)}
+  .empty{padding:2.5rem 1rem;text-align:center;color:var(--ap-muted)}
+  .empty i{width:22px;height:22px;margin-right:.25rem}
+
+  .nav-pills .nav-link{border-radius:999px;padding:.4rem .9rem;font-weight:500}
+  .meta{display:flex;flex-wrap:wrap;gap:.4rem .5rem;align-items:center}
+  .meta .chip{border:1px solid var(--ap-border);border-radius:999px;padding:.2rem .6rem;font-size:.75rem;background:#fff}
+  .check-grid .form-check{padding:.4rem .5rem;border:1px solid var(--ap-border);border-radius:10px;background:#fff}
+  /* === Autocomplete de Procedimentos === */
+.ap-picker{ position:relative; }
+.ap-input{ padding-right:2.25rem; }
+.ap-chips{ display:flex; flex-wrap:wrap; gap:.35rem; margin-bottom:.35rem; }
+.ap-chip{
+  display:inline-flex; align-items:center; gap:.35rem;
+  border:1px solid var(--ap-border); background:#fff; border-radius:999px;
+  padding:.15rem .5rem; font-size:.8rem;
+}
+.ap-chip .ap-x{ cursor:pointer; font-size:1rem; line-height:1; opacity:.7; }
+.ap-chip .ap-x:hover{ opacity:1; }
+.ap-list{ position:absolute; inset-inline:0; top:100%; z-index:3000; max-height:300px; overflow:auto; }
+
+/* Cada opção: uma linha, altura confortável */
+.ap-item{
+  display:flex; align-items:center; gap:.5rem;
+  padding:.4rem .75rem; cursor:pointer; border-bottom:1px solid var(--ap-border);
+}
+.ap-item:last-child{ border-bottom:0; }
+.ap-item:hover, .ap-item.active{ background:rgba(32,132,125,.08); }
+
+/* Coluna do código fixa, monoespaçada */
+.ap-code{ font-weight:600; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+  width:120px; flex:0 0 120px; }
+
+/* Descrição em 1 linha com reticências */
+.ap-desc{ flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* Texto auxiliar menor e em cinza (se usar) */
+.ap-muted{ color:var(--ap-muted); font-size:.8rem; }
+
+</style>
+{% endblock %}
+
+{% block content %}
+
+{# ================= Toolbar ================= #}
+<div class="card mb-3">
+  <div class="card-toolbar">
+    <div class="d-flex align-items-center gap-2">
+      <i data-lucide="search-code"></i>
+      <div>
+        <div class="section-title">Consulta &amp; Comparar</div>
+        <div class="soft">Pesquise, compare colunas e detalhe por versões ou prestadores.</div>
+      </div>
+    </div>
+    <div class="d-none d-md-block"><span class="pill">• Ferramentas de Tabelas</span></div>
+  </div>
+
+  {# ================= Filtros ================= #}
+  <div class="p-3 filters">
+    <form method="get" action="{{ url_for('consulta_comparar') }}" class="row g-3 align-items-end" novalidate>
+      <input type="hidden" name="run" value="1">
+
+      <div class="col-12 col-lg-4">
+        <label class="form-label">Tabela (nome)</label>
+        <select class="form-select" name="tabela_nome" required>
+          <option value="" disabled {% if not tabela_nome %}selected{% endif %}>Selecione...</option>
+          {% for n in nomes %}
+            <option value="{{ n }}" {% if tabela_nome==n %}selected{% endif %}>{{ n }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-6 col-lg-2">
+        <label class="form-label">UF</label>
+        <select class="form-select" name="uf">
+          <option value="" {% if not selected_uf %}selected{% endif %}>Todas</option>
+          {% for uf in UFS %}<option value="{{ uf }}" {% if selected_uf==uf %}selected{% endif %}>{{ uf }}</option>{% endfor %}
+        </select>
+      </div>
+
+      <div class="col-12 col-lg-6">
+  <label class="form-label">Procedimentos (múltiplos)</label>
+
+  <!-- Picker de procedimentos (CBHPM) -->
+  <div id="cbhpmProcPicker" class="ap-picker">
+    <div class="ap-chips" id="cbhpmChips"></div>
+    <input id="cbhpmInput" type="text" class="form-control ap-input"
+           autocomplete="off" placeholder="Digite código ou parte da descrição...">
+    <div id="cbhpmList" class="ap-list" hidden></div>
+  </div>
+
+  <div class="mt-1 soft">
+    Dica: use “<span class="kbd">código - descrição</span>”. Pressione
+    <span class="kbd">Enter</span> para adicionar. Você também pode usar o campo
+    “Pacote” abaixo (1 código por linha).
+  </div>
+</div>
+
+
+
+      <div class="col-12 col-lg-2 d-grid">
+        <button class="btn btn-primary btn-icon" type="submit">
+          <i data-lucide="equal"></i> Comparar
+        </button>
+      </div>
+
+      {% if is_cbhpm %}
+        <div class="col-12">
+          <div class="alert alert-info py-2 mb-2 d-flex align-items-center gap-2">
+            <i data-lucide="info"></i>
+            <div>CBHPM detectado para a tabela selecionada. Marque as <strong>versões</strong> para comparar.</div>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="soft">Versões disponíveis</div>
+            <div class="d-flex gap-2">
+              <button id="btnMarkAllVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="check-square"></i> Marcar todas</button>
+              <button id="btnClearVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="eraser"></i> Limpar</button>
+            </div>
+          </div>
+          <div class="row g-2 check-grid">
+            {% for v in versoes_disp %}
+            <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+              <div class="form-check">
+                <input class="form-check-input ver-chk" type="checkbox" name="versoes" id="ver{{ loop.index }}" value="{{ v }}" {% if v in (selected_versoes or []) %}checked{% endif %}>
+                <label class="form-check-label" for="ver{{ loop.index }}">{{ v }}</label>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      {% else %}
+        {% if prestadores_disp %}
+        <div class="col-12">
+          <div class="soft mb-2">Prestadores</div>
+          <div class="row g-2 check-grid">
+            {% for p in prestadores_disp %}
+            <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="prestadores" id="pr{{ loop.index }}" value="{{ p }}" {% if p in (selected_prestadores or []) %}checked{% endif %}>
+                <label class="form-check-label" for="pr{{ loop.index }}">{{ p }}</label>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      {% endif %}
+    </form>
+  </div>
+</div>
+
+{# ================= Resultados ================= #}
+{% if show_results %}
+  {% set all_cols = columns or [] %}
+  {% set display_cols = (all_cols[:3] if is_cbhpm else all_cols) %}
+  {% set display_len = display_cols|length %}
+
+  <div class="card p-2 mb-3">
+    <div class="d-flex align-items-center justify-content-between px-2">
+      <div class="meta">
+        <span class="section-title">Resultados</span>
+        <span class="chip">Tabela: <strong class="ms-1">{{ tabela_nome or '-' }}</strong></span>
+        {% if selected_uf %}<span class="chip">UF: <strong class="ms-1">{{ selected_uf }}</strong></span>{% endif %}
+        {% if is_cbhpm %}
+          <span class="chip">Mostrando {{ display_len }} de {{ (columns|length) if columns else 0 }} versões</span>
+        {% else %}
+          <span class="chip">Colunas exibidas: {{ display_len }}</span>
+        {% endif %}
+      </div>
+      <div class="d-flex gap-2">
+        <button id="btnCopyResults"  type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="clipboard-copy"></i> Copiar</button>
+        <button id="btnExportCSV"   type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="download"></i> Exportar CSV</button>
+      </div>
+    </div>
+
+    <div class="table-responsive mt-2" style="max-height:70vh">
+      <table class="table table-sm table-hover table-smart table-sticky-first align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th style="width:130px;">Código</th>
+            <th>Descrição</th>
+            {% for c in display_cols %}<th class="text-end">{{ c }}</th>{% endfor %}
+            <th class="text-end">Mín</th>
+            <th class="text-end">Média</th>
+            <th class="text-end">Máx</th>
+            {% if is_cbhpm %}<th class="text-center" title="Detalhar"><i data-lucide="list-ordered"></i></th>{% else %}<th class="text-end">N</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody id="results-body">
+          {% for r in (rows or []) %}
+            {% set vals = (r['values'] if r and (r['values'] is defined) else []) %}
+            <tr>
+              <td><a href="#" class="js-open-detalhe" data-codigo="{{ r['codigo'] }}">{{ r['codigo'] }}</a></td>
+              <td>{{ r['descricao'] }}</td>
+              {% for i in range(display_len) %}
+                {% set v = (vals[i] if i < (vals|length) else None) %}
+                <td class="text-end">{{ v|brl if v is not none else '-' }}</td>
+              {% endfor %}
+              <td class="text-end fw-semibold">{{ r['min']|brl if r['min'] is not none else '-' }}</td>
+              <td class="text-end">{{ r['avg']|brl if r['avg'] is not none else '-' }}</td>
+              <td class="text-end fw-semibold">{{ r['max']|brl if r['max'] is not none else '-' }}</td>
+              {% if is_cbhpm %}
+                <td class="text-center">
+                  <button type="button" class="btn btn-sm btn-outline-primary js-open-detalhe" data-codigo="{{ r['codigo'] }}" title="Ver todas as versões">
+                    <i data-lucide="list-ordered"></i>
+                  </button>
+                </td>
+              {% else %}
+                <td class="text-end">{{ r['count'] }}</td>
+              {% endif %}
+            </tr>
+          {% endfor %}
+          {% if not rows %}
+            <tr>
+              <td colspan="{{ 7 + display_len if is_cbhpm else 6 + display_len }}">
+                <div class="empty"><i data-lucide="search-x"></i> Sem resultados para os filtros atuais.</div>
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+
+{# ================= Simulador ================= #}
+<div class="card p-3">
+  <div class="d-flex align-items-center justify-content-between">
+    <div>
+      <div class="section-title">Simulador</div>
+      <div class="soft">CBHPM e Diárias/Taxas/Pacotes</div>
+    </div>
+    <ul class="nav nav-pills">
+      <li class="nav-item">
+        <button class="nav-link active btn-icon" data-bs-toggle="pill" data-bs-target="#tab-cbhpm" type="button">
+          <i data-lucide="stethoscope"></i> CBHPM
+        </button>
+      </li>
+      <li class="nav-item">
+        <button class="nav-link btn-icon" data-bs-toggle="pill" data-bs-target="#tab-dtp" type="button">
+          <i data-lucide="folder-cog"></i> Diárias/Taxas/Pacotes
+        </button>
+      </li>
+    </ul>
+  </div>
+
+  <div class="tab-content mt-3">
+    {# ==== CBHPM ==== #}
+    <div class="tab-pane fade show active" id="tab-cbhpm">
+      <form id="form-cbhpm" class="row g-3" autocomplete="off">
+        <div class="col-12 col-lg-6">
+          <label class="form-label">Código (ou "código - descrição")</label>
+          <input class="form-control" id="cbhpm-codigo" placeholder="Ex: 12345 ou 12345 - texto">
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" id="cbhpm-uf">
+            <option value="">(opcional)</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-6 col-lg-4">
+          <label class="form-label">Versão (nome da tabela CBHPM)</label>
+          <select class="form-select" id="cbhpm-versao">
+            <option value="">Automática</option>
+            {% for v in cbhpm_list_all %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+          </select>
+        </div>
+
+        <div class="col-6 col-lg-3">
+          <label class="form-label">Tabela de Porte (hint)</label>
+          <select class="form-select" id="cbhpm-porte">
+            <option value="">Automático</option>
+            {% for p in porte_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-6 col-lg-3">
+          <label class="form-label">Tabela Porte AN (hint)</label>
+          <select class="form-select" id="cbhpm-porte-an">
+            <option value="">Automático</option>
+            {% for p in porte_an_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label">Ajuste Porte %</label>
+          <input class="form-control" id="cbhpm-aj-porte" type="number" step="0.01" value="0">
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label">Ajuste Porte AN %</label>
+          <input class="form-control" id="cbhpm-aj-an" type="number" step="0.01" value="0">
+        </div>
+        <div class="col-6 col-lg-1">
+          <label class="form-label">UCO (R$)</label>
+          <input class="form-control" id="cbhpm-uco" placeholder="ex: 0,55">
+        </div>
+        <div class="col-6 col-lg-1">
+          <label class="form-label">Filme (R$)</label>
+          <input class="form-control" id="cbhpm-filme" placeholder="ex: 10,00">
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label">Incidências</label>
+          <input class="form-control" id="cbhpm-incid" placeholder="ex: 2">
+        </div>
+
+        <div class="col-12">
+          <label class="form-label">Pacote (múltiplos códigos, 1 por linha)</label>
+          <textarea class="form-control" id="cbhpm-pacote" rows="2" placeholder="30101012&#10;30101013"></textarea>
+          <div class="mt-2 border rounded-3 bg-light p-3" id="cbhpm-dtp-helper">
+            <div class="d-flex flex-wrap gap-2 align-items-end">
+              <div class="flex-grow-1">
+                <label class="mini-label" for="cbhpm-dtp-tabela">Tabela DTP (Diarias/Taxas/Pacotes)</label>
+                <select class="form-select form-select-sm" id="cbhpm-dtp-tabela">
+                  <option value="">Selecione...</option>
+                  {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+                </select>
+              </div>
+              <div style="min-width:120px">
+                <label class="mini-label" for="cbhpm-dtp-uf">UF</label>
+                <select class="form-select form-select-sm" id="cbhpm-dtp-uf">
+                  <option value="">(todas)</option>
+                  {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="flex-grow-1">
+                <label class="mini-label" for="cbhpm-dtp-q">Buscar termo</label>
+                <input class="form-control form-control-sm" id="cbhpm-dtp-q" placeholder="Ex.: diaria, 3010">
+              </div>
+              <div>
+                <button type="button" class="btn btn-sm btn-outline-primary btn-icon" id="btnCbhpmDtpBuscar"><i data-lucide="search"></i> Buscar DTP</button>
+              </div>
+            </div>
+            <div class="mt-3" id="cbhpm-dtp-results" style="max-height:230px; overflow:auto;"></div>
+            <div class="mt-2" id="cbhpm-dtp-selected" hidden>
+              <div class="mini-label mb-1">Itens DTP adicionados</div>
+              <div class="d-flex flex-wrap gap-2" id="cbhpm-dtp-selected-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 d-flex gap-2">
+  <button class="btn btn-primary btn-icon" type="button" id="btnSimularCBHPM">
+    <i class="bi bi-calculator"></i> Simular
+  </button>
+
+  <!-- NOVOS -->
+  <button class="btn btn-outline-success btn-icon" type="button" id="btnExportCBHPMXLSX">
+    <i class="bi bi-file-earmark-excel"></i> Exportar XLSX
+  </button>
+  <button class="btn btn-outline-danger btn-icon" type="button" id="btnExportCBHPMPDF">
+    <i class="bi bi-filetype-pdf"></i> Exportar PDF
+  </button>
+  <!-- /NOVOS -->
+
+  <button class="btn btn-outline-secondary btn-icon" type="reset">
+    <i class="bi bi-arrow-counterclockwise"></i> Limpar
+  </button>
+</div>
+
+      </form>
+
+      <div id="cbhpm-out" class="mt-3"></div>
+    </div>
+
+    {# ==== DTP ==== #}
+    <div class="tab-pane fade" id="tab-dtp">
+      <form id="form-dtp" class="row g-3" autocomplete="off">
+        <div class="col-12 col-lg-5">
+          <label class="form-label">Tabela DTP (Diárias/Taxas/Pacotes)</label>
+          <select class="form-select" id="dtp-tabela">
+            <option value="">Selecione...</option>
+            {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label">UF</label>
+          <select class="form-select" id="dtp-uf">
+            <option value="">(opcional)</option>
+            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-lg-5">
+          <label class="form-label">Termo (código ou parte da descrição)</label>
+          <input class="form-control" id="dtp-q" placeholder="Ex.: 3010 ou diária enfermaria">
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary btn-icon" type="button" id="btnBuscarDTP"><i data-lucide="search"></i> Buscar</button>
+          <button class="btn btn-outline-secondary btn-icon" type="reset"><i data-lucide="rotate-ccw"></i> Limpar</button>
+        </div>
+      </form>
+
+      <div id="dtp-out" class="mt-3"></div>
+    </div>
+  </div>
+</div>
+
+{# ================= Modal de detalhe ================= #}
+<div class="modal fade" id="detalheModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">{% if is_cbhpm %}Detalhe por versões — CBHPM{% else %}Detalhe por prestador{% endif %}</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body"><div class="text-center text-muted py-4">Selecione um item...</div></div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+
+'use strict';
+const restoreCbhpmPayload = {{ restore_cbhpm_payload|tojson|default('null') }};
+const cbhpmDtpSearchCache = new Map();
+const cbhpmDtpMeta = new Map();
+
+const renderDtpSelected = () => {
+  const wrap = document.getElementById('cbhpm-dtp-selected');
+  const list = document.getElementById('cbhpm-dtp-selected-list');
+  if(!wrap || !list) return;
+  const entries = [...cbhpmDtpMeta.values()];
+  if(!entries.length){
+    wrap.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  wrap.hidden = false;
+  const html = entries.map(meta => {
+    const code = meta.codigo || '';
+    const desc = meta.descricao ? meta.descricao : '';
+    const valor = meta.valor != null ? brl(meta.valor) : '-';
+    const tabela = meta.tabela_nome ? ` <span class="text-muted">(${meta.tabela_nome})</span>` : '';
+    return `<span class="badge bg-info-subtle text-info border d-flex align-items-center gap-2">`
+         + `<span>${code}</span>`
+         + `<span class="text-muted">${desc}${tabela}</span>`
+         + `<span class="fw-semibold">${valor}</span>`
+         + `<button type="button" class="btn btn-link btn-sm p-0 text-info-emphasis js-remove-dtp" data-code="${code}" aria-label="Remover">&times;</button>`
+         + `</span>`;
+  }).join('');
+  list.innerHTML = html;
+};
+
+window._procedimentosSelecionados = {{ (procedimentos_raw or [])|tojson }};
+
+/* ===== Util ===== */
+const $$ = (sel,ctx=document)=>Array.from(ctx.querySelectorAll(sel));
+const brl = (v)=>{ if(v===null||v===undefined||v==='')return '-'; const n=Number(v); return Number.isNaN(n)?v:n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); };
+const toCSV = (rows)=>rows.map(r=>r.map(v=>{const s=(v??'').toString();return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(';')).join('\n');
+const download = (filename, text)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8;'})); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); };
+
+/* ===== Versões (CBHPM) ===== */
+function toggleAllVersoes(state){ $$('.ver-chk').forEach(chk=>chk.checked=!!state); }
+
+/* ===== Exportar/Copiar ===== */
+function collectResults(){
+  const table=document.querySelector('.table-responsive table');
+  if(!table||!table.tHead||!table.tBodies.length)return [];
+  const head=[...table.tHead.rows[0].cells].map(th=>th.textContent.trim());
+  const body=[...table.tBodies[0].rows].map(tr=>[...tr.cells].map(td=>td.textContent.trim()));
+  return [head].concat(body);
+}
+function exportCSV(){
+  const rows=collectResults(); if(!rows.length)return;
+  const stamp=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+  download(`resultados-${stamp}.csv`, toCSV(rows));
+}
+function copyResults(){
+  const rows=collectResults(); if(!rows.length)return;
+  navigator.clipboard.writeText(toCSV(rows)).then(()=>{ window.showToast?showToast('Copiado para a área de transferência.','success'):alert('Copiado.'); });
+}
+
+/* ===== Modal Detalhe ===== */
+function openDetalhe(codigo){
+  const isCBHPM   = {{ is_cbhpm|default(false)|tojson }};
+  const tabelaNome= {{ tabela_nome|default(None)|tojson }};
+  const ufSel     = {{ selected_uf|default('')|tojson }};
+  const versoes   = {{ selected_versoes|default([])|tojson }};
+
+  const modalEl=document.getElementById('detalheModal');
+  const modalBody=modalEl.querySelector('.modal-body');
+  modalBody.innerHTML='<div class="text-center text-muted py-4">Carregando...</div>';
+  new bootstrap.Modal(modalEl).show();
+
+  if(isCBHPM){
+    const params=new URLSearchParams(); params.set('codigo',codigo); if(ufSel)params.set('uf',ufSel); (versoes||[]).forEach(v=>params.append('versoes',v));
+    fetch('/api/cbhpm/detalhe?'+params.toString())
+      .then(r=>r.json()).then(data=>{
+        const items=(data&&data.items)?data.items:[];
+        if(!items.length){ modalBody.innerHTML='<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>'; if(window.lucide)lucide.createIcons(); return; }
+        let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+        html+='<thead class="table-light"><tr><th style="width:160px">Versão</th><th class="text-end">Valor</th></tr></thead><tbody>';
+        items.forEach(it=>{ html+='<tr><td>'+ (it.versao||'-') +'</td><td class="text-end">'+ brl(it.valor) +'</td></tr>'; });
+        html+='</tbody></table></div>';
+        if(data.summary){
+          html+='<div class="mt-3 small text-muted">Mín: <strong>'+brl(data.summary.min)+'</strong> · Média: <strong>'+brl(data.summary.avg)+'</strong> · Máx: <strong>'+brl(data.summary.max)+'</strong> · N: <strong>'+ (data.summary.count??0) +'</strong></div>';
+        }
+        modalBody.innerHTML=html;
+      })
+      .catch(()=>{ modalBody.innerHTML='<div class="alert alert-danger">Erro ao carregar detalhes.</div>'; });
+  }else{
+    const params=new URLSearchParams(); if(tabelaNome)params.set('tabela_nome',tabelaNome); params.set('codigo',codigo); if(ufSel)params.set('uf',ufSel);
+    params.set('sort','valor'); params.set('order','asc'); params.set('page','1'); params.set('page_size','200');
+    fetch('/api/procedimentos/detalhe?'+params.toString())
+      .then(r=>r.json()).then(data=>{
+        const items=(data&&data.items)?data.items:[];
+        if(!items.length){ modalBody.innerHTML='<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>'; if(window.lucide)lucide.createIcons(); return; }
+        let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+        html+='<thead class="table-light"><tr><th style="width:160px">Prestador</th><th class="text-center" style="width:80px">UF</th><th class="text-end" style="width:140px">Valor</th></tr></thead><tbody>';
+        items.forEach(it=>{ html+='<tr><td>'+ (it.prestador||'-') +'</td><td class="text-center">'+ (it.uf||'-') +'</td><td class="text-end">'+ brl(it.valor) +'</td></tr>'; });
+        html+='</tbody></table></div>';
+        if(data.summary){
+          html+='<div class="mt-3 small text-muted">Mín: <strong>'+brl(data.summary.min)+'</strong> · Média: <strong>'+brl(data.summary.avg)+'</strong> · Máx: <strong>'+brl(data.summary.max)+'</strong> · N: <strong>'+ (data.summary.count??0) +'</strong></div>';
+        }
+        modalBody.innerHTML=html;
+      })
+      .catch(()=>{ modalBody.innerHTML='<div class="alert alert-danger">Erro ao carregar detalhes.</div>'; });
+  }
+}
+
+/* ===== Simuladores ===== */
+const parsePacote = (t)=> (t||'').split(/\r?\n|[;,]+/g).map(s=>s.trim()).filter(Boolean);
+
+function simularCBHPM(){
+  const payload = getCBHPMPayload();
+  const out=document.getElementById('cbhpm-out');
+  if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
+    out.innerHTML='<div class="alert alert-warning">Informe ao menos um codigo ou selecione itens.</div>';
+    return;
+  }
+  out.innerHTML='<div class="soft">Calculando...</div>';
+
+  fetch('/api/simulacao_cbhpm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+    .then(r=>r.json())
+    .then(data=>{
+      if(data.error){ out.innerHTML='<div class="alert alert-danger">'+data.error+'</div>'; return; }
+      if(Array.isArray(data.itens)){
+        let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+        html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th><th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-end">Total</th></tr></thead><tbody>';
+        
+data.itens.forEach(it=>{
+          const isDtp = (it.origem === 'dtp');
+          const descricao = (it.descricao||'-');
+          const descHtml = isDtp ? descricao + ' <span class="badge bg-info-subtle text-info ms-1">DTP</span>' : descricao;
+          const porte = isDtp ? '-' : brl(it.total_porte);
+          const filme = isDtp ? '-' : brl(it.total_filme);
+          const uco = isDtp ? '-' : brl(it.total_uco);
+          const porteAn = isDtp ? '-' : brl(it.total_porte_an);
+          const aux = isDtp ? '-' : brl(it.total_auxiliares);
+          const total = brl(it.total);
+          html+='<tr>'
+             +  '<td>'+ (it.codigo||'-') +'</td>'
+             +  '<td>'+ descHtml +'</td>'
+             +  '<td class="text-end">'+ porte +'</td>'
+             +  '<td class="text-end">'+ filme +'</td>'
+             +  '<td class="text-end">'+ uco +'</td>'
+             +  '<td class="text-end">'+ porteAn +'</td>'
+             +  '<td class="text-end">'+ aux +'</td>'
+             +  '<td class="text-end fw-semibold">'+ total +'</td>'
+             +  '</tr>';
+
+        });
+        html+='</tbody></table></div>';
+        html+='<div class="mt-3"><span class="mini-label">Porte:</span> <strong>'+brl(data.total_porte)+'</strong> · '
+             + '<span class="mini-label">Filme:</span> <strong>'+brl(data.total_filme)+'</strong> · '
+             + '<span class="mini-label">UCO:</span> <strong>'+brl(data.total_uco)+'</strong> · '
+             + '<span class="mini-label">Porte AN:</span> <strong>'+brl(data.total_porte_an)+'</strong> · '
+             + '<span class="mini-label">Aux.:</span> <strong>'+brl(data.total_auxiliares)+'</strong> · '
+             + '<span class="mini-label">TOTAL:</span> <strong>'+brl(data.total)+'</strong></div>';
+        html+='<div class="soft mt-1">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong></div>';
+        out.innerHTML=html; if(window.lucide)lucide.createIcons();
+        return;
+      }
+      let html='<div class="row g-3">';
+      html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Porte</div><div class="fs-5 fw-semibold">'+brl(data.total_porte)+'</div></div></div>';
+      html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Filme</div><div class="fs-5 fw-semibold">'+brl(data.total_filme)+'</div></div></div>';
+      html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total UCO</div><div class="fs-5 fw-semibold">'+brl(data.total_uco)+'</div></div></div>';
+      html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Porte AN</div><div class="fs-5 fw-semibold">'+brl(data.total_porte_an)+'</div></div></div>';
+      html+='<div class="col-12"><div class="card p-3 bg-light"><div class="mini-label">TOTAL</div><div class="fs-4 fw-bold">'+brl(data.total)+'</div></div></div>';
+      html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong></div>';
+      out.innerHTML=html;
+    })
+    .catch(()=>{ document.getElementById('cbhpm-out').innerHTML='<div class="alert alert-danger">Erro ao simular.</div>'; });
+}
+
+function simularDTP(){
+  const tabela=document.getElementById('dtp-tabela').value;
+  const q=document.getElementById('dtp-q').value.trim();
+  const uf=document.getElementById('dtp-uf').value.trim();
+  const out=document.getElementById('dtp-out');
+  if(!tabela){ out.innerHTML='<div class="alert alert-warning">Selecione a tabela DTP.</div>'; return; }
+  out.innerHTML='<div class="soft">Buscando...</div>';
+
+  const url=new URL('/api/simulacao_dtp', window.location.origin);
+  url.searchParams.set('tabela_nome',tabela);
+  if(q)url.searchParams.set('q',q);
+  if(uf)url.searchParams.set('uf',uf);
+
+  fetch(url).then(r=>r.json()).then(data=>{
+    const itens=(data&&data.itens)?data.itens:[];
+    if(!itens.length){ out.innerHTML='<div class="empty"><i data-lucide="search-x"></i> Sem itens.</div>'; if(window.lucide)lucide.createIcons(); return; }
+    let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+    html+='<thead class="table-light"><tr><th style="width:140px">Código</th><th>Descrição</th><th class="text-end" style="width:140px">Valor</th></tr></thead><tbody>';
+    itens.forEach(it=>{ html+='<tr><td>'+ (it.codigo||'-') +'</td><td>'+ (it.descricao||'-') +'</td><td class="text-end">'+ brl(it.valor) +'</td></tr>'; });
+    html+='</tbody></table></div>';
+    if(typeof data.total!=='undefined'){ html+='<div class="mt-2 soft">Soma (itens listados): <strong>'+brl(data.total)+'</strong></div>'; }
+    out.innerHTML=html;
+  }).catch(()=>{ out.innerHTML='<div class="alert alert-danger">Erro ao buscar DTP.</div>'; });
+}
+
+
+function addCodigoPacote(codigo, meta){
+  if(!codigo) return false;
+  const textarea=document.getElementById('cbhpm-pacote');
+  if(!textarea) return false;
+  const atual=parsePacote(textarea.value);
+  if(atual.includes(codigo)) return false;
+  atual.push(codigo);
+  textarea.value=atual.join('\n');
+  textarea.dispatchEvent(new Event('input'));
+  if(meta && meta.codigo){
+    cbhpmDtpMeta.set(meta.codigo, {
+      codigo: meta.codigo,
+      descricao: meta.descricao || '',
+      valor: meta.valor,
+      tabela_nome: meta.tabela_nome || meta.tabela || '',
+      uf: meta.uf || ''
+    });
+  }else{
+    cbhpmDtpMeta.delete(codigo);
+  }
+  return true;
+}
+
+
+async function buscarDTPPacote(){
+  const tabela=document.getElementById('cbhpm-dtp-tabela')?.value || '';
+  const termo=document.getElementById('cbhpm-dtp-q')?.value.trim() || '';
+  const uf=document.getElementById('cbhpm-dtp-uf')?.value.trim() || '';
+  const container=document.getElementById('cbhpm-dtp-results');
+  if(!container) return;
+  if(!tabela){
+    container.innerHTML='<div class="alert alert-warning">Selecione a tabela DTP.</div>';
+    return;
+  }
+  container.innerHTML='<div class="soft">Buscando...</div>';
+  const url=new URL('/api/simulacao_dtp', window.location.origin);
+  url.searchParams.set('tabela_nome', tabela);
+  if(termo) url.searchParams.set('q', termo);
+  if(uf) url.searchParams.set('uf', uf);
+  cbhpmDtpSearchCache.clear();
+  const esc=(s)=>String(s ?? '').replace(/[&<>"']/g, m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  try{
+    const resp=await fetch(url);
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    const data=await resp.json();
+    const itens=Array.isArray(data?.itens)?data.itens:[];
+    if(!itens.length){
+      container.innerHTML='<div class="empty"><i data-lucide="search-x"></i> Sem itens.</div>';
+      if(window.lucide) lucide.createIcons();
+      return;
+    }
+    let html='<div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0">';
+    html+='<thead class="table-light"><tr><th style="width:120px">Codigo</th><th>Descricao</th><th class="text-end" style="width:120px">Valor</th><th class="text-end" style="width:110px"></th></tr></thead><tbody>';
+    itens.forEach((it, idx)=>{
+      const rawCode=String(it.codigo ?? '').trim();
+      const key=rawCode+'|'+tabela+'|'+uf+'|'+idx;
+      cbhpmDtpSearchCache.set(key, {
+        codigo: rawCode,
+        descricao: it.descricao ?? '',
+        valor: it.valor,
+        tabela_nome: tabela,
+        uf
+      });
+      html+='<tr><td>'+esc(rawCode)+'</td><td>'+esc(it.descricao ?? '')+'</td><td class="text-end">'+brl(it.valor)+'</td><td class="text-end"><button type="button" class="btn btn-sm btn-outline-success js-add-dtp" data-key="'+esc(key)+'"><i data-lucide="plus"></i> Adicionar</button></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    container.innerHTML=html;
+    if(window.lucide) lucide.createIcons();
+  }catch(err){
+    console.error('cbhpm-dtp-helper', err);
+    container.innerHTML='<div class="alert alert-danger">Falha ao buscar DTP.</div>';
+  }
+}
+
+
+
+/* ===== Procedimentos: autocomplete com múltipla seleção ===== */
+(function(){
+  const picker = document.getElementById('procPicker');
+  if(!picker) return;
+
+  const input = document.getElementById('procInput');
+  const list  = document.getElementById('procList');
+  const chips = document.getElementById('procChips');
+  const form  = picker.closest('form');
+
+  let results = [];
+  let activeIndex = -1;
+  let selected = new Map(); // key=codigo, value={codigo, descricao}
+
+  // Restaura selecionados vindos do servidor (se quiser, injete via Jinja em window._iniciais)
+  if(Array.isArray(window._procedimentosSelecionados)){
+    window._procedimentosSelecionados.forEach(raw=>{
+      if(!raw) return;
+      if(typeof raw === 'string'){
+        const code = raw.split(' - ', 1)[0].trim();
+        if(!code) return;
+        addSelection({ codigo: code, descricao: raw });
+      }else if(raw && raw.codigo){
+        addSelection(raw);
+      }
+    });
+  }
+
+  function paramsComContexto(){
+    // Opcional: envia tabela/UF atuais para refinar a busca no backend
+    const tabelaSel   = form?.querySelector('[name="tabela_nome"]')?.value || '';
+    const ufSel       = form?.querySelector('[name="uf"]')?.value || '';
+    return { tabela_nome: tabelaSel, uf: ufSel };
+  }
+
+  function renderList(){
+    list.innerHTML = results.map((r,idx)=>`
+      <div class="ap-item ${idx===activeIndex?'active':''}" data-codigo="${escapeAttr(r.codigo)}" title="${escapeHtml(r.descricao||'')}">
+        <div class="ap-code">${escapeHtml(r.codigo ?? '-')}</div>
+        <div class="ap-desc">${escapeHtml(r.descricao ?? '')}</div>
+      </div>
+    `).join('');
+    list.hidden = results.length === 0;
+  }
+
+
+  function renderChips(){
+    chips.innerHTML = [...selected.values()].map(v=>`
+      <span class="ap-chip" data-codigo="${escapeAttr(v.codigo)}">
+        <span class="ap-code">${escapeHtml(v.codigo)}</span>
+        <span class="ap-muted" title="${escapeHtml(v.descricao||'')}">${truncate(v.descricao||'', 40)}</span>
+        <span class="ap-x" aria-label="Remover">&times;</span>
+        <input type="hidden" name="procedimentos" value="${escapeAttr(v.codigo)}">
+      </span>
+    `).join('');
+  }
+
+  function addSelection(item){
+    if(!item || !item.codigo) return;
+    if(selected.has(item.codigo)) return;
+    selected.set(item.codigo, item);
+    renderChips();
+  }
+
+  function removeSelection(codigo){
+    selected.delete(codigo);
+    renderChips();
+  }
+
+  function pick(index){
+    const it = results[index];
+    if(it){ addSelection(it); }
+    input.value = '';
+    results = [];
+    renderList();
+    activeIndex = -1;
+  }
+
+  // Busca com debounce
+  const debounce = (fn,ms)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; };
+  const buscar = ((fn,ms)=>{ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; })(async (q)=>{
+  q = (q||'').trim();
+  if(q.length < 2){ results=[]; renderList(); return; }
+
+  const ctx = paramsComContexto();
+  const qs = new URLSearchParams({ q, limit: '50' });
+  if(ctx.tabela_nome) qs.set('tabela_nome', ctx.tabela_nome);
+  if(ctx.uf)          qs.set('uf', ctx.uf);
+
+  try{
+    const resp = await fetch(`/api/procedimentos/suggest?${qs.toString()}`);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    results = Array.isArray(data.items) ? data.items.map(x=>({
+      codigo: x.codigo ?? x.id ?? '',
+      descricao: x.descricao ?? x.nome ?? '',
+      extra: x.caminho ?? x.grupo ?? ''
+    })).filter(x=>x.codigo && !selected.has(x.codigo)) : [];
+    activeIndex = results.length ? 0 : -1;
+    renderList();
+  }catch(err){
+    console.error('suggest fail:', err);
+    results=[]; renderList();
+  }
+}, 200);
+
+  // Eventos
+  input.addEventListener('input', e=> buscar(e.target.value));
+  input.addEventListener('keydown', e=>{
+    if(list.hidden) return;
+    if(e.key === 'ArrowDown'){ e.preventDefault(); activeIndex = Math.min(activeIndex+1, results.length-1); renderList(); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); activeIndex = Math.max(activeIndex-1, 0); renderList(); }
+    else if(e.key === 'Enter'){ e.preventDefault(); pick(activeIndex); }
+    else if(e.key === 'Escape'){ results=[]; renderList(); }
+  });
+
+  list.addEventListener('mousedown', e=>{
+    const it = e.target.closest('.ap-item');
+    if(!it) return;
+    const idx = [...list.children].indexOf(it);
+    pick(idx);
+  });
+
+  chips.addEventListener('click', e=>{
+    const x = e.target.closest('.ap-x');
+    if(!x) return;
+    const chip = x.closest('.ap-chip');
+    removeSelection(chip?.dataset?.codigo);
+  });
+
+  // Fecha lista ao clicar fora
+  document.addEventListener('click', e=>{
+    if(!picker.contains(e.target)){ results=[]; renderList(); }
+  });
+
+  // Helpers
+  function escapeHtml(s){ return (s??'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  function truncate(s, n){ s=s||''; return s.length>n ? s.slice(0,n-1)+'...' : s; }
+  function escapeAttr(s){
+  return (s??'').toString().replace(/[&<>"']/g, m =>
+    ({'&':'&amp;','<':'&lt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+})();
+/* ===== Picker CBHPM (multi-select) ===== */
+(function(){
+  const wrap  = document.getElementById('cbhpmProcPicker');
+  if(!wrap) return;
+
+  const input = document.getElementById('cbhpmInput');
+  const list  = document.getElementById('cbhpmList');
+  const chips = document.getElementById('cbhpmChips');
+
+  let results = [];
+  let activeIndex = -1;
+  const selected = new Map();
+
+  function escapeHtml(value){
+    return String(value ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]));
+  }
+  function escapeAttr(value){
+    return escapeHtml(value);
+  }
+  function truncate(value, max){
+    const text = String(value ?? '');
+    return text.length > max ? text.slice(0, max - 3) + '...' : text;
+  }
+
+  function versaoSelecionada(){
+    const sel = document.getElementById('cbhpm-versao');
+    return sel && sel.value ? sel.value : '';
+  }
+  function ufSelecionada(){
+    const sel = document.getElementById('cbhpm-uf');
+    return sel ? (sel.value || '') : '';
+  }
+
+  function renderList(){
+    list.innerHTML = results.map((item, idx)=>`
+      <div class="ap-item ${idx===activeIndex?'active':''}" data-codigo="${escapeAttr(item.codigo)}">
+        <div class="ap-code">${escapeHtml(item.codigo)}</div>
+        <div class="ap-desc">
+          <div>${escapeHtml(item.descricao || '')}</div>
+          ${item.extra ? `<div class="ap-muted">${escapeHtml(item.extra)}</div>` : ''}
+        </div>
+      </div>
+    `).join('');
+    list.hidden = results.length === 0;
+  }
+
+  function renderChips(){
+    chips.innerHTML = [...selected.values()].map(value=>`
+      <span class="ap-chip" data-codigo="${escapeAttr(value.codigo)}">
+        <span class="ap-code">${escapeHtml(value.codigo)}</span>
+        <span class="ap-muted" title="${escapeHtml(value.descricao || '')}">${truncate(value.descricao || '', 40)}</span>
+        <span class="ap-x" aria-label="Remover">&times;</span>
+        <input type="hidden" name="procedimentos" value="${escapeAttr(value.codigo)}">
+      </span>
+    `).join('');
+  }
+
+  function add(item){
+    if(!item || !item.codigo || selected.has(item.codigo)) return;
+    selected.set(item.codigo, item);
+    renderChips();
+  }
+
+  function remove(codigo){
+    if(!codigo) return;
+    selected.delete(codigo);
+    renderChips();
+  }
+
+  function clearResults(){
+    results = [];
+    activeIndex = -1;
+    renderList();
+  }
+
+  function pick(index){
+    const item = results[index];
+    if(item) add(item);
+    input.value = '';
+    clearResults();
+  }
+
+  const debounce = (fn, ms)=>{ let t; return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args), ms); }; };
+  const buscar = debounce(async (query)=>{
+    query = (query || '').trim();
+    if(query.length < 2){ clearResults(); return; }
+
+    const url = new URL('/api/procedimentos/suggest', window.location.origin);
+    url.searchParams.set('q', query);
+    const versao = versaoSelecionada();
+    if(versao) url.searchParams.set('tabela_nome', versao);
+    const uf = ufSelecionada();
+    if(uf) url.searchParams.set('uf', uf);
+    url.searchParams.set('limit', '30');
+
+    try{
+      const response = await fetch(url);
+      const data = await response.json();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      results = items.map(x => ({
+        codigo: x.codigo ?? x.id ?? '',
+        descricao: x.descricao ?? x.nome ?? '',
+        extra: x.caminho ?? x.grupo ?? ''
+      })).filter(x => x.codigo && !selected.has(x.codigo));
+      activeIndex = results.length ? 0 : -1;
+      renderList();
+    }catch(err){
+      console.error('suggest fail:', err);
+      clearResults();
+    }
+  }, 180);
+
+  input.addEventListener('input', event => buscar(event.target.value));
+  input.addEventListener('keydown', event =>{
+    if(list.hidden && event.key === 'Enter'){
+      const raw = input.value.trim();
+      if(raw){
+        const code = raw.split(' - ', 1)[0].trim();
+        if(code) add({ codigo: code, descricao: raw });
+        input.value = '';
+      }
+      return;
+    }
+    if(list.hidden) return;
+    if(event.key === 'ArrowDown'){
+      event.preventDefault();
+      activeIndex = Math.min(activeIndex + 1, results.length - 1);
+      renderList();
+    }else if(event.key === 'ArrowUp'){
+      event.preventDefault();
+      activeIndex = Math.max(activeIndex - 1, 0);
+      renderList();
+    }else if(event.key === 'Enter'){
+      event.preventDefault();
+      pick(activeIndex);
+    }else if(event.key === 'Escape'){
+      clearResults();
+    }
+  });
+
+  list.addEventListener('mousedown', event =>{
+    const option = event.target.closest('.ap-item');
+    if(!option) return;
+    const index = [...list.children].indexOf(option);
+    pick(index);
+  });
+
+  chips.addEventListener('click', event =>{
+    const close = event.target.closest('.ap-x');
+    if(!close) return;
+    const chip = close.closest('.ap-chip');
+    remove(chip?.dataset?.codigo);
+  });
+
+  document.addEventListener('click', event =>{
+    if(!wrap.contains(event.target)){
+      clearResults();
+    }
+  });
+
+  const initial = Array.isArray(window._procedimentosSelecionados) ? window._procedimentosSelecionados : [];
+  initial.forEach(raw => {
+    const code = (raw || '').split(' - ', 1)[0].trim();
+    if(!code) return;
+    add({ codigo: code, descricao: raw });
+  });
+
+  window._cbhpm_getSelectedCodes = () => [...selected.keys()];
+})();
+/* === Helper: monta o payload do simulador CBHPM (reuso) === */
+
+function getCBHPMPayload(){
+  const codigo = document.getElementById('cbhpm-codigo').value.trim();
+  const pacoteRaw = document.getElementById('cbhpm-pacote').value;
+
+  let codigos = [];
+  const seen = new Set();
+  const addCode = (raw)=>{
+    const code = (raw || '').split(' - ', 1)[0].trim();
+    if(!code || seen.has(code)) return;
+    seen.add(code);
+    codigos.push(code);
+  };
+
+  if(typeof window._cbhpm_getSelectedCodes === 'function'){
+    window._cbhpm_getSelectedCodes().forEach(addCode);
+  }
+  parsePacote(pacoteRaw).forEach(addCode);
+
+  const allCodes = [...codigos];
+  const dtpItems = [];
+  codigos = codigos.filter(code=>{
+    const meta = cbhpmDtpMeta.get(code);
+    if(meta){
+      dtpItems.push({
+        codigo: meta.codigo,
+        descricao: meta.descricao,
+        valor: meta.valor,
+        tabela_nome: meta.tabela_nome || null,
+        uf: meta.uf || null
+      });
+      return false;
+    }
+    return true;
+  });
+  const ativos = new Set(allCodes);
+  Array.from(cbhpmDtpMeta.keys()).forEach(code=>{ if(!ativos.has(code)) cbhpmDtpMeta.delete(code); });
+
+  return {
+    codigo,
+    codigos,
+    dtp_items: dtpItems,
+    uf:document.getElementById('cbhpm-uf').value,
+    versao:document.getElementById('cbhpm-versao').value||null,
+    porte_tab:document.getElementById('cbhpm-porte').value||null,
+    porte_an_tab:document.getElementById('cbhpm-porte-an').value||null,
+    uco_valor:document.getElementById('cbhpm-uco').value,
+    filme_valor:document.getElementById('cbhpm-filme').value,
+    incidencias:document.getElementById('cbhpm-incid').value,
+    ajuste_porte_pct:document.getElementById('cbhpm-aj-porte').value||0,
+    ajuste_porte_an_pct:document.getElementById('cbhpm-aj-an').value||0,
+  };
+}
+
+function setCBHPMPayload(data){
+  if(!data) return;
+  const setValue = (id, value)=>{
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.value = value ?? '';
+  };
+  setValue('cbhpm-codigo', data.codigo || '');
+  setValue('cbhpm-uf', data.uf || '');
+  setValue('cbhpm-versao', data.versao || '');
+  setValue('cbhpm-porte', data.porte_tab || '');
+  setValue('cbhpm-porte-an', data.porte_an_tab || '');
+  setValue('cbhpm-uco', data.uco_valor || '');
+  setValue('cbhpm-filme', data.filme_valor || '');
+  setValue('cbhpm-incid', data.incidencias || '');
+  setValue('cbhpm-aj-porte', data.ajuste_porte_pct || '0');
+  setValue('cbhpm-aj-an', data.ajuste_porte_an_pct || '0');
+  const codigos = Array.isArray(data.codigos) ? data.codigos : [];
+  const pacoteField = document.getElementById('cbhpm-pacote');
+  if(pacoteField){
+    pacoteField.value = codigos.join('\n');
+  }
+  cbhpmDtpMeta.clear();
+  const dtpItems = Array.isArray(data.dtp_items) ? data.dtp_items : [];
+  dtpItems.forEach(item=>{
+    if(!item || !item.codigo) return;
+    cbhpmDtpMeta.set(item.codigo, {
+      codigo: item.codigo,
+      descricao: item.descricao || '',
+      valor: item.valor,
+      tabela_nome: item.tabela_nome || null,
+      uf: item.uf || null,
+    });
+  });
+  renderDtpSelected();
+}
+
+async function exportCBHPM(fmt){ // fmt: 'pdf' | 'xlsx'
+
+  const endpoint = fmt === 'xlsx' ? '/api/simulacao_cbhpm/xlsx' : '/api/simulacao_cbhpm/pdf';
+
+  const btnX = document.getElementById('btnExportCBHPMXLSX');
+
+  const btnP = document.getElementById('btnExportCBHPMPDF');
+
+  const disable = (b)=>{ b && (b.disabled = true); };
+
+  const enable  = (b)=>{ b && (b.disabled = false); };
+
+
+
+  try{
+
+    disable(btnX); disable(btnP);
+
+
+
+    const payload = getCBHPMPayload();
+
+    if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
+
+      alert('Informe ao menos um código ou um pacote (múltiplos códigos).');
+
+      return;
+
+    }
+
+
+
+    const resp = await fetch(endpoint, {
+
+      method:'POST',
+
+      headers:{'Content-Type':'application/json'},
+
+      body:JSON.stringify(payload)
+
+    });
+
+
+
+    if(!resp.ok){
+
+      const msg = await resp.text().catch(()=> '');
+
+      throw new Error(`Falha na exportação (${resp.status}). ${msg || ''}`);
+
+    }
+
+
+
+    const blob = await resp.blob();
+
+    const stamp = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+
+    const filename = `simulacao-cbhpm-${stamp}.${fmt}`;
+
+    saveBlobAsFile(blob, filename);
+
+  }catch(err){
+
+    console.error('export fail:', err);
+
+    alert('Não foi possível exportar. Verifique os campos e tente novamente.');
+
+  }finally{
+
+    enable(btnX); enable(btnP);
+
+  }
+
+}
+
+
+
+/* === Helpers de download === */
+function saveBlobAsFile(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* ===== Bindings ===== */
+document.addEventListener('DOMContentLoaded', ()=>{
+  document.getElementById('btnMarkAllVersoes')?.addEventListener('click',()=>toggleAllVersoes(true));
+  document.getElementById('btnClearVersoes')?.addEventListener('click',()=>toggleAllVersoes(false));
+
+  document.addEventListener('click', (ev)=>{
+    const btn=ev.target.closest('.js-open-detalhe');
+    if(btn){ ev.preventDefault(); openDetalhe(btn.getAttribute('data-codigo')); }
+  });
+
+  document.getElementById('btnCopyResults')?.addEventListener('click', copyResults);
+  document.getElementById('btnExportCSV')?.addEventListener('click', exportCSV);
+
+  document.getElementById('btnCbhpmDtpBuscar')?.addEventListener('click', buscarDTPPacote);
+  document.getElementById('cbhpm-dtp-q')?.addEventListener('keydown', ev=>{ if(ev.key==='Enter'){ ev.preventDefault(); buscarDTPPacote(); } });
+  document.getElementById('cbhpm-pacote')?.addEventListener('input', ()=>{
+    const textarea=document.getElementById('cbhpm-pacote');
+    const ativos=new Set(parsePacote(textarea ? textarea.value : ''));
+    Array.from(cbhpmDtpMeta.keys()).forEach(code=>{ if(!ativos.has(code)) cbhpmDtpMeta.delete(code); });
+    renderDtpSelected();
+  });
+  const dtpHelper=document.getElementById('cbhpm-dtp-results');
+  if(dtpHelper){
+    dtpHelper.addEventListener('click', ev=>{
+      const btn=ev.target.closest('.js-add-dtp');
+      if(!btn) return;
+      ev.preventDefault();
+      const key=btn.getAttribute('data-key')||'';
+      const meta=cbhpmDtpSearchCache.get(key);
+      const codigo=meta?.codigo || '';
+      if(!codigo) return;
+      if(addCodigoPacote(codigo, meta)){
+        if(window.showToast){ showToast('Codigo '+codigo+' adicionado ao pacote.','success'); }
+      }else if(window.showToast){
+        showToast('Codigo '+codigo+' ja esta no pacote.','info');
+      }
+    });
+  }
+  document.getElementById('cbhpm-dtp-selected')?.addEventListener('click', ev=>{
+    const btn=ev.target.closest('.js-remove-dtp');
+    if(!btn) return;
+    ev.preventDefault();
+    const codigo=btn.getAttribute('data-code');
+    if(!codigo) return;
+    cbhpmDtpMeta.delete(codigo);
+    const textarea=document.getElementById('cbhpm-pacote');
+    if(textarea){
+      const atual=parsePacote(textarea.value).filter(c=>c!==codigo);
+      textarea.value=atual.join('\n');
+      textarea.dispatchEvent(new Event('input'));
+    }
+    renderDtpSelected();
+  });
+  document.getElementById('btnSimularCBHPM')?.addEventListener('click', simularCBHPM);
+  document.getElementById('btnBuscarDTP')?.addEventListener('click', simularDTP);
+  document.getElementById('btnExportCBHPMXLSX')?.addEventListener('click', ()=>exportCBHPM('xlsx'));
+  document.getElementById('btnExportCBHPMPDF')?.addEventListener('click',  ()=>exportCBHPM('pdf'));
+  renderDtpSelected();
+  if (restoreCbhpmPayload) {
+    setCBHPMPayload(restoreCbhpmPayload);
+    setTimeout(()=>{ simularCBHPM(); }, 150);
+  }
+});
+</script>
+{% endblock %}
+
+
+
+
+
+
+
+
+
+
+
+

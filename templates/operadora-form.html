@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}{% if modo=='editar' %}Editar Operadora{% else %}Nova Operadora{% endif %}{% endblock %}
+{% block content %}
+<div class="content-narrow">
+  <div class="page-header">
+    <h4 class="mb-0">{% if modo=='editar' %}Editar Operadora{% else %}Nova Operadora{% endif %}</h4>
+  </div>
+
+  {% if erro %}<div class="alert alert-danger">{{ erro }}</div>{% endif %}
+
+  <form method="post" class="card p-3">
+    <div class="row g-3">
+      <div class="col-12">
+        <label class="form-label" for="nome">Nome</label>
+        <input class="form-control" id="nome" name="nome" required
+               value="{{ (operadora.nome if operadora else (form.get('nome') if form is defined else '')) }}">
+      </div>
+      <div class="col-6">
+        <label class="form-label" for="uf">UF</label>
+        {% set atual = (operadora.uf if operadora else (form.get('uf') if form is defined else '')) %}
+        <select class="form-select" id="uf" name="uf" required>
+          <option value="" disabled {% if not atual %}selected{% endif %}>Selecione…</option>
+          {% for uf in UFS %}<option value="{{ uf }}" {% if atual==uf %}selected{% endif %}>{{ uf }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-6">
+        <label class="form-label" for="cnpj">CNPJ</label>
+        <input class="form-control" id="cnpj" name="cnpj" placeholder="00.000.000/0000-00"
+               value="{{ (operadora.cnpj if operadora else (form.get('cnpj') if form is defined else '')) }}">
+      </div>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-primary" type="submit">Salvar</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('gerenciar_operadoras') }}">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

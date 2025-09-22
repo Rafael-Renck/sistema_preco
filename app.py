@@ -1,0 +1,2792 @@
+import os
+import time
+from flask import Flask, render_template, request, redirect, url_for, jsonify, session, send_file, g
+import json
+from flask_sqlalchemy import SQLAlchemy
+import pymysql
+from dotenv import load_dotenv
+from flask import request, jsonify
+from functools import wraps
+from sqlalchemy import text, or_, func
+from werkzeug.utils import secure_filename
+from decimal import Decimal, InvalidOperation
+import unicodedata
+import html
+import hashlib
+from datetime import date, datetime
+from uuid import uuid4
+from flask import make_response
+import io
+import xlsxwriter
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import mm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+# --- 1. CONFIGURAÇÃO INICIAL ---
+# Inicializa a aplicação Flask
+load_dotenv()
+
+app = Flask(__name__, template_folder='templates', static_folder='static')
+
+# Chave de sessão (ajuste em produção via variável de ambiente)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key')
+
+# Configuração da conexão com o banco de dados MySQL
+# Formato: mysql+pymysql://<usuario>:<senha>@<host>/<nome_do_banco>
+# Para o XAMPP padrão, o usuário é 'root' e a senha é vazia.
+# DATABASE_URL pode vir do Docker Compose. Fallback para dev local.
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
+    'DATABASE_URL', 'mysql+pymysql://root:@localhost/operadora_saude'
+)
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Inicializa o SQLAlchemy para interagir com o banco de dados
+db = SQLAlchemy(app)
+
+
+# --- 1.1 Autorização/Session helpers ---
+def login_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get('user_id'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def admin_required(f):
+    @wraps(f)
+    @login_required
+    def wrapper(*args, **kwargs):
+        if session.get('perfil') != 'adm':
+            return redirect(url_for('consulta_comparar'))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+
+
+def _store_history_entry(entry: dict):
+    entry = dict(entry or {})
+    if not entry:
+        return
+    entry.setdefault('type', 'generic')
+    entry.setdefault('label', 'Consulta recente')
+    entry.setdefault('timestamp', datetime.now().strftime('%d/%m %H:%M'))
+    if 'id' not in entry:
+        entry['id'] = uuid4().hex[:8]
+    if 'url_fragment' not in entry:
+        entry['url_fragment'] = f"sim_hist={entry['id']}"
+    if 'signature' not in entry:
+        entry['signature'] = f"{entry.get('type', 'generic')}:{entry['id']}"
+    history = session.get('sim_history') or []
+    history = [h for h in history if h.get('signature') != entry['signature']]
+    history.insert(0, entry)
+    session['sim_history'] = history[:5]
+    session.pop('ultima_simulacao_url', None)
+    session.pop('ultima_simulacao_label', None)
+    session.modified = True
+
+
+@app.context_processor
+def inject_session():
+    history_raw = session.get('sim_history') or []
+    history = []
+    for item in history_raw:
+        entry = dict(item or {})
+        if 'url_fragment' not in entry and entry.get('url'):
+            entry['url_fragment'] = entry['url']
+        if not entry.get('label'):
+            entry['label'] = 'Consulta recente'
+        if 'id' not in entry:
+            entry['id'] = uuid4().hex[:8]
+        if 'signature' not in entry:
+            entry['signature'] = f"legacy:{entry.get('url_fragment', entry['id'])}"
+        history.append(entry)
+    if not history:
+        legacy_url = session.get('ultima_simulacao_url')
+        if legacy_url:
+            history = [{
+                'id': uuid4().hex[:8],
+                'type': 'compare',
+                'url_fragment': legacy_url,
+                'label': session.get('ultima_simulacao_label') or 'Consulta recente',
+                'timestamp': '',
+                'signature': f"legacy:{legacy_url}",
+            }]
+    last = history[0] if history else {}
+    return {
+        "session_perfil": session.get('perfil'),
+        "session_nome": session.get('nome'),
+        "session_last_simulation_url": last.get('url_fragment'),
+        "session_last_simulation_label": last.get('label'),
+        "session_sim_history": history,
+    }
+
+
+# --- 2. DEFINIÇÃO DOS MODELOS (TABELAS) ---
+# Cada classe representa uma tabela no banco de dados.
+
+class Usuario(db.Model):
+    __tablename__ = 'usuarios'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(255), nullable=False)
+    email = db.Column(db.String(255), unique=True, nullable=False)
+    senha = db.Column(db.String(255), nullable=False) # Em um projeto real, usaríamos hash!
+    perfil = db.Column(db.String(50), nullable=False)
+
+class Operadora(db.Model):
+    __tablename__ = 'operadoras'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(255), nullable=False)
+    uf = db.Column(db.String(2), nullable=True)
+    cnpj = db.Column(db.String(20), nullable=True)
+    status = db.Column(db.String(50), nullable=False)
+    # Relacionamento: uma operadora pode ter várias tabelas de preços
+    tabelas = db.relationship('Tabela', backref='operadora', lazy=True)
+
+class Tabela(db.Model):
+    __tablename__ = 'tabelas'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(255), nullable=False)
+    data_vigencia = db.Column(db.Date, nullable=True)
+    prestador = db.Column(db.String(255), nullable=True)
+    tipo_tabela = db.Column(db.String(50), nullable=True)
+    uf = db.Column(db.String(2), nullable=True)
+    uco_valor = db.Column(db.Numeric(12, 2), nullable=True)
+    # Chave estrangeira para ligar à tabela de operadoras
+    id_operadora = db.Column(db.Integer, db.ForeignKey('operadoras.id'), nullable=False)
+    # Relacionamento: uma tabela contém vários procedimentos
+    procedimentos = db.relationship('Procedimento', backref='tabela', lazy=True)
+
+class Procedimento(db.Model):
+    __tablename__ = 'procedimentos'
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(100), nullable=False)
+    descricao = db.Column(db.String(500), nullable=False)
+    valor = db.Column(db.Numeric(10, 2), nullable=False)
+    prestador = db.Column(db.String(255), nullable=True)
+    uf = db.Column(db.String(2), nullable=True)
+    # Chave estrangeira para ligar à tabela de preços
+    id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+class CBHPMItem(db.Model):
+    __tablename__ = 'cbhpm_itens'
+    id = db.Column(db.Integer, primary_key=True)
+    # básicos
+    codigo = db.Column(db.String(100), nullable=False)
+    procedimento = db.Column(db.String(500), nullable=False)
+    uf = db.Column(db.String(2), nullable=True)
+    # porte cirúrgico
+    porte = db.Column(db.String(50), nullable=True)
+    fracao_porte = db.Column(db.Numeric(10, 2), nullable=True)
+    valor_porte = db.Column(db.Numeric(12, 2), nullable=True)
+    total_porte = db.Column(db.Numeric(12, 2), nullable=True)
+    # incidências e filme
+    incidencias = db.Column(db.String(255), nullable=True)
+    filme = db.Column(db.Numeric(12, 2), nullable=True)
+    total_filme = db.Column(db.Numeric(12, 2), nullable=True)
+    # uco
+    uco = db.Column(db.Numeric(12, 2), nullable=True)
+    total_uco = db.Column(db.Numeric(12, 2), nullable=True)
+    # anestesia
+    porte_anestesico = db.Column(db.String(50), nullable=True)
+    valor_porte_anestesico = db.Column(db.Numeric(12, 2), nullable=True)
+    total_porte_anestesico = db.Column(db.Numeric(12, 2), nullable=True)
+    # auxiliares
+    numero_auxiliares = db.Column(db.Integer, nullable=True)
+    total_auxiliares = db.Column(db.Numeric(12, 2), nullable=True)
+    total_1_aux = db.Column(db.Numeric(12, 2), nullable=True)
+    total_2_aux = db.Column(db.Numeric(12, 2), nullable=True)
+    total_3_aux = db.Column(db.Numeric(12, 2), nullable=True)
+    total_4_aux = db.Column(db.Numeric(12, 2), nullable=True)
+    # subtotal
+    subtotal = db.Column(db.Numeric(12, 2), nullable=True)
+    # vínculo
+    id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+class CBHPMRuleSet(db.Model):
+    __tablename__ = 'cbhpm_rulesets'
+    id = db.Column(db.Integer, primary_key=True)
+    nome = db.Column(db.String(255), nullable=False)
+    versao = db.Column(db.String(50), nullable=True)
+    descricao = db.Column(db.Text, nullable=True)
+    ativo = db.Column(db.Boolean, nullable=False, default=False)
+    regras = db.Column(db.JSON, nullable=False, default=dict)
+    criado_em = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    atualizado_em = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+DEFAULT_CBHPM_RULES = {
+    "descricao": "Regras base CBHPM",
+    "porte": {
+        "reducoes_simultaneos": [1.0, 0.5, 0.3, 0.2]
+    },
+    "auxiliares": {
+        "percentuais": [0.3, 0.2, 0.1, 0.1],
+        "max_por_porte": {
+            "0": 0,
+            "1": 0,
+            "2": 1,
+            "3": 2,
+            "4": 2,
+            "5": 3,
+            "6": 3,
+            "default": 2
+        }
+    },
+    "uco": {"multiplicador": 1.0},
+    "filme": {"multiplicador": 1.0}
+}
+
+class PorteValorItem(db.Model):
+    __tablename__ = 'porte_valores'
+    id = db.Column(db.Integer, primary_key=True)
+    porte = db.Column(db.String(50), nullable=False)
+    valor = db.Column(db.Numeric(12, 2), nullable=False)
+    uf = db.Column(db.String(2), nullable=True)
+    id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+class PorteAnestesicoValorItem(db.Model):
+    __tablename__ = 'porte_anestesico_valores'
+    id = db.Column(db.Integer, primary_key=True)
+    porte_an = db.Column(db.String(50), nullable=False)
+    valor = db.Column(db.Numeric(12, 2), nullable=False)
+    uf = db.Column(db.String(2), nullable=True)
+    id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+# --- 3. ROTAS (PÁGINAS) ---
+
+@app.route('/')
+@login_required
+def dashboard():
+    return render_template('index.html')
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form.get('email')
+        senha = request.form.get('senha')
+        usuario = Usuario.query.filter_by(email=email, senha=senha).first()
+        if usuario:
+            session['user_id'] = usuario.id
+            session['perfil']  = usuario.perfil
+            session['nome']    = usuario.nome
+            return redirect(url_for('dashboard'))
+
+        # falha: mantém layout limpo
+        return render_template('login.html', erro='Credenciais inválidas', hide_chrome=True)
+
+    # GET: layout limpo
+    return render_template('login.html', hide_chrome=True)
+
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+
+@app.route('/consulta-comparar')
+@login_required
+def consulta_comparar():
+    restore_cbhpm_payload = None
+    history_id = request.args.get('sim_hist')
+    if history_id:
+        history = session.get('sim_history') or []
+        entry = next((item for item in history if str(item.get('id')) == str(history_id)), None)
+        if entry:
+            if entry.get('type') == 'cbhpm' and entry.get('payload'):
+                restore_cbhpm_payload = entry.get('payload')
+            elif entry.get('type') == 'compare' and entry.get('url_fragment'):
+                target = entry.get('url_fragment') or ''
+                if target:
+                    return redirect(f"{url_for('consulta_comparar')}?{target}")
+
+    q = request.args.get('q', '').strip()
+    search_code = None
+    search_text = None
+    if ' - ' in q:
+        parts = q.split(' - ', 1)
+        search_code = parts[0].strip()
+        search_text = parts[1].strip() if len(parts) > 1 else ''
+
+    tabela_nome = request.args.get('tabela_nome')
+    selected_uf = request.args.get('uf') or ''
+    selected_prestadores = request.args.getlist('prestadores')
+    selected_versoes = request.args.getlist('versoes')
+    show_results = (request.args.get('run') == '1')
+
+    procs_raw = request.args.getlist('procedimentos')  # ex.: ['10101012', '10101020 - ...']
+    codigos = []
+    for s in procs_raw:
+        s = (s or '').strip()
+        if not s:
+            continue
+        codigos.append(s.split(' - ', 1)[0].strip())
+    if q.isdigit():
+        codigos.append(q)
+    codigos = list(dict.fromkeys(codigos))
+
+    nomes = [r[0] for r in db.session.query(Tabela.nome).distinct().order_by(Tabela.nome).all()]
+    if not tabela_nome and len(nomes) == 1:
+        tabela_nome = nomes[0]
+
+    is_cbhpm = False
+    if tabela_nome:
+        is_cbhpm = db.session.query(CBHPMItem.id)            .join(Tabela, CBHPMItem.id_tabela == Tabela.id)            .filter(Tabela.nome == tabela_nome).first() is not None
+
+    prestadores_disp, versoes_disp = [], []
+    if tabela_nome:
+        if is_cbhpm:
+            versoes_disp = [r[0] for r in db.session.query(Tabela.nome)
+                              .filter(Tabela.tipo_tabela == 'cbhpm')
+                              .distinct().order_by(Tabela.nome).all()]
+        else:
+            q_prest = db.session.query(Procedimento.prestador)                .join(Tabela, Procedimento.id_tabela == Tabela.id)                .filter(Tabela.nome == tabela_nome)
+            if selected_uf:
+                q_prest = q_prest.filter(or_(Tabela.uf == selected_uf, Procedimento.uf == selected_uf))
+            prestadores_disp = [r[0] for r in q_prest
+                .filter((Procedimento.prestador.isnot(None)) & (Procedimento.prestador != ''))
+                .distinct().order_by(Procedimento.prestador).all()]
+
+    columns = (selected_versoes or versoes_disp) if is_cbhpm else (selected_prestadores or prestadores_disp)
+
+    rows = []
+    if show_results and tabela_nome:
+        data = {}
+        if is_cbhpm:
+            targets = columns or []
+            for ver in targets:
+                qv = db.session.query(
+                        CBHPMItem.codigo, CBHPMItem.procedimento,
+                        CBHPMItem.subtotal, CBHPMItem.total_porte, CBHPMItem.valor_porte,
+                        CBHPMItem.total_uco, CBHPMItem.uco, CBHPMItem.total_filme, CBHPMItem.filme
+                    )                    .join(Tabela, CBHPMItem.id_tabela == Tabela.id)                    .filter(Tabela.nome == ver, Tabela.tipo_tabela == 'cbhpm')
+                if selected_uf:
+                    qv = qv.filter(or_(Tabela.uf == selected_uf, CBHPMItem.uf == selected_uf))
+
+                if codigos:
+                    qv = qv.filter(CBHPMItem.codigo.in_(codigos))
+                elif q:
+                    if search_code:
+                        qv = qv.filter(or_(
+                            CBHPMItem.codigo == search_code,
+                            CBHPMItem.codigo.ilike(f"{search_code}%"),
+                            (CBHPMItem.procedimento.ilike(f"%{search_text}%") if search_text else False)
+                        ))
+                    else:
+                        like = f"%{q}%"
+                        qv = qv.filter(or_(CBHPMItem.codigo.ilike(like), CBHPMItem.procedimento.ilike(like)))
+
+                for cod, desc, sub, tp, vp, tu, u, tf, f in qv.all():
+                    v = sub or tp or vp or tu or u or tf or f
+                    entry = data.setdefault(cod, {"descricao": desc, "values": {}})
+                    entry["values"][ver] = v
+        else:
+            query = db.session.query(Procedimento, Procedimento.prestador)                .join(Tabela, Procedimento.id_tabela == Tabela.id)                .filter(Tabela.nome == tabela_nome)
+            if selected_uf:
+                query = query.filter(or_(Tabela.uf == selected_uf, Procedimento.uf == selected_uf))
+            if selected_prestadores:
+                query = query.filter(Procedimento.prestador.in_(selected_prestadores))
+
+            if codigos:
+                query = query.filter(Procedimento.codigo.in_(codigos))
+            elif q:
+                if search_code:
+                    query = query.filter(or_(
+                        Procedimento.codigo == search_code,
+                        Procedimento.codigo.ilike(f"{search_code}%"),
+                        (Procedimento.descricao.ilike(f"%{search_text}%") if search_text else False)
+                    ))
+                else:
+                    like = f"%{q}%"
+                    query = query.filter(or_(Procedimento.codigo.ilike(like), Procedimento.descricao.ilike(like)))
+
+            prestadores_usados = set()
+            for proc, prest in query.all():
+                prest = prest or '-'
+                prestadores_usados.add(prest)
+                entry = data.setdefault(proc.codigo, {"descricao": proc.descricao, "values": {}})
+                entry["values"][prest] = proc.valor
+            if not selected_prestadores and prestadores_usados:
+                columns = sorted(list(prestadores_usados))
+
+        for codigo in sorted(data.keys()):
+            item = data[codigo]
+            values = [item["values"].get(p) for p in columns]
+            numeric = [v for v in values if v is not None]
+            min_v = min(numeric) if numeric else None
+            max_v = max(numeric) if numeric else None
+            avg_v = (sum(numeric) / len(numeric)) if numeric else None
+            rows.append({
+                "codigo": codigo,
+                "descricao": item["descricao"],
+                "values": values,
+                "min": min_v, "max": max_v, "avg": avg_v, "count": len(numeric)
+            })
+
+    porte_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='porte').order_by(Tabela.nome).all()]
+    porte_an_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='porte_anestesico').order_by(Tabela.nome).all()]
+    dtp_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='diarias_taxas_pacotes').order_by(Tabela.nome).all()]
+    cbhpm_list_all = [r[0] for r in db.session.query(Tabela.nome).filter(Tabela.tipo_tabela=='cbhpm').distinct().order_by(Tabela.nome).all()]
+    ruleset_dict, ruleset_model = _get_active_cbhpm_ruleset(return_model=True)
+    rules_meta = {
+        'nome': ruleset_model.nome if ruleset_model else 'Padrão',
+        'versao': ruleset_model.versao if ruleset_model else None,
+        'descricao': ruleset_model.descricao if ruleset_model else None,
+        'id': ruleset_model.id if ruleset_model else None,
+    }
+
+    if show_results and tabela_nome:
+        query_bytes = request.query_string or b''
+        if query_bytes:
+            try:
+                query_str = query_bytes.decode('utf-8', 'ignore')
+            except Exception:
+                query_str = query_bytes.decode('latin-1', 'ignore')
+            label_parts = []
+            clean_table = unicodedata.normalize('NFKD', tabela_nome).encode('ascii', 'ignore').decode() if tabela_nome else ''
+            if clean_table:
+                label_parts.append(clean_table)
+            if codigos:
+                snippet = ', '.join(codigos[:3])
+                if len(codigos) > 3:
+                    snippet += ', ...'
+                snippet = unicodedata.normalize('NFKD', snippet).encode('ascii', 'ignore').decode()
+                label_parts.append(f'codigos {snippet}')
+            elif q:
+                clean_q = unicodedata.normalize('NFKD', q).encode('ascii', 'ignore').decode()
+                label_parts.append(f'busca {clean_q}')
+            label = ' | '.join(filter(None, label_parts)) or (clean_table or 'Consulta recente')
+            entry_id = hashlib.md5(query_str.encode('utf-8')).hexdigest()[:10] if query_str else uuid4().hex[:8]
+            _store_history_entry({
+                'type': 'compare',
+                'id': entry_id,
+                'signature': f'compare:{query_str}',
+                'url_fragment': query_str,
+                'label': label[:80],
+                'timestamp': datetime.now().strftime('%d/%m %H:%M'),
+            })
+
+    return render_template(
+        'consulta-comparar.html',
+        nomes=nomes, tabela_nome=tabela_nome,
+        prestadores_disp=prestadores_disp, selected_prestadores=selected_prestadores,
+        versoes_disp=versoes_disp, selected_versoes=selected_versoes,
+        UFS=BR_UFS, selected_uf=selected_uf, q=q,
+        columns=columns, rows=rows, show_results=show_results, is_cbhpm=is_cbhpm,
+        porte_list=porte_list, porte_an_list=porte_an_list,
+        cbhpm_list_all=cbhpm_list_all, dtp_list=dtp_list,
+        restore_cbhpm_payload=restore_cbhpm_payload,
+        cbhpm_rules_info=rules_meta
+    )
+
+
+def _compute_simulacao_cbhpm(data):
+    data = data or {}
+
+    ruleset_dict, ruleset_model = _get_active_cbhpm_ruleset(return_model=True)
+    rules_meta = {
+        'nome': ruleset_model.nome if ruleset_model else 'Padrao',
+        'versao': ruleset_model.versao if ruleset_model else None,
+        'descricao': ruleset_model.descricao if ruleset_model else None,
+        'id': ruleset_model.id if ruleset_model else None,
+    }
+
+
+    codigo = (data.get('codigo') or '').strip()
+    codigos = data.get('codigos') or []
+    if isinstance(codigos, list):
+        codigos = [str(c or '').split(' - ', 1)[0].strip() for c in codigos if (c or '')]
+
+    dtp_raw = data.get('dtp_items') or []
+    dtp_map = {}
+    for item in dtp_raw:
+        code = str(item.get('codigo') or '').strip()
+        if not code:
+            continue
+        desc = (item.get('descricao') or '').strip()
+        valor = _as_decimal(item.get('valor'))
+        tabela_nome = (item.get('tabela_nome') or item.get('tabela') or '').strip()
+        uf_item = (item.get('uf') or '').strip()
+        dtp_map[code] = {
+            'codigo': code,
+            'descricao': desc,
+            'valor': valor,
+            'tabela_nome': tabela_nome,
+            'uf': uf_item,
+        }
+
+    codigos = list(dict.fromkeys(codigos))
+    dtp_items = list(dtp_map.values())
+    if dtp_items:
+        codigos = [c for c in codigos if c not in dtp_map]
+
+    uf = (data.get('uf') or '').strip() or None
+    versao = data.get('versao')
+    porte_tab_name = data.get('porte_tab')
+    porte_an_tab_name = data.get('porte_an_tab')
+    uco_valor_in = _as_decimal(data.get('uco_valor'))
+    filme_valor_in = _as_decimal(data.get('filme_valor'))
+    incid_in = _as_decimal(data.get('incidencias'))
+    aj_porte_pct = _as_decimal(data.get('ajuste_porte_pct')) or Decimal('0')
+    aj_an_pct = _as_decimal(data.get('ajuste_porte_an_pct')) or Decimal('0')
+
+    if not codigo and not codigos and not dtp_items:
+        return {"error": 'Informe "codigo" ou a lista "codigos".'}, 400
+
+    item = None
+    t_ref = None
+
+    target_code = codigo or (codigos[0] if codigos else '')
+    if target_code:
+        q = (db.session.query(CBHPMItem, Tabela)
+             .join(Tabela, CBHPMItem.id_tabela == Tabela.id))
+        if versao:
+            q = q.filter(Tabela.nome == versao)
+        q = q.filter(or_(CBHPMItem.codigo == target_code,
+                         CBHPMItem.codigo.ilike(f"{target_code}%")))
+        if uf:
+            q = q.filter(or_(CBHPMItem.uf == uf, Tabela.uf == uf))
+        row = q.first()
+        if row:
+            item, t_ref = row[0], row[1]
+
+    if not t_ref and versao:
+        t_ref = Tabela.query.filter_by(nome=versao).first()
+
+    if not t_ref:
+        t_ref = Tabela.query.filter_by(tipo_tabela='cbhpm').first()
+
+    if not t_ref:
+        op = Operadora.query.first()
+        t_ref = Tabela(nome='SIMULACAO', id_operadora=(op.id if op else 1))
+
+    if uco_valor_in is not None:
+        t_ref.uco_valor = uco_valor_in
+
+    fracao_override = _as_decimal(data.get('fracao_porte'))
+
+    base = CBHPMItem(
+        codigo=codigo,
+        procedimento=(item.procedimento if item else (data.get('descricao') or '')),
+        porte=(item.porte if item else data.get('porte')),
+        fracao_porte=(fracao_override if fracao_override is not None else (item.fracao_porte if item else None)),
+        valor_porte=(item.valor_porte if item else _as_decimal(data.get('valor_porte'))),
+        total_porte=(item.total_porte if item else None),
+        filme=(item.filme if item else filme_valor_in),
+        incidencias=(item.incidencias if item else incid_in),
+        total_filme=(item.total_filme if item else None),
+        uco=(item.uco if item else _as_decimal(data.get('uco_qtd'))),
+        total_uco=(item.total_uco if item else None),
+        porte_anestesico=(item.porte_anestesico if item else data.get('porte_an')),
+        valor_porte_anestesico=(item.valor_porte_anestesico if item else _as_decimal(data.get('valor_porte_an'))),
+        total_porte_anestesico=(item.total_porte_anestesico if item else None),
+        numero_auxiliares=(item.numero_auxiliares if item is not None else data.get('numero_auxiliares')),
+        total_auxiliares=(item.total_auxiliares if item else None),
+        total_1_aux=(item.total_1_aux if item else _as_decimal(data.get('total_1_aux'))),
+        total_2_aux=(item.total_2_aux if item else _as_decimal(data.get('total_2_aux'))),
+        total_3_aux=(item.total_3_aux if item else _as_decimal(data.get('total_3_aux'))),
+        total_4_aux=(item.total_4_aux if item else _as_decimal(data.get('total_4_aux'))),
+    )
+
+    base._fracao_input = fracao_override
+
+    if porte_tab_name:
+        base.valor_porte = None
+        base.total_porte = None
+    if porte_an_tab_name:
+        base.valor_porte_anestesico = None
+        base.total_porte_anestesico = None
+    if filme_valor_in is not None:
+        base.filme = filme_valor_in
+        base.total_filme = None
+    if uco_valor_in is not None:
+        base.total_uco = None
+
+    porte_hint = porte_tab_name or (t_ref.nome if t_ref else None)
+    porte_an_hint = porte_an_tab_name or (t_ref.nome if t_ref else None)
+
+    if codigos or dtp_items:
+        itens = []
+        cbhpm_results = []
+        d0 = Decimal('0')
+
+        def to_decimal(value):
+            val = _as_decimal(value)
+            return val if val is not None else d0
+
+        if codigos:
+            for cod in codigos:
+                it_item = None
+                if versao or cod:
+                    qit = (db.session.query(CBHPMItem, Tabela)
+                           .join(Tabela, CBHPMItem.id_tabela == Tabela.id))
+                    if versao:
+                        qit = qit.filter(Tabela.nome == versao)
+                    if cod:
+                        qit = qit.filter(or_(CBHPMItem.codigo == cod, CBHPMItem.codigo.ilike(f"{cod}%")))
+                    if uf:
+                        qit = qit.filter(or_(CBHPMItem.uf == uf, Tabela.uf == uf))
+                    rowi = qit.first()
+                    if rowi:
+                        it_item = rowi[0]
+
+                base_i = CBHPMItem(
+                    codigo=cod,
+                    procedimento=(it_item.procedimento if it_item else ''),
+                    porte=(it_item.porte if it_item else None),
+                    fracao_porte=(fracao_override if fracao_override is not None else (it_item.fracao_porte if it_item else None)),
+                    valor_porte=(it_item.valor_porte if it_item else None),
+                    total_porte=(it_item.total_porte if it_item else None),
+                    filme=(it_item.filme if it_item else filme_valor_in),
+                    incidencias=(it_item.incidencias if it_item else incid_in),
+                    total_filme=(it_item.total_filme if it_item else None),
+                    uco=(it_item.uco if it_item else None),
+                    total_uco=(it_item.total_uco if it_item else None),
+                    porte_anestesico=(it_item.porte_anestesico if it_item else None),
+                    valor_porte_anestesico=(it_item.valor_porte_anestesico if it_item else None),
+                    total_porte_anestesico=(it_item.total_porte_anestesico if it_item else None),
+                    numero_auxiliares=(it_item.numero_auxiliares if it_item else None),
+                    total_auxiliares=(it_item.total_auxiliares if it_item else None),
+                    total_1_aux=(it_item.total_1_aux if it_item else None),
+                    total_2_aux=(it_item.total_2_aux if it_item else None),
+                    total_3_aux=(it_item.total_3_aux if it_item else None),
+                    total_4_aux=(it_item.total_4_aux if it_item else None),
+                )
+                base_i._fracao_input = fracao_override
+
+                if porte_tab_name:
+                    base_i.valor_porte = None
+                    base_i.total_porte = None
+                if porte_an_tab_name:
+                    base_i.valor_porte_anestesico = None
+                    base_i.total_porte_anestesico = None
+                if filme_valor_in is not None:
+                    base_i.filme = filme_valor_in
+                    base_i.total_filme = None
+                if uco_valor_in is not None:
+                    base_i.total_uco = None
+
+                br = compute_cbhpm_breakdown(
+                    base_i, t_ref,
+                    porte_hint=porte_hint, porte_an_hint=porte_an_hint,
+                    ajuste_porte_pct=aj_porte_pct, ajuste_porte_an_pct=aj_an_pct,
+                    rules=ruleset_dict
+                )
+                item_out = {k: _stringify_for_output(v) for k, v in br.items()}
+                if br.get('applied_rules'):
+                    item_out['applied_rules'] = _stringify_for_output(br['applied_rules'])
+                item_out.update({'codigo': cod, 'descricao': base_i.procedimento, 'origem': 'cbhpm'})
+                cbhpm_results.append({
+                    'payload': item_out,
+                    'totals': {
+                        'total_porte': to_decimal(br.get('total_porte')),
+                        'total_filme': to_decimal(br.get('total_filme')),
+                        'total_uco': to_decimal(br.get('total_uco')),
+                        'total_porte_an': to_decimal(br.get('total_porte_an')),
+                        'total_auxiliares': to_decimal(br.get('total_auxiliares')),
+                        'total': to_decimal(br.get('total')),
+                    }
+                })
+
+        reducoes = (ruleset_dict.get('porte') or {}).get('reducoes_simultaneos') or []
+        if reducoes and len(cbhpm_results) > 1:
+            ordered = sorted(
+                enumerate(cbhpm_results),
+                key=lambda pair: pair[1]['totals']['total_porte'],
+                reverse=True
+            )
+            for rank, (idx, entry) in enumerate(ordered):
+                original = entry['totals']['total_porte']
+                if original <= d0:
+                    continue
+                factor_raw = reducoes[min(rank, len(reducoes) - 1)]
+                try:
+                    factor = Decimal(str(factor_raw))
+                except (InvalidOperation, ValueError):
+                    continue
+                if factor > Decimal('5'):
+                    factor = factor / Decimal('100')
+                if factor > Decimal('1'):
+                    factor = Decimal('1')
+                if factor < Decimal('0'):
+                    factor = Decimal('0')
+                adjusted = original * factor
+                if adjusted == original:
+                    continue
+                delta = original - adjusted
+                entry['totals']['total_porte'] = adjusted
+                entry['totals']['total'] = entry['totals']['total'] - delta
+                payload = entry['payload']
+                payload['total_porte'] = str(adjusted)
+                payload['total'] = str(entry['totals']['total'])
+                applied = list(payload.get('applied_rules') or [])
+                applied.append({
+                    'component': 'porte',
+                    'rule': 'reducoes_simultaneos',
+                    'ordem': rank + 1,
+                    'fator': str(factor),
+                    'reduzido_de': str(original),
+                    'reduzido_para': str(adjusted),
+                })
+                payload['applied_rules'] = applied
+
+        itens.extend([entry['payload'] for entry in cbhpm_results])
+
+        for meta in dtp_items:
+            val = meta.get('valor')
+            if val is None:
+                val = d0
+            elif not isinstance(val, Decimal):
+                val = _as_decimal(val) or d0
+            itens.append({
+                'codigo': meta.get('codigo'),
+                'descricao': meta.get('descricao'),
+                'total_porte': '0',
+                'total_filme': '0',
+                'total_uco': '0',
+                'total_porte_an': '0',
+                'total_auxiliares': '0',
+                'total': str(val),
+                'origem': 'dtp',
+                'tabela_origem': meta.get('tabela_nome'),
+                'uf_origem': meta.get('uf'),
+                'auxiliares_detalhe': [],
+            })
+
+        sum_porte = sum(to_decimal(item.get('total_porte')) for item in itens)
+        sum_filme = sum(to_decimal(item.get('total_filme')) for item in itens)
+        sum_uco = sum(to_decimal(item.get('total_uco')) for item in itens)
+        sum_an = sum(to_decimal(item.get('total_porte_an')) for item in itens)
+        sum_aux = sum(to_decimal(item.get('total_auxiliares')) for item in itens)
+        sum_total = sum(to_decimal(item.get('total')) for item in itens)
+
+        payload_agregado = {
+            'itens': itens,
+            'total_porte': str(sum_porte),
+            'total_filme': str(sum_filme),
+            'total_uco': str(sum_uco),
+            'total_porte_an': str(sum_an),
+            'total_auxiliares': str(sum_aux),
+            'total': str(sum_total),
+            'porte_tabela_usada': (porte_tab_name or _resolve_porte_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_hint, None)),
+            'porte_an_tabela_usada': (porte_an_tab_name or _resolve_porte_an_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_an_hint, None)),
+            'uco_valor': str(t_ref.uco_valor) if getattr(t_ref, 'uco_valor', None) is not None else None,
+            'versao_base': versao,
+            'ajuste_porte_pct': str(aj_porte_pct),
+            'ajuste_porte_an_pct': str(aj_an_pct),
+            'cbhpm_rules_info': rules_meta,
+        }
+        return payload_agregado, 200
+
+    breakdown = compute_cbhpm_breakdown(
+        base, t_ref,
+        porte_hint=porte_hint, porte_an_hint=porte_an_hint,
+        ajuste_porte_pct=aj_porte_pct, ajuste_porte_an_pct=aj_an_pct,
+        rules=ruleset_dict
+    )
+    resp = {k: _stringify_for_output(v) for k, v in breakdown.items()}
+    resp.update({
+        'codigo': codigo,
+        'descricao': base.procedimento,
+        'uco_valor': str(t_ref.uco_valor) if getattr(t_ref, 'uco_valor', None) is not None else None,
+        'versao_base': versao,
+        'porte_tabela_usada': (porte_tab_name or _resolve_porte_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_hint, base.porte)),
+        'porte_an_tabela_usada': (porte_an_tab_name or _resolve_porte_an_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_an_hint, base.porte_anestesico)),
+        'ajuste_porte_pct': str(aj_porte_pct),
+        'ajuste_porte_an_pct': str(aj_an_pct),
+        'cbhpm_rules_info': rules_meta,
+    })
+    return resp, 200
+
+
+@app.route('/api/simulacao_cbhpm', methods=['POST'])
+@login_required
+def api_simulacao_cbhpm():
+    data = request.get_json(force=True, silent=True) or {}
+    payload, status = _compute_simulacao_cbhpm(data)
+    if status == 200:
+        restore_payload = {
+            'codigo': data.get('codigo') or '',
+            'codigos': list(data.get('codigos') or []),
+            'dtp_items': list(data.get('dtp_items') or []),
+            'uf': data.get('uf') or '',
+            'versao': data.get('versao') or '',
+            'porte_tab': data.get('porte_tab') or '',
+            'porte_an_tab': data.get('porte_an_tab') or '',
+            'uco_valor': data.get('uco_valor') or '',
+            'filme_valor': data.get('filme_valor') or '',
+            'incidencias': data.get('incidencias') or '',
+            'ajuste_porte_pct': data.get('ajuste_porte_pct') or '',
+            'ajuste_porte_an_pct': data.get('ajuste_porte_an_pct') or '',
+        }
+        label_parts = []
+        codigo_label = (restore_payload.get('codigo') or '').strip()
+        if codigo_label:
+            label_parts.append(codigo_label)
+        codes_list = restore_payload.get('codigos') or []
+        if codes_list:
+            snippet = ', '.join([str(c) for c in codes_list[:2]])
+            if len(codes_list) > 2:
+                snippet += ', ...'
+            label_parts.append(f"codigos {snippet}")
+        versao_label = (restore_payload.get('versao') or '').strip()
+        if versao_label:
+            label_parts.append(versao_label)
+        label_raw = ' | '.join(filter(None, label_parts)) or 'Simulacao CBHPM'
+        label = unicodedata.normalize('NFKD', label_raw).encode('ascii', 'ignore').decode()
+        signature_source = json.dumps({'type': 'cbhpm', 'payload': restore_payload}, sort_keys=True).encode('utf-8')
+        entry_id = hashlib.md5(signature_source).hexdigest()[:10]
+        _store_history_entry({
+            'type': 'cbhpm',
+            'id': entry_id,
+            'signature': f'cbhpm:{entry_id}',
+            'url_fragment': f'sim_hist={entry_id}',
+            'label': label[:80],
+            'timestamp': datetime.now().strftime('%d/%m %H:%M'),
+            'payload': restore_payload,
+        })
+    return jsonify(payload), status
+
+
+@app.route('/api/simulacao_cbhpm/pdf', methods=['POST'])
+@login_required
+def export_simulacao_pdf():
+    data = request.get_json(force=True, silent=True) or {}
+    payload, status = _compute_simulacao_cbhpm(data)
+    if status != 200:
+        return jsonify(payload), status
+
+    rules_meta = payload.get('cbhpm_rules_info') or {}
+    if not rules_meta:
+        _, rules_model = _get_active_cbhpm_ruleset(return_model=True)
+        rules_meta = {
+            'nome': getattr(rules_model, 'nome', 'Padrao'),
+            'versao': getattr(rules_model, 'versao', None),
+            'descricao': getattr(rules_model, 'descricao', None),
+            'id': getattr(rules_model, 'id', None),
+        }
+
+    def fmt_brl(value):
+        if value in (None, '', 'None'):
+            return '-'
+        try:
+            val = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return str(value)
+        formatted = f"{val:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        return f"R$ {formatted}"
+
+    def fmt_pct(value):
+        if value in (None, '', 'None'):
+            return '-'
+        try:
+            val = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return str(value)
+        return f"{val:.2f}%".replace('.', ',')
+
+    def fmt_text(value, placeholder='-'):
+        if value in (None, '', 'None'):
+            return placeholder
+        return str(value)
+
+    logo_max_height = 18 * mm
+
+    def load_logo_bytes(cache: dict[str, bytes] = {}) -> bytes | None:
+
+        def _bitmap_to_bytes(path_logo: str):
+            try:
+                from PIL import Image as PILImage  # type: ignore
+            except ImportError:
+                return None
+            try:
+                with PILImage.open(path_logo) as opened:
+                    opened.load()
+                    if opened.mode not in ('RGB', 'RGBA'):
+                        opened = opened.convert('RGBA')
+                    if opened.mode == 'RGBA':
+                        white_bg = PILImage.new('RGBA', opened.size, (255, 255, 255, 255))
+                        opened = PILImage.alpha_composite(white_bg, opened)
+                    buffer = io.BytesIO()
+                    opened.convert('RGB').save(buffer, format='PNG')
+                    return buffer.getvalue()
+            except Exception:
+                return None
+
+        def _svg_to_bytes(path_logo: str):
+            try:
+                from svglib.svglib import svg2rlg  # type: ignore
+                from reportlab.graphics import renderPM  # type: ignore
+            except ImportError:
+                return None
+            try:
+                drawing = svg2rlg(path_logo)
+            except Exception:
+                return None
+            if not drawing or not getattr(drawing, 'height', None):
+                return None
+            try:
+                scale = logo_max_height / float(drawing.height)
+                drawing.scale(scale, scale)
+                drawing.width = drawing.width * scale
+                drawing.height = drawing.height * scale
+                return renderPM.drawToString(drawing, fmt='PNG')
+            except Exception:
+                return None
+
+        def _smart_to_bytes(path_logo: str):
+            try:
+                with open(path_logo, 'rb') as fh:
+                    head = fh.read(256).lstrip()
+            except OSError:
+                return None
+            if head.startswith(b'<svg'):
+                return _svg_to_bytes(path_logo)
+            return _bitmap_to_bytes(path_logo)
+
+        candidates = [
+            ('logo-pdf.svg', _svg_to_bytes),
+            ('logo-pdf.png', _smart_to_bytes),
+            ('logo-menu.png', _bitmap_to_bytes),
+            ('logo-header.png', _bitmap_to_bytes),
+            ('logo-login.png', _bitmap_to_bytes),
+        ]
+
+        for filename, loader in candidates:
+            path_logo = os.path.join(app.root_path, 'static', filename)
+            if not os.path.exists(path_logo):
+                continue
+
+            cache_key = os.path.abspath(path_logo)
+            if cache_key not in cache:
+                cache[cache_key] = loader(path_logo) or b''
+
+            data = cache.get(cache_key) or b''
+            if data:
+                setattr(load_logo_bytes, 'last_static_name', filename)
+                return data
+
+        return None
+
+    generated_at = datetime.now().strftime('%d/%m/%Y %H:%M')
+    logo_bytes = load_logo_bytes()
+    logo_static_name = getattr(load_logo_bytes, 'last_static_name', None)
+    logo_static_path = f'static/{logo_static_name}' if logo_static_name else None
+    logo_uri = None
+    if logo_bytes:
+        import base64
+        logo_uri = f"data:image/png;base64,{base64.b64encode(logo_bytes).decode('ascii')}"
+
+    meta_rows = []
+    meta_rows.append({'label': 'UF', 'value': fmt_text(data.get('uf') or 'Todos')})
+    meta_rows.append({'label': 'Versão referência', 'value': fmt_text(payload.get('versao_base') or data.get('versao') or '-')})
+    meta_rows.append({'label': 'Tabela de Porte', 'value': fmt_text(payload.get('porte_tabela_usada'))})
+    meta_rows.append({'label': 'Tabela Porte AN', 'value': fmt_text(payload.get('porte_an_tabela_usada'))})
+    meta_rows.append({'label': 'Ajuste Porte %', 'value': fmt_pct(payload.get('ajuste_porte_pct'))})
+    meta_rows.append({'label': 'Ajuste Porte AN %', 'value': fmt_pct(payload.get('ajuste_porte_an_pct'))})
+    meta_rows.append({'label': 'Valor UCO', 'value': fmt_brl(payload.get('uco_valor'))})
+    meta_rows.append({'label': 'Incidências', 'value': fmt_text(data.get('incidencias') or '-')})
+
+    requested_codes = []
+    if isinstance(data.get('codigos'), list):
+        requested_codes.extend([str(c).strip() for c in data.get('codigos') if c])
+    if data.get('codigo'):
+        requested_codes.append(str(data.get('codigo')).strip())
+    codes_from_payload = []
+    if isinstance(payload.get('itens'), list):
+        codes_from_payload.extend([it.get('codigo') for it in payload['itens'] if it.get('codigo')])
+    if payload.get('codigo'):
+        codes_from_payload.append(payload.get('codigo'))
+    merged_codes = []
+    for code in requested_codes + codes_from_payload:
+        if code and code not in merged_codes:
+            merged_codes.append(code)
+
+    if payload.get('descricao'):
+        meta_rows.append({'label': 'Procedimento base', 'value': fmt_text(payload.get('descricao'))})
+    if payload.get('itens'):
+        meta_rows.append({'label': 'Quantidade de itens', 'value': str(len(payload['itens']))})
+
+    limit = 12
+    codes_preview = ', '.join(merged_codes[:limit]) if merged_codes else ''
+    codes_extra = max(len(merged_codes) - limit, 0) if merged_codes else 0
+
+    itens = payload.get('itens') or []
+    itens_rows = []
+    for item in itens:
+        aux_raw = item.get('auxiliares_detalhe') or []
+        aux_detail = []
+        for det in aux_raw:
+            aux_detail.append({
+                'indice': det.get('indice'),
+                'percentual': fmt_pct(det.get('percentual_pct')),
+                'valor': fmt_brl(det.get('valor')),
+            })
+        itens_rows.append({
+            'codigo': fmt_text(item.get('codigo')),
+            'descricao': fmt_text(item.get('descricao')),
+            'total_porte': fmt_brl(item.get('total_porte')),
+            'total_filme': fmt_brl(item.get('total_filme')),
+            'total_uco': fmt_brl(item.get('total_uco')),
+            'total_porte_an': fmt_brl(item.get('total_porte_an')),
+            'total_auxiliares': fmt_brl(item.get('total_auxiliares')),
+            'total': fmt_brl(item.get('total')),
+            'auxiliares_detalhe': aux_detail,
+            'auxiliares_qtd': len(aux_detail),
+        })
+
+    fallback = {
+        'codigo': fmt_text(payload.get('codigo') or data.get('codigo') or '-'),
+        'descricao': fmt_text(payload.get('descricao') or ''),
+    }
+
+    summary_labels = [
+        ('Total Porte', fmt_brl(payload.get('total_porte'))),
+        ('Total Filme', fmt_brl(payload.get('total_filme'))),
+        ('Total UCO', fmt_brl(payload.get('total_uco'))),
+        ('Total Porte AN', fmt_brl(payload.get('total_porte_an'))),
+        ('Total Auxiliares', fmt_brl(payload.get('total_auxiliares'))),
+        ('Total Geral', fmt_brl(payload.get('total'))),
+    ]
+
+    summary_rows = [
+        {
+            'label': label,
+            'value': value,
+            'highlight': False,
+        }
+        for label, value in summary_labels
+    ]
+    if summary_rows:
+        summary_rows[-1]['highlight'] = True
+
+    context = {
+        'generated_at': generated_at,
+        'logo_data_uri': logo_uri,
+        'logo_height_mm': 18,
+        'logo_static_path': logo_static_path,
+        'meta_rows': meta_rows,
+        'codes_preview': codes_preview,
+        'codes_extra': codes_extra,
+        'itens': itens_rows,
+        'fallback': fallback,
+        'summary_rows': summary_rows,
+        'logo_bytes': logo_bytes,
+    }
+    context['cbhpm_rules_info'] = rules_meta
+
+    html_output = render_template('simulacao_cbhpm_pdf.html', **context)
+
+    def render_reportlab_pdf(ctx: dict) -> bytes:
+        buffer_rl = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer_rl,
+            pagesize=A4,
+            leftMargin=25 * mm,
+            rightMargin=25 * mm,
+            topMargin=30 * mm,
+            bottomMargin=20 * mm,
+        )
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            'PDFTitle',
+            parent=styles['Title'],
+            fontSize=18,
+            leading=22,
+            textColor=colors.HexColor('#0f172a'),
+            alignment=2,
+        )
+        header_info_style = ParagraphStyle(
+            'PDFHeaderInfo',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=colors.HexColor('#475569'),
+            alignment=2,
+        )
+        meta_label_style = ParagraphStyle(
+            'MetaLabel', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#475569'), leading=12
+        )
+        meta_value_style = ParagraphStyle(
+            'MetaValue', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor('#111827'), leading=12
+        )
+        table_header_style = ParagraphStyle(
+            'TableHeader', parent=styles['Normal'], alignment=1, fontSize=10, textColor=colors.white, leading=12
+        )
+        table_text_style = ParagraphStyle(
+            'TableText', parent=styles['Normal'], fontSize=9, textColor=colors.HexColor('#111827'), leading=12
+        )
+
+        story = []
+        logo_img = None
+        if ctx.get('logo_bytes'):
+            try:
+                logo_img = Image(io.BytesIO(ctx['logo_bytes']))
+                scale = logo_max_height / logo_img.imageHeight
+                logo_img.drawHeight = logo_max_height
+                logo_img.drawWidth = logo_img.imageWidth * scale
+                logo_img.hAlign = 'LEFT'
+            except Exception:
+                logo_img = None
+
+        header_title = Paragraph('<b>Relatório de Simulação CBHPM</b>', title_style)
+        header_info = Paragraph(f"Gerado em {html.escape(ctx['generated_at'])}", header_info_style)
+        if logo_img:
+            logo_width = logo_img.drawWidth + 6
+            col_widths = [logo_width, doc.width - logo_width]
+        else:
+            col_widths = [doc.width * 0.25, doc.width * 0.75]
+        header_data = [
+            [logo_img if logo_img else '', header_title],
+            ['', header_info],
+        ]
+        header_table = Table(header_data, colWidths=col_widths)
+        header_table.setStyle(
+            TableStyle([
+                ('SPAN', (0, 0), (0, 1)),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+                ('ALIGN', (1, 1), (1, 1), 'RIGHT'),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ])
+        )
+        story.append(header_table)
+        story.append(Spacer(0, 16))
+
+        meta_rows_ctx = ctx.get('meta_rows') or []
+        if meta_rows_ctx:
+            rows = []
+            for i in range(0, len(meta_rows_ctx), 2):
+                left = meta_rows_ctx[i]
+                right = meta_rows_ctx[i + 1] if i + 1 < len(meta_rows_ctx) else {'label': '', 'value': ''}
+                rows.append([
+                    Paragraph(f"<b>{html.escape(str(left['label']))}</b>", meta_label_style),
+                    Paragraph(html.escape(str(left['value'])), meta_value_style),
+                    Paragraph(f"<b>{html.escape(str(right['label']))}</b>", meta_label_style) if right['label'] else '',
+                    Paragraph(html.escape(str(right['value'])), meta_value_style) if right['label'] else '',
+                ])
+            meta_table = Table(rows, colWidths=[doc.width * 0.18, doc.width * 0.32, doc.width * 0.18, doc.width * 0.32])
+            meta_table.setStyle(
+                TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#f8fafc')),
+                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#e2e8f0')),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ])
+            )
+            story.append(meta_table)
+            story.append(Spacer(0, 12))
+
+        if ctx.get('codes_preview'):
+            codes_text = f"<b>Códigos selecionados:</b> {html.escape(ctx['codes_preview'])}"
+            if ctx.get('codes_extra'):
+                codes_text += f"<br/><font size=9 color='#475569'>+{ctx['codes_extra']} código(s) adicional(is) não exibido(s).</font>"
+            story.append(Paragraph(codes_text, meta_value_style))
+            story.append(Spacer(0, 10))
+
+        itens_ctx = ctx.get('itens') or []
+        if itens_ctx:
+            table_data = [[
+                Paragraph('<b>Código</b>', table_header_style),
+                Paragraph('<b>Descrição</b>', table_header_style),
+                Paragraph('<b>Total Porte</b>', table_header_style),
+                Paragraph('<b>Total Filme</b>', table_header_style),
+                Paragraph('<b>Total UCO</b>', table_header_style),
+                Paragraph('<b>Total Porte AN</b>', table_header_style),
+                Paragraph('<b>Auxiliares</b>', table_header_style),
+                Paragraph('<b>Total</b>', table_header_style),
+            ]]
+            for item in itens_ctx:
+                table_data.append([
+                    Paragraph(html.escape(item['codigo']), table_text_style),
+                    Paragraph(html.escape(item['descricao']), table_text_style),
+                    Paragraph(item['total_porte'], table_text_style),
+                    Paragraph(item['total_filme'], table_text_style),
+                    Paragraph(item['total_uco'], table_text_style),
+                    Paragraph(item['total_porte_an'], table_text_style),
+                    Paragraph(item['total_auxiliares'], table_text_style),
+                    Paragraph(item['total'], table_text_style),
+                ])
+            col_widths = [
+                doc.width * 0.1,
+                doc.width * 0.4,
+                doc.width * 0.1,
+                doc.width * 0.1,
+                doc.width * 0.1,
+                doc.width * 0.1,
+                doc.width * 0.1,
+                doc.width * 0.0 + 40,
+            ]
+            resultados_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+            resultados_table.setStyle(
+                TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#0f766e')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (2, 1), (-1, -1), 'RIGHT'),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f1f5f9')]),
+                    ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('TOPPADDING', (0, 0), (-1, 0), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ])
+            )
+            story.append(resultados_table)
+            story.append(Spacer(0, 12))
+        else:
+            fallback_ctx = ctx.get('fallback') or {}
+            story.append(Paragraph(
+                f"<b>Código:</b> {html.escape(fallback_ctx.get('codigo', '-'))}",
+                meta_value_style,
+            ))
+            if fallback_ctx.get('descricao'):
+                story.append(Paragraph(f"<b>Descrição:</b> {html.escape(fallback_ctx['descricao'])}", meta_value_style))
+            story.append(Spacer(0, 10))
+
+        summary_rows_ctx = ctx.get('summary_rows') or []
+        if summary_rows_ctx:
+            rows = []
+            highlight_map = []
+            for i in range(0, len(summary_rows_ctx), 2):
+                left = summary_rows_ctx[i]
+                right = summary_rows_ctx[i + 1] if i + 1 < len(summary_rows_ctx) else {'label': '', 'value': '', 'highlight': False}
+                highlight_map.append(bool(left.get('highlight') or right.get('highlight')))
+                rows.append([
+                    Paragraph(f"<b>{html.escape(left['label'])}</b>", meta_label_style),
+                    Paragraph(html.escape(left['value']), meta_value_style),
+                    Paragraph(f"<b>{html.escape(right['label'])}</b>", meta_label_style) if right['label'] else '',
+                    Paragraph(html.escape(right['value']), meta_value_style) if right['label'] else '',
+                ])
+            summary_table = Table(rows, colWidths=[doc.width * 0.2, doc.width * 0.3, doc.width * 0.2, doc.width * 0.3])
+            summary_table.setStyle(
+                TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#ecfeff')),
+                    ('BOX', (0, 0), (-1, -1), 0.6, colors.HexColor('#0891b2')),
+                    ('INNERGRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#bae6fd')),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('LEFTPADDING', (0, 0), (-1, -1), 6),
+                    ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ])
+            )
+            for idx, highlight in enumerate(highlight_map):
+                if highlight:
+                    summary_table.setStyle(
+                        TableStyle([
+                            ('BACKGROUND', (0, idx), (-1, idx), colors.HexColor('#0f766e')),
+                            ('TEXTCOLOR', (0, idx), (-1, idx), colors.white),
+                            ('FONTNAME', (0, idx), (-1, idx), 'Helvetica-Bold'),
+                        ])
+                    )
+            story.append(summary_table)
+
+        def _footer(canvas_obj, doc_obj):
+            canvas_obj.saveState()
+            canvas_obj.setStrokeColor(colors.HexColor('#cbd5e1'))
+            canvas_obj.setLineWidth(0.5)
+            canvas_obj.line(doc_obj.leftMargin, 15, doc_obj.leftMargin + doc_obj.width, 15)
+            canvas_obj.setFont('Helvetica', 9)
+            canvas_obj.setFillColor(colors.HexColor('#475569'))
+            canvas_obj.drawString(doc_obj.leftMargin, 5, f"Sistema de Simulação • Página {doc_obj.page}")
+            canvas_obj.restoreState()
+
+        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+        buffer_rl.seek(0)
+        return buffer_rl.getvalue()
+
+    try:
+        from weasyprint import HTML  # type: ignore
+
+        pdf_bytes = HTML(string=html_output, base_url=app.root_path).write_pdf()
+    except Exception as exc:
+        app.logger.warning('WeasyPrint indisponível (%s); usando ReportLab fallback.', exc)
+        pdf_bytes = render_reportlab_pdf(context)
+
+    buffer = io.BytesIO(pdf_bytes)
+    buffer.seek(0)
+    return send_file(buffer, mimetype='application/pdf', as_attachment=True, download_name='simulacao.pdf')
+
+
+@app.route('/api/simulacao_cbhpm/xlsx', methods=['POST'])
+@login_required
+def export_simulacao_xlsx():
+    data = request.get_json(force=True, silent=True) or {}
+    payload, status = _compute_simulacao_cbhpm(data)
+    if status != 200:
+        return jsonify(payload), status
+
+    def to_number(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError, InvalidOperation):
+            return 0.0
+
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    worksheet = workbook.add_worksheet("Simulacao")
+
+    bold = workbook.add_format({'bold': True})
+    money = workbook.add_format({'num_format': 'R$ #,##0.00'})
+
+    headers = ["Codigo", "Descricao", "Total Porte", "Total Filme", "Total UCO", "Total Porte AN", "Total Auxiliares", "Total"]
+    for col, header in enumerate(headers):
+        worksheet.write(0, col, header, bold)
+
+    row_idx = 1
+    itens = payload.get('itens') or []
+    if itens:
+        for item in itens:
+            worksheet.write(row_idx, 0, item.get('codigo'))
+            worksheet.write(row_idx, 1, item.get('descricao') or '')
+            worksheet.write_number(row_idx, 2, to_number(item.get('total_porte')), money)
+            worksheet.write_number(row_idx, 3, to_number(item.get('total_filme')), money)
+            worksheet.write_number(row_idx, 4, to_number(item.get('total_uco')), money)
+            worksheet.write_number(row_idx, 5, to_number(item.get('total_porte_an')), money)
+            worksheet.write_number(row_idx, 6, to_number(item.get('total_auxiliares')), money)
+            worksheet.write_number(row_idx, 7, to_number(item.get('total')), money)
+            row_idx += 1
+    else:
+        worksheet.write(row_idx, 0, payload.get('codigo'))
+        worksheet.write(row_idx, 1, payload.get('descricao') or '')
+        worksheet.write_number(row_idx, 7, to_number(payload.get('total')), money)
+        row_idx += 1
+
+    worksheet.write(row_idx + 1, 6, 'TOTAL GERAL', bold)
+    worksheet.write_number(row_idx + 1, 7, to_number(payload.get('total')), money)
+
+    workbook.close()
+    output.seek(0)
+
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name='simulacao.xlsx'
+    )
+
+@app.route('/api/simulacao_dtp')
+@login_required
+def api_simulacao_dtp():
+    """Pesquisa itens em 'Diárias, Taxas e Pacotes' por tabela e termo (código ou descrição).
+    Parâmetros: tabela_nome (obrig.), q (código ou parte da descrição), uf (opcional)
+    """
+    tabela_nome = request.args.get('tabela_nome') or ''
+    q = (request.args.get('q') or '').strip()
+    uf = (request.args.get('uf') or '').strip() or None
+    if not tabela_nome:
+        return jsonify({'itens': [], 'total': '0'})
+    t = Tabela.query.filter_by(nome=tabela_nome, tipo_tabela='diarias_taxas_pacotes').first()
+    if not t:
+        return jsonify({'itens': [], 'total': '0'})
+    query = db.session.query(Procedimento).filter(Procedimento.id_tabela == t.id)
+    if uf:
+        query = query.filter(or_(Procedimento.uf == uf, t.uf == uf))
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(Procedimento.codigo == q, Procedimento.codigo.ilike(f"{q}%"), Procedimento.descricao.ilike(like)))
+    rows = query.order_by(Procedimento.codigo).limit(200).all()
+    itens = [{'codigo': r.codigo, 'descricao': r.descricao, 'valor': (str(r.valor) if r.valor is not None else None)} for r in rows]
+    total = sum([_as_decimal(r.valor) or Decimal('0') for r in rows])
+    return jsonify({'itens': itens, 'total': str(total)})
+
+
+@app.route('/api/prestadores_por_codigo')
+@login_required
+def api_prestadores_por_codigo():
+    """Retorna a lista de prestadores que possuem o código informado
+    dentro da tabela selecionada e UF opcional.
+    Parâmetros: tabela_nome, codigo, uf (opcional)
+    """
+    tabela_nome = request.args.get('tabela_nome')
+    codigo = (request.args.get('codigo') or '').strip()
+    uf = request.args.get('uf')
+    if not tabela_nome or not codigo:
+        return jsonify([])
+
+    # Extrai somente o código caso venha no formato "codigo - descricao"
+    if ' - ' in codigo:
+        codigo = codigo.split(' - ', 1)[0].strip()
+
+    q = db.session.query(Procedimento.prestador).join(Tabela, Procedimento.id_tabela == Tabela.id)
+    q = q.filter(Tabela.nome == tabela_nome)
+    if uf:
+        q = q.filter(or_(Tabela.uf == uf, Procedimento.uf == uf))
+    # Match por igualdade ou prefixo
+    q = q.filter(or_(Procedimento.codigo == codigo, Procedimento.codigo.ilike(f"{codigo}%")))
+    q = q.filter((Procedimento.prestador.isnot(None)) & (Procedimento.prestador != ''))
+    prestadores = [r[0] for r in q.distinct().order_by(Procedimento.prestador).all()]
+    return jsonify(prestadores)
+
+
+@app.route('/api/versoes_por_codigo')
+@login_required
+def api_versoes_por_codigo():
+    tabela_nome = request.args.get('tabela_nome')
+    codigo = (request.args.get('codigo') or '').strip()
+    uf = request.args.get('uf')
+    if not codigo:
+        return jsonify([])
+    if ' - ' in codigo:
+        codigo = codigo.split(' - ', 1)[0].strip()
+    qv = db.session.query(Tabela.nome).join(CBHPMItem, CBHPMItem.id_tabela == Tabela.id).filter(Tabela.tipo_tabela == 'cbhpm')
+    if uf:
+        qv = qv.filter(or_(Tabela.uf == uf, CBHPMItem.uf == uf))
+    qv = qv.filter(or_(CBHPMItem.codigo == codigo, CBHPMItem.codigo.ilike(f"{codigo}%")))
+    versoes = [r[0] for r in qv.distinct().order_by(Tabela.nome).all()]
+    return jsonify(versoes)
+
+
+@app.route('/gerenciar-usuarios')
+@admin_required
+def gerenciar_usuarios():
+    usuarios = Usuario.query.all()
+    return render_template('gerenciar-usuarios.html', usuarios=usuarios)
+
+
+@app.route('/gerenciar-operadoras')
+@admin_required
+def gerenciar_operadoras():
+    operadoras = Operadora.query.all()
+    return render_template('gerenciar-operadoras.html', operadoras=operadoras)
+
+
+@app.route('/gerenciar-tabelas')
+@admin_required
+def gerenciar_tabelas():
+    tabelas = Tabela.query.all()
+    operadoras = Operadora.query.all()
+    cbhpm_tabelas = Tabela.query.filter_by(tipo_tabela='cbhpm').order_by(Tabela.nome).all()
+    return render_template('gerenciar-tabelas.html', tabelas=tabelas, operadoras=operadoras, UFS=BR_UFS, cbhpm_tabelas=cbhpm_tabelas)
+
+
+
+@app.route('/cbhpm/regras')
+@admin_required
+def cbhpm_rules():
+    status = request.args.get('status')
+    rulesets = (
+        CBHPMRuleSet.query
+        .order_by(CBHPMRuleSet.ativo.desc(), CBHPMRuleSet.atualizado_em.desc())
+        .all()
+    )
+    return render_template(
+        'cbhpm_rules_list.html',
+        rulesets=rulesets,
+        status=status,
+        default_rules=DEFAULT_CBHPM_RULES
+    )
+
+
+@app.route('/cbhpm/regras/nova', methods=['GET', 'POST'])
+@admin_required
+def cbhpm_rules_new():
+    default_rules = _clone_default_cbhpm_rules()
+    error = None
+    form_data = {
+        'nome': '',
+        'versao': '',
+        'descricao': '',
+        'ativo': False,
+        'regras': json.dumps(default_rules, indent=2, ensure_ascii=False),
+        'regras_dict': default_rules
+    }
+    if request.method == 'POST':
+        nome = (request.form.get('nome') or '').strip()
+        versao = (request.form.get('versao') or '').strip()
+        descricao = (request.form.get('descricao') or '').strip()
+        ativo = request.form.get('ativo') == 'on'
+        regras_raw = (request.form.get('regras') or '').strip()
+        parsed_rules = None
+        try:
+            parsed_rules = json.loads(regras_raw or '{}')
+            if not isinstance(parsed_rules, dict):
+                raise ValueError('Estrutura deve ser um objeto JSON.')
+        except Exception as exc:
+            error = f'JSON invalido: {exc}'
+        regras_json = parsed_rules if isinstance(parsed_rules, dict) else {}
+        if not nome:
+            error = 'Informe um nome para a regra.'
+        if not error:
+            try:
+                if ativo:
+                    CBHPMRuleSet.query.filter(CBHPMRuleSet.ativo.is_(True)).update({'ativo': False}, synchronize_session=False)
+                ruleset = CBHPMRuleSet(
+                    nome=nome,
+                    versao=versao or None,
+                    descricao=descricao or None,
+                    ativo=ativo,
+                    regras=regras_json
+                )
+                db.session.add(ruleset)
+                db.session.commit()
+                return redirect(url_for('cbhpm_rules', status='created'))
+            except Exception as exc:
+                db.session.rollback()
+                error = f'Erro ao gravar: {exc}'
+        form_data.update({
+            'nome': nome,
+            'versao': versao,
+            'descricao': descricao,
+            'ativo': ativo,
+            'regras': regras_raw or '',
+            'regras_dict': regras_json if isinstance(parsed_rules, dict) else form_data.get('regras_dict')
+        })
+    return render_template('cbhpm_rules_form.html', ruleset=None, form_data=form_data, error=error)
+
+
+@app.route('/cbhpm/regras/<int:ruleset_id>/editar', methods=['GET', 'POST'])
+@admin_required
+def cbhpm_rules_edit(ruleset_id: int):
+    ruleset = CBHPMRuleSet.query.get_or_404(ruleset_id)
+    error = None
+    if request.method == 'POST':
+        nome = (request.form.get('nome') or '').strip()
+        versao = (request.form.get('versao') or '').strip()
+        descricao = (request.form.get('descricao') or '').strip()
+        ativo = request.form.get('ativo') == 'on'
+        regras_raw = (request.form.get('regras') or '').strip()
+        parsed_rules = None
+        try:
+            parsed_rules = json.loads(regras_raw or '{}')
+            if not isinstance(parsed_rules, dict):
+                raise ValueError('Estrutura deve ser um objeto JSON.')
+        except Exception as exc:
+            error = f'JSON invalido: {exc}'
+        regras_json = parsed_rules if isinstance(parsed_rules, dict) else {}
+        if not nome:
+            error = 'Informe um nome para a regra.'
+        if not error:
+            try:
+                ruleset.nome = nome
+                ruleset.versao = versao or None
+                ruleset.descricao = descricao or None
+                ruleset.regras = regras_json
+                if ativo:
+                    CBHPMRuleSet.query.filter(
+                        CBHPMRuleSet.id != ruleset.id,
+                        CBHPMRuleSet.ativo.is_(True)
+                    ).update({'ativo': False}, synchronize_session=False)
+                ruleset.ativo = ativo
+                db.session.commit()
+                return redirect(url_for('cbhpm_rules', status='updated'))
+            except Exception as exc:
+                db.session.rollback()
+                error = f'Erro ao gravar: {exc}'
+        form_data = {
+            'nome': nome,
+            'versao': versao,
+            'descricao': descricao,
+            'ativo': ativo,
+            'regras': regras_raw or '',
+            'regras_dict': regras_json if isinstance(parsed_rules, dict) else (ruleset.regras if isinstance(ruleset.regras, dict) else {})
+        }
+        return render_template('cbhpm_rules_form.html', ruleset=ruleset, form_data=form_data, error=error)
+    current_rules = ruleset.regras if isinstance(ruleset.regras, dict) else {}
+    form_data = {
+        'nome': ruleset.nome,
+        'versao': ruleset.versao or '',
+        'descricao': ruleset.descricao or '',
+        'ativo': bool(ruleset.ativo),
+        'regras': json.dumps(current_rules, indent=2, ensure_ascii=False),
+        'regras_dict': current_rules
+    }
+    return render_template('cbhpm_rules_form.html', ruleset=ruleset, form_data=form_data, error=error)
+
+
+@app.route('/cbhpm/regras/<int:ruleset_id>/ativar', methods=['POST'])
+@admin_required
+def cbhpm_rules_activate(ruleset_id: int):
+    try:
+        ruleset = CBHPMRuleSet.query.get_or_404(ruleset_id)
+        CBHPMRuleSet.query.filter(
+            CBHPMRuleSet.id != ruleset.id,
+            CBHPMRuleSet.ativo.is_(True)
+        ).update({'ativo': False}, synchronize_session=False)
+        ruleset.ativo = True
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+    return redirect(url_for('cbhpm_rules', status='activated'))
+
+
+# --- 4. APIs básicas (CRUD mínimo) ---
+
+# Operadoras
+@app.route('/api/operadoras', methods=['GET', 'POST'])
+@admin_required
+def api_operadoras():
+    if request.method == 'GET':
+        data = [
+            {"id": o.id, "nome": o.nome, "cnpj": o.cnpj, "status": o.status}
+            for o in Operadora.query.all()
+        ]
+        return jsonify(data)
+    payload = request.json or {}
+    o = Operadora(nome=payload.get('nome'), cnpj=payload.get('cnpj'), status=payload.get('status', 'Ativa'))
+    db.session.add(o)
+    db.session.commit()
+    return jsonify({"id": o.id}), 201
+
+
+@app.route('/api/operadoras/<int:oid>', methods=['PUT', 'DELETE'])
+@admin_required
+def api_operadora_item(oid):
+    o = Operadora.query.get_or_404(oid)
+    if request.method == 'PUT':
+        payload = request.json or {}
+        o.nome = payload.get('nome', o.nome)
+        o.cnpj = payload.get('cnpj', o.cnpj)
+        o.status = payload.get('status', o.status)
+        db.session.commit()
+        return jsonify({"ok": True})
+    db.session.delete(o)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+# --- 5. Inicialização ---
+def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
+    """Cria as tabelas com tentativas/retry para aguardar o MySQL.
+    Útil quando o container web inicia antes do banco estar pronto.
+    """
+    last_err = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            with app.app_context():
+                db.create_all()
+                # Tentativa de migração leve para acrescentar colunas caso já exista a tabela
+                try:
+                    db.session.execute(text("ALTER TABLE tabelas ADD COLUMN prestador VARCHAR(255) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE tabelas ADD COLUMN tipo_tabela VARCHAR(50) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE tabelas ADD COLUMN uf VARCHAR(2) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE tabelas ADD COLUMN uco_valor DECIMAL(12,2) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                # Migração leve: acrescentar coluna UF em operadoras
+                try:
+                    db.session.execute(text("ALTER TABLE operadoras ADD COLUMN uf VARCHAR(2) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                # Migração leve: acrescentar colunas em procedimentos
+                try:
+                    db.session.execute(text("ALTER TABLE procedimentos ADD COLUMN prestador VARCHAR(255) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE procedimentos ADD COLUMN uf VARCHAR(2) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                # Garante criação da tabela CBHPM (se ainda não existir)
+                db.create_all()
+                # Semeia um usuário admin padrão se não existir nenhum usuário
+                try:
+                    if db.session.query(Usuario).count() == 0:
+                        admin_email = os.getenv('ADMIN_EMAIL', 'admin@local')
+                        admin_senha = os.getenv('ADMIN_PASSWORD', 'admin123')
+                        admin_nome = os.getenv('ADMIN_NAME', 'Administrador')
+                        db.session.add(Usuario(nome=admin_nome, email=admin_email, senha=admin_senha, perfil='adm'))
+                        db.session.commit()
+                        print(f"[init] Usuário admin criado: {admin_email} / senha padrão")
+                except Exception:
+                    db.session.rollback()
+
+                print(f"[init] Banco pronto após {attempt} tentativa(s).")
+                try:
+                    if db.session.query(CBHPMRuleSet).count() == 0:
+                        regras_default = json.loads(json.dumps(DEFAULT_CBHPM_RULES))
+                        ruleset = CBHPMRuleSet(
+                            nome='CBHPM Padrão',
+                            versao='Base',
+                            descricao='Criada automaticamente',
+                            ativo=True,
+                            regras=regras_default
+                        )
+                        db.session.add(ruleset)
+                        db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                return
+        except Exception as e:
+            last_err = e
+            print(f"[init] MySQL indisponível (tentativa {attempt}/{max_retries}). Aguardando {delay_seconds}s...")
+            time.sleep(delay_seconds)
+    # Se esgotar
+    raise last_err
+
+
+ensure_db()
+
+
+# --- 6. Usuários (UI) ---
+@app.route('/usuarios/novo', methods=['GET', 'POST'])
+@admin_required
+def usuario_novo():
+    if request.method == 'POST':
+        nome = request.form.get('nome')
+        email = request.form.get('email')
+        senha = request.form.get('senha')
+        perfil = request.form.get('perfil')
+        if not all([nome, email, senha, perfil]):
+            return render_template('usuario-form.html', erro='Preencha todos os campos', modo='novo', form=request.form)
+        if Usuario.query.filter_by(email=email).first():
+            return render_template('usuario-form.html', erro='E-mail já cadastrado', modo='novo', form=request.form)
+        u = Usuario(nome=nome, email=email, senha=senha, perfil=perfil)
+        db.session.add(u)
+        db.session.commit()
+        return redirect(url_for('gerenciar_usuarios'))
+    return render_template('usuario-form.html', modo='novo')
+
+
+@app.route('/usuarios/<int:uid>/editar', methods=['GET', 'POST'])
+@admin_required
+def usuario_editar(uid):
+    u = Usuario.query.get_or_404(uid)
+    if request.method == 'POST':
+        u.nome = request.form.get('nome') or u.nome
+        u.email = request.form.get('email') or u.email
+        new_senha = request.form.get('senha')
+        if new_senha:
+            u.senha = new_senha
+        u.perfil = request.form.get('perfil') or u.perfil
+        db.session.commit()
+        return redirect(url_for('gerenciar_usuarios'))
+    return render_template('usuario-form.html', modo='editar', usuario=u)
+
+
+# --- 7. Operadoras (UI) ---
+BR_UFS = [
+    'AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'
+]
+
+
+@app.route('/operadoras/nova', methods=['GET', 'POST'])
+@admin_required
+def operadora_nova():
+    if request.method == 'POST':
+        nome = request.form.get('nome')
+        uf = request.form.get('uf')
+        cnpj = request.form.get('cnpj')
+        if not nome or not uf:
+            return render_template('operadora-form.html', erro='Nome e UF são obrigatórios', modo='nova', form=request.form, UFS=BR_UFS)
+        o = Operadora(nome=nome, uf=uf, cnpj=cnpj, status='Ativa')
+        db.session.add(o)
+        db.session.commit()
+        return redirect(url_for('gerenciar_operadoras'))
+    return render_template('operadora-form.html', modo='nova', UFS=BR_UFS)
+
+
+@app.route('/operadoras/<int:oid>/editar', methods=['GET', 'POST'])
+@admin_required
+def operadora_editar(oid):
+    o = Operadora.query.get_or_404(oid)
+    if request.method == 'POST':
+        o.nome = request.form.get('nome') or o.nome
+        o.uf = request.form.get('uf') or o.uf
+        o.cnpj = request.form.get('cnpj') or o.cnpj
+        db.session.commit()
+        return redirect(url_for('gerenciar_operadoras'))
+    return render_template('operadora-form.html', modo='editar', operadora=o, UFS=BR_UFS)
+
+
+# --- 8. Importação de Tabelas ---
+def _norm_header(s: str) -> str:
+    s = (s or '').strip()
+    s = ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+    s = s.lower()
+    s = s.replace(' ', '').replace('-', '').replace('_', '')
+    return s
+
+
+def _parse_money(v) -> Decimal:
+    if v is None:
+        return Decimal('0')
+    if isinstance(v, (int, float, Decimal)):
+        return Decimal(str(v))
+    s = str(v).strip()
+    if not s:
+        return Decimal('0')
+    s = s.replace('R$', '').replace(' ', '')
+    s = s.replace('.', '')  # milhar
+    s = s.replace(',', '.')  # decimal
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        return Decimal('0')
+
+
+def _as_decimal(v):
+    try:
+        if v is None:
+            return None
+        if isinstance(v, (int, float, Decimal)):
+            return Decimal(str(v))
+        s = str(v).strip()
+        if s == '' or s == '-':
+            return None
+        # If it uses comma as decimal separator or has currency, treat as money string
+        if (',' in s) or ('R$' in s):
+            return _parse_money(s)
+        # Otherwise, assume dot-decimal and parse directly (to avoid stripping the dot)
+        try:
+            return Decimal(s)
+        except InvalidOperation:
+            return _parse_money(s)
+    except Exception:
+        setattr(load_logo_bytes, 'last_static_name', None)
+        return None
+
+
+def _sum_decimals(values):
+    total = Decimal('0')
+    found = False
+    for v in values:
+        dv = _as_decimal(v)
+        if dv is not None:
+            total += dv
+            found = True
+    return (total if found else None)
+
+
+def _stringify_for_output(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, list):
+        return [_stringify_for_output(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _stringify_for_output(v) for k, v in value.items()}
+    return value
+
+
+def _lookup_porte_valor(operadora_id, uf, nome_hint, porte_codigo):
+    if not porte_codigo:
+        return None
+    q = Tabela.query.filter(Tabela.tipo_tabela == 'porte', Tabela.id_operadora == operadora_id)
+    if uf:
+        q = q.filter(Tabela.uf == uf)
+    # Se existir alguma com nome próximo ao hint, prefere
+    if nome_hint:
+        cand = q.filter(Tabela.nome.ilike(f"%{nome_hint}%")).order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+        if cand:
+            pv = PorteValorItem.query.filter_by(id_tabela=cand.id, porte=str(porte_codigo)).first()
+            if pv:
+                return pv.valor
+    # Fallback: mais recente
+    cand = q.order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+    if cand:
+        pv = PorteValorItem.query.filter_by(id_tabela=cand.id, porte=str(porte_codigo)).first()
+        if pv:
+            return pv.valor
+    return None
+
+
+def _lookup_porte_an_valor(operadora_id, uf, nome_hint, porte_an):
+    if not porte_an:
+        return None
+    q = Tabela.query.filter(Tabela.tipo_tabela == 'porte_anestesico', Tabela.id_operadora == operadora_id)
+    if uf:
+        q = q.filter(Tabela.uf == uf)
+    if nome_hint:
+        cand = q.filter(Tabela.nome.ilike(f"%{nome_hint}%")).order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+        if cand:
+            pv = PorteAnestesicoValorItem.query.filter_by(id_tabela=cand.id, porte_an=str(porte_an)).first()
+            if pv:
+                return pv.valor
+    cand = q.order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+    if cand:
+        pv = PorteAnestesicoValorItem.query.filter_by(id_tabela=cand.id, porte_an=str(porte_an)).first()
+        if pv:
+            return pv.valor
+    return None
+
+
+def _resolve_porte_tabela_nome(operadora_id, uf, nome_hint, porte_codigo):
+    """Resolve o nome da tabela de Porte utilizada seguindo a mesma heurística
+    de _lookup_porte_valor (preferindo por hint; fallback mais recente)."""
+    if not porte_codigo:
+        return None
+    q = Tabela.query.filter(Tabela.tipo_tabela == 'porte', Tabela.id_operadora == operadora_id)
+    if uf:
+        q = q.filter(Tabela.uf == uf)
+    if nome_hint:
+        cand = q.filter(Tabela.nome.ilike(f"%{nome_hint}%")).order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+        if cand:
+            pv = PorteValorItem.query.filter_by(id_tabela=cand.id, porte=str(porte_codigo)).first()
+            if pv:
+                return cand.nome
+    cand = q.order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+    if cand:
+        pv = PorteValorItem.query.filter_by(id_tabela=cand.id, porte=str(porte_codigo)).first()
+        if pv:
+            return cand.nome
+    return None
+
+
+def _resolve_porte_an_tabela_nome(operadora_id, uf, nome_hint, porte_an):
+    """Resolve o nome da tabela de Porte Anestésico utilizada seguindo a mesma
+    heurística de _lookup_porte_an_valor."""
+    if not porte_an:
+        return None
+    q = Tabela.query.filter(Tabela.tipo_tabela == 'porte_anestesico', Tabela.id_operadora == operadora_id)
+    if uf:
+        q = q.filter(Tabela.uf == uf)
+    if nome_hint:
+        cand = q.filter(Tabela.nome.ilike(f"%{nome_hint}%")).order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+        if cand:
+            pv = PorteAnestesicoValorItem.query.filter_by(id_tabela=cand.id, porte_an=str(porte_an)).first()
+            if pv:
+                return cand.nome
+    cand = q.order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc()).first()
+    if cand:
+        pv = PorteAnestesicoValorItem.query.filter_by(id_tabela=cand.id, porte_an=str(porte_an)).first()
+        if pv:
+            return cand.nome
+    return None
+
+
+
+def _clone_default_cbhpm_rules():
+    return json.loads(json.dumps(DEFAULT_CBHPM_RULES))
+
+
+def _get_active_cbhpm_ruleset(return_model: bool = False):
+    ruleset = None
+    try:
+        ruleset = (
+            CBHPMRuleSet.query
+            .filter(CBHPMRuleSet.ativo.is_(True))
+            .order_by(CBHPMRuleSet.atualizado_em.desc())
+            .first()
+        )
+        if not ruleset:
+            ruleset = (
+                CBHPMRuleSet.query
+                .order_by(CBHPMRuleSet.atualizado_em.desc())
+                .first()
+            )
+    except Exception:
+        db.session.rollback()
+        ruleset = None
+    data = _clone_default_cbhpm_rules()
+    if ruleset and isinstance(ruleset.regras, dict) and ruleset.regras:
+        try:
+            data = json.loads(json.dumps(ruleset.regras))
+        except Exception:
+            data = _clone_default_cbhpm_rules()
+    if return_model:
+        return data, ruleset
+    return data
+
+
+def _apply_ruleset_to_breakdown(item: CBHPMItem, tabela_ref: Tabela, breakdown: dict, rules: dict | None):
+    result = dict(breakdown or {})
+    applied = []
+
+    total_porte = _as_decimal(result.get('total_porte'))
+    if total_porte is not None:
+        aux_cfg = (rules or {}).get('auxiliares') or {}
+        current_aux = _as_decimal(result.get('total_auxiliares'))
+        aux_count_raw = getattr(item, 'numero_auxiliares', None)
+        explicit_no_aux = False
+        if aux_count_raw is not None:
+            try:
+                explicit_no_aux = Decimal(str(aux_count_raw)) == Decimal('0')
+            except (InvalidOperation, ValueError):
+                explicit_no_aux = False
+        aux_details = []
+        if (current_aux is None or current_aux == Decimal('0')) and aux_cfg.get('percentuais') and not explicit_no_aux:
+            percentuais = aux_cfg.get('percentuais') or []
+            try:
+                aux_count = int(aux_count_raw) if aux_count_raw is not None else None
+            except (TypeError, ValueError):
+                aux_count = None
+            max_por_porte = aux_cfg.get('max_por_porte') or {}
+            porte_key = str(getattr(item, 'porte', '') or '').strip()
+            max_aux = max_por_porte.get(porte_key, max_por_porte.get('default'))
+            try:
+                max_aux = int(max_aux) if max_aux is not None else None
+            except (TypeError, ValueError):
+                max_aux = None
+            if aux_count is None:
+                aux_count = max_aux if max_aux is not None else len(percentuais)
+            elif max_aux is not None:
+                aux_count = min(aux_count, max_aux)
+            aux_count = max(aux_count or 0, 0)
+            if aux_count and percentuais:
+                computed = Decimal('0')
+                for idx in range(aux_count):
+                    perc = percentuais[min(idx, len(percentuais) - 1)]
+                    perc = Decimal(str(perc))
+                    if perc > 1:
+                        perc = perc / Decimal('100')
+                    if perc <= 0:
+                        continue
+                    value_aux = total_porte * perc
+                    computed += value_aux
+                    perc_display = perc * Decimal('100')
+                    aux_details.append({
+                        'indice': idx + 1,
+                        'percentual_pct': str(perc_display),
+                        'valor': value_aux
+                    })
+                if computed > 0:
+                    result['total_auxiliares'] = computed
+                    result['auxiliares_detalhe'] = aux_details
+                    applied.append({
+                        'component': 'auxiliares',
+                        'rule': 'percentuais',
+                        'quantidade': aux_count
+                    })
+        elif explicit_no_aux:
+            result['total_auxiliares'] = Decimal('0')
+            result['auxiliares_detalhe'] = []
+    if 'auxiliares_detalhe' not in result or result['auxiliares_detalhe'] is None:
+        aux_existing = []
+        for idx, attr in enumerate(['total_1_aux', 'total_2_aux', 'total_3_aux', 'total_4_aux'], start=1):
+            val = _as_decimal(getattr(item, attr, None))
+            if val is not None and val != Decimal('0'):
+                aux_existing.append({
+                    'indice': idx,
+                    'percentual_pct': None,
+                    'valor': val
+                })
+        if aux_existing:
+            result['auxiliares_detalhe'] = aux_existing
+    result['total_porte'] = _as_decimal(result.get('total_porte'))
+    result['total_filme'] = _as_decimal(result.get('total_filme'))
+    result['total_uco'] = _as_decimal(result.get('total_uco'))
+    result['total_porte_an'] = _as_decimal(result.get('total_porte_an'))
+    result['total_auxiliares'] = _as_decimal(result.get('total_auxiliares'))
+
+    multipliers = [
+        ('total_porte', (rules or {}).get('porte'), 'porte'),
+        ('total_filme', (rules or {}).get('filme'), 'filme'),
+        ('total_uco', (rules or {}).get('uco'), 'uco'),
+        ('total_porte_an', (rules or {}).get('porte_an'), 'porte_an'),
+    ]
+    for key, cfg, comp_name in multipliers:
+        if not cfg:
+            continue
+        factor_raw = cfg.get('multiplicador') if isinstance(cfg, dict) else None
+        if factor_raw in (None, '', 'None'):
+            continue
+        try:
+            factor = Decimal(str(factor_raw))
+        except (InvalidOperation, ValueError):
+            continue
+        if factor > Decimal('5'):
+            factor = factor / Decimal('100')
+        if factor < Decimal('0'):
+            factor = Decimal('0')
+        current = result.get(key)
+        if current is None:
+            continue
+        new_value = current * factor
+        if new_value == current:
+            continue
+        result[key] = new_value
+        applied.append({
+            'component': comp_name,
+            'rule': 'multiplicador',
+            'fator': str(factor)
+        })
+
+    result['total'] = _sum_decimals([
+        result.get('total_porte'),
+        result.get('total_filme'),
+        result.get('total_uco'),
+        result.get('total_porte_an'),
+        result.get('total_auxiliares'),
+    ])
+    if applied:
+        result['applied_rules'] = applied
+    return result
+
+def compute_cbhpm_total(item: CBHPMItem, tabela_ref: Tabela, porte_hint: str | None = None, porte_an_hint: str | None = None,
+                        ajuste_porte_pct: Decimal | None = None, ajuste_porte_an_pct: Decimal | None = None, rules: dict | None = None):
+    breakdown = compute_cbhpm_breakdown(
+        item,
+        tabela_ref,
+        porte_hint=porte_hint,
+        porte_an_hint=porte_an_hint,
+        ajuste_porte_pct=ajuste_porte_pct,
+        ajuste_porte_an_pct=ajuste_porte_an_pct,
+        rules=rules,
+    )
+    return breakdown.get('total')
+
+
+def compute_cbhpm_breakdown(item: CBHPMItem, tabela_ref: Tabela, porte_hint: str | None = None, porte_an_hint: str | None = None,
+                            ajuste_porte_pct: Decimal | None = None, ajuste_porte_an_pct: Decimal | None = None, rules: dict | None = None):
+    valor_porte = _as_decimal(item.valor_porte)
+    if valor_porte is None:
+        valor_porte = _lookup_porte_valor(tabela_ref.id_operadora, tabela_ref.uf, (porte_hint or tabela_ref.nome), item.porte)
+    fracao_input = getattr(item, '_fracao_input', None)
+    fracao = _as_decimal(fracao_input) if fracao_input is not None else _as_decimal(item.fracao_porte)
+    if fracao is None or fracao <= Decimal('0'):
+        fracao = Decimal('1')
+    elif fracao_input is None and fracao < Decimal('1'):
+        fracao = Decimal('1')
+    total_porte = None
+    if valor_porte is not None:
+        total_porte = (valor_porte * fracao)
+    if total_porte is None:
+        total_porte = _as_decimal(item.total_porte)
+    if total_porte is not None and ajuste_porte_pct:
+        total_porte = total_porte * (Decimal('1') + (ajuste_porte_pct/Decimal('100')))
+
+    total_filme = _as_decimal(item.total_filme)
+    if total_filme is None:
+        filme = _as_decimal(item.filme)
+        incid = _as_decimal(item.incidencias)
+        if filme is not None:
+            total_filme = (filme * (incid or Decimal('1')))
+
+    total_uco = _as_decimal(item.total_uco)
+    if total_uco is None:
+        uco_qtd = _as_decimal(item.uco)
+        uco_val = _as_decimal(tabela_ref.uco_valor)
+        if uco_qtd is not None and uco_val is not None:
+            total_uco = (uco_qtd * uco_val)
+
+    valor_an = _as_decimal(item.valor_porte_anestesico)
+    if valor_an is None:
+        valor_an = _lookup_porte_an_valor(tabela_ref.id_operadora, tabela_ref.uf, (porte_an_hint or tabela_ref.nome), item.porte_anestesico)
+    total_an = _as_decimal(item.total_porte_anestesico)
+    if total_an is not None and ajuste_porte_an_pct:
+        total_an = total_an * (Decimal('1') + (ajuste_porte_an_pct/Decimal('100')))
+    if total_an is None and valor_an is not None:
+        total_an = valor_an
+
+    total_aux = _as_decimal(item.total_auxiliares)
+    if total_aux is None:
+        total_aux = _sum_decimals([item.total_1_aux, item.total_2_aux, item.total_3_aux, item.total_4_aux])
+
+    breakdown = {
+        'total_porte': total_porte,
+        'total_filme': total_filme,
+        'total_uco': total_uco,
+        'total_porte_an': total_an,
+        'total_auxiliares': total_aux,
+        'total': _sum_decimals([total_porte, total_filme, total_uco, total_an, total_aux]),
+    }
+    ruleset_dict = rules or _get_active_cbhpm_ruleset()
+    breakdown = _apply_ruleset_to_breakdown(item, tabela_ref, breakdown, ruleset_dict)
+    return breakdown
+
+@app.route('/tabelas/importar/diarias-taxas-pacotes', methods=['POST'])
+@admin_required
+def importar_diarias_taxas_pacotes():
+    file = request.files.get('arquivo')
+    nome_tabela = request.form.get('nome_tabela')
+    prestador = request.form.get('prestador')
+    uf = request.form.get('uf')
+    data_vigencia = request.form.get('data_vigencia')  # YYYY-MM-DD
+    operadora_id = request.form.get('operadora_id')
+    substituir = request.form.get('substituir') in ('on', 'true', '1', 'yes', 'sim', 'true')
+
+    if not file or not nome_tabela or not operadora_id:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    # A criação de Tabelas ocorrerá após a leitura do arquivo, podendo ser
+    # uma por prestador (e UF) quando não informado no formulário.
+
+    filename = secure_filename(file.filename or '')
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    linhas = []
+    if ext == 'csv':
+        content = file.read().decode('utf-8-sig', errors='ignore').splitlines()
+        if not content:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [h.strip() for h in content[0].split(',')]
+        keys = [_norm_header(h) for h in headers]
+        for row in content[1:]:
+            cols = row.split(',')
+            item = {keys[i]: (cols[i].strip() if i < len(cols) else '') for i in range(len(keys))}
+            linhas.append(item)
+    elif ext == 'xlsx':
+        try:
+            from openpyxl import load_workbook
+        except Exception:
+            return redirect(url_for('gerenciar_tabelas'))
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [str(h) if h is not None else '' for h in rows[0]]
+        keys = [_norm_header(h) for h in headers]
+        for r in rows[1:]:
+            item = {keys[i]: (r[i] if i < len(keys) else None) for i in range(len(keys))}
+            linhas.append(item)
+    else:
+        db.session.rollback()
+        return redirect(url_for('gerenciar_tabelas'))
+
+    # Importação consolidada: cria uma única Tabela e grava o prestador/UF por item
+    if True:
+        if substituir:
+            subq = db.session.query(Tabela.id).filter(
+                Tabela.nome == nome_tabela,
+                Tabela.id_operadora == int(operadora_id)
+            )
+            db.session.query(Procedimento).filter(Procedimento.id_tabela.in_(subq)).delete(synchronize_session=False)
+            db.session.query(Tabela).filter(
+                Tabela.nome == nome_tabela,
+                Tabela.id_operadora == int(operadora_id)
+            ).delete(synchronize_session=False)
+            db.session.flush()
+
+        tab = Tabela(
+            nome=nome_tabela,
+            prestador=None,
+            tipo_tabela='diarias_taxas_pacotes',
+            uf=uf,
+            id_operadora=int(operadora_id)
+        )
+        if data_vigencia:
+            try:
+                tab.data_vigencia = date.fromisoformat(data_vigencia)
+            except Exception:
+                pass
+        db.session.add(tab)
+        db.session.flush()
+
+        for item in linhas:
+            codigo = item.get('codigo') or item.get('cod')
+            descricao = item.get('descricao') or item.get('descriçao') or item.get('descrição')
+            valor = _parse_money(item.get('valor'))
+            if not codigo or not descricao:
+                continue
+            prest_item = item.get('prestador') or item.get('fornecedor') or item.get('credenciado') or prestador
+            prest_item = str(prest_item).strip() if prest_item is not None else None
+            uf_item = (item.get('uf') or uf)
+            uf_item = str(uf_item).strip() if uf_item else None
+            db.session.add(Procedimento(
+                codigo=str(codigo),
+                descricao=str(descricao),
+                valor=valor,
+                prestador=prest_item or None,
+                uf=uf_item or None,
+                id_tabela=tab.id
+            ))
+
+        db.session.commit()
+        return redirect(url_for('gerenciar_tabelas'))
+
+    if prestador:
+        # Se solicitado, remove tabelas existentes com o mesmo nome/operadora/UF/prestador
+        if substituir:
+            db.session.query(Procedimento).filter(
+                Procedimento.id_tabela.in_(db.session.query(Tabela.id).filter(
+                    Tabela.nome == nome_tabela,
+                    Tabela.id_operadora == int(operadora_id),
+                    (Tabela.uf == uf) if uf else True,
+                    Tabela.prestador == prestador,
+                ))
+            ).delete(synchronize_session=False)
+            db.session.query(Tabela).filter(
+                Tabela.nome == nome_tabela,
+                Tabela.id_operadora == int(operadora_id),
+                (Tabela.uf == uf) if uf else True,
+                Tabela.prestador == prestador,
+            ).delete(synchronize_session=False)
+            db.session.flush()
+        # Importa tudo em uma única tabela usando o prestador do formulário
+        tab = Tabela(
+            nome=nome_tabela,
+            prestador=prestador,
+            tipo_tabela='diarias_taxas_pacotes',
+            uf=uf,
+            id_operadora=int(operadora_id)
+        )
+        if data_vigencia:
+            try:
+                tab.data_vigencia = date.fromisoformat(data_vigencia)
+            except Exception:
+                pass
+        db.session.add(tab)
+        db.session.flush()
+        for item in linhas:
+            codigo = item.get('codigo') or item.get('cod')
+            descricao = item.get('descricao') or item.get('descriçao') or item.get('descrição')
+            valor = _parse_money(item.get('valor'))
+            if not codigo or not descricao:
+                continue
+            db.session.add(Procedimento(codigo=str(codigo), descricao=str(descricao), valor=valor, id_tabela=tab.id))
+    else:
+        # Agrupa por prestador (e UF) vindos do arquivo
+        grupos = {}
+        for item in linhas:
+            codigo = item.get('codigo') or item.get('cod')
+            descricao = item.get('descricao') or item.get('descriçao') or item.get('descrição')
+            valor = _parse_money(item.get('valor'))
+            if not codigo or not descricao:
+                continue
+            prest = item.get('prestador') or item.get('fornecedor') or item.get('credenciado') or ''
+            prest = str(prest).strip() if prest is not None else ''
+            uf_row = (item.get('uf') or uf or '').strip() if item.get('uf') is not None else (uf or '')
+            nome_arq = item.get('tabela') or nome_tabela
+            key = (prest or '-'), (uf_row or '')
+            bucket = grupos.setdefault(key, {"nome": nome_arq or nome_tabela, "items": []})
+            bucket["items"].append((str(codigo), str(descricao), valor))
+
+        # Se solicitado, remove tabelas existentes com os nomes que serão criados
+        if substituir and grupos:
+            nomes_alvo = {g["nome"] for g in grupos.values()}
+            subq = db.session.query(Tabela.id).filter(
+                Tabela.id_operadora == int(operadora_id),
+                Tabela.nome.in_(list(nomes_alvo))
+            )
+            db.session.query(Procedimento).filter(Procedimento.id_tabela.in_(subq)).delete(synchronize_session=False)
+            db.session.query(Tabela).filter(
+                Tabela.id_operadora == int(operadora_id),
+                Tabela.nome.in_(list(nomes_alvo))
+            ).delete(synchronize_session=False)
+            db.session.flush()
+
+        for (prest_key, uf_key), bucket in grupos.items():
+            tab = Tabela(
+                nome=bucket["nome"],
+                prestador=None if prest_key == '-' else prest_key,
+                tipo_tabela='diarias_taxas_pacotes',
+                uf=(uf_key or None),
+                id_operadora=int(operadora_id)
+            )
+            if data_vigencia:
+                try:
+                    tab.data_vigencia = date.fromisoformat(data_vigencia)
+                except Exception:
+                    pass
+            db.session.add(tab)
+            db.session.flush()
+            for codigo, descricao, valor in bucket["items"]:
+                db.session.add(Procedimento(codigo=codigo, descricao=descricao, valor=valor, id_tabela=tab.id))
+
+    db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+@app.route('/tabelas/<int:tid>/excluir', methods=['POST'])
+@admin_required
+def tabela_excluir(tid):
+    t = Tabela.query.get_or_404(tid)
+    # Remove itens vinculados e depois a tabela
+    db.session.query(Procedimento).filter_by(id_tabela=tid).delete(synchronize_session=False)
+    db.session.delete(t)
+    db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+@app.route('/tabelas/uco/definir', methods=['POST'])
+@admin_required
+def definir_uco_cbhpm():
+    updated = 0
+    form = request.form or {}
+    for key, value in form.items():
+        if not key.startswith('uco_'):
+            continue
+        try:
+            tid = int(key.split('_', 1)[1])
+        except Exception:
+            continue
+        tab = Tabela.query.get(tid)
+        if not tab or tab.tipo_tabela != 'cbhpm':
+            continue
+        v = (value or '').strip()
+        tab.uco_valor = _parse_money(v) if v else None
+        updated += 1
+    if updated:
+        db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+@app.route('/tabelas/importar/porte', methods=['POST'])
+@admin_required
+def importar_porte():
+    file = request.files.get('arquivo')
+    nome_tabela = request.form.get('nome_tabela')
+    uf = request.form.get('uf')
+    data_vigencia = request.form.get('data_vigencia')
+    operadora_id = request.form.get('operadora_id')
+    substituir = request.form.get('substituir') in ('on', 'true', '1', 'yes', 'sim', 'true')
+
+    if not file or not nome_tabela or not operadora_id:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    if substituir:
+        subq = db.session.query(Tabela.id).filter(Tabela.nome == nome_tabela, Tabela.id_operadora == int(operadora_id), Tabela.tipo_tabela == 'porte')
+        db.session.query(PorteValorItem).filter(PorteValorItem.id_tabela.in_(subq)).delete(synchronize_session=False)
+        db.session.query(Tabela).filter(Tabela.id.in_(subq)).delete(synchronize_session=False)
+        db.session.flush()
+
+    tab = Tabela(nome=nome_tabela, prestador=None, tipo_tabela='porte', uf=uf, id_operadora=int(operadora_id))
+    if data_vigencia:
+        try:
+            tab.data_vigencia = date.fromisoformat(data_vigencia)
+        except Exception:
+            pass
+    db.session.add(tab)
+    db.session.flush()
+
+    filename = secure_filename(file.filename or '')
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    linhas = []
+    if ext == 'csv':
+        content = file.read().decode('utf-8-sig', errors='ignore').splitlines()
+        if not content:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [h.strip() for h in content[0].split(',')]
+        keys = [_norm_header(h) for h in headers]
+        for row in content[1:]:
+            cols = row.split(',')
+            linhas.append({keys[i]: (cols[i].strip() if i < len(cols) else '') for i in range(len(keys))})
+    elif ext == 'xlsx':
+        from openpyxl import load_workbook
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [str(h) if h is not None else '' for h in rows[0]]
+        keys = [_norm_header(h) for h in headers]
+        for r in rows[1:]:
+            linhas.append({keys[i]: (r[i] if i < len(keys) else None) for i in range(len(keys))})
+    else:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    for row in linhas:
+        porte = row.get('porte') or row.get('portevalor') or row.get('portecodigo')
+        if not porte:
+            continue
+        valor = _parse_money(row.get('valor'))
+        db.session.add(PorteValorItem(porte=str(porte), valor=valor, uf=uf, id_tabela=tab.id))
+
+    db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+@app.route('/tabelas/importar/porte-anestesico', methods=['POST'])
+@admin_required
+def importar_porte_anestesico():
+    file = request.files.get('arquivo')
+    nome_tabela = request.form.get('nome_tabela')
+    uf = request.form.get('uf')
+    data_vigencia = request.form.get('data_vigencia')
+    operadora_id = request.form.get('operadora_id')
+    substituir = request.form.get('substituir') in ('on', 'true', '1', 'yes', 'sim', 'true')
+
+    if not file or not nome_tabela or not operadora_id:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    if substituir:
+        subq = db.session.query(Tabela.id).filter(Tabela.nome == nome_tabela, Tabela.id_operadora == int(operadora_id), Tabela.tipo_tabela == 'porte_anestesico')
+        db.session.query(PorteAnestesicoValorItem).filter(PorteAnestesicoValorItem.id_tabela.in_(subq)).delete(synchronize_session=False)
+        db.session.query(Tabela).filter(Tabela.id.in_(subq)).delete(synchronize_session=False)
+        db.session.flush()
+
+    tab = Tabela(nome=nome_tabela, prestador=None, tipo_tabela='porte_anestesico', uf=uf, id_operadora=int(operadora_id))
+    if data_vigencia:
+        try:
+            tab.data_vigencia = date.fromisoformat(data_vigencia)
+        except Exception:
+            pass
+    db.session.add(tab)
+    db.session.flush()
+
+    filename = secure_filename(file.filename or '')
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    linhas = []
+    if ext == 'csv':
+        content = file.read().decode('utf-8-sig', errors='ignore').splitlines()
+        if not content:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [h.strip() for h in content[0].split(',')]
+        keys = [_norm_header(h) for h in headers]
+        for row in content[1:]:
+            cols = row.split(',')
+            linhas.append({keys[i]: (cols[i].strip() if i < len(cols) else '') for i in range(len(keys))})
+    elif ext == 'xlsx':
+        from openpyxl import load_workbook
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [str(h) if h is not None else '' for h in rows[0]]
+        keys = [_norm_header(h) for h in headers]
+        for r in rows[1:]:
+            linhas.append({keys[i]: (r[i] if i < len(keys) else None) for i in range(len(keys))})
+    else:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    for row in linhas:
+        porte_an = row.get('portean') or row.get('porteanestesico') or row.get('porte_an') or row.get('porte an')
+        if not porte_an:
+            continue
+        valor = _parse_money(row.get('valor'))
+        db.session.add(PorteAnestesicoValorItem(porte_an=str(porte_an), valor=valor, uf=uf, id_tabela=tab.id))
+
+    db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+@app.route('/tabelas/importar/cbhpm', methods=['POST'])
+@admin_required
+def importar_cbhpm():
+    file = request.files.get('arquivo')
+    nome_tabela = request.form.get('nome_tabela')
+    uf = request.form.get('uf')
+    data_vigencia = request.form.get('data_vigencia')
+    operadora_id = request.form.get('operadora_id')
+    substituir = request.form.get('substituir') in ('on', 'true', '1', 'yes', 'sim', 'true')
+
+    if not file or not nome_tabela or not operadora_id:
+        return redirect(url_for('gerenciar_tabelas'))
+
+    # Substituição
+    if substituir:
+        subq = db.session.query(Tabela.id).filter(
+            Tabela.nome == nome_tabela,
+            Tabela.id_operadora == int(operadora_id),
+            Tabela.tipo_tabela == 'cbhpm'
+        )
+        db.session.query(CBHPMItem).filter(CBHPMItem.id_tabela.in_(subq)).delete(synchronize_session=False)
+        db.session.query(Tabela).filter(
+            Tabela.nome == nome_tabela,
+            Tabela.id_operadora == int(operadora_id),
+            Tabela.tipo_tabela == 'cbhpm'
+        ).delete(synchronize_session=False)
+        db.session.flush()
+
+    # Cria Tabela
+    tab = Tabela(
+        nome=nome_tabela,
+        prestador=None,
+        tipo_tabela='cbhpm',
+        uf=uf,
+        id_operadora=int(operadora_id)
+    )
+    if data_vigencia:
+        try:
+            tab.data_vigencia = date.fromisoformat(data_vigencia)
+        except Exception:
+            pass
+    db.session.add(tab)
+    db.session.flush()
+
+    filename = secure_filename(file.filename or '')
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+    # Leitura
+    linhas = []
+    keys = []
+    if ext == 'csv':
+        content = file.read().decode('utf-8-sig', errors='ignore').splitlines()
+        if not content:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [h.strip() for h in content[0].split(',')]
+        keys = [_norm_header(h) for h in headers]
+        for row in content[1:]:
+            cols = row.split(',')
+            item = {keys[i]: (cols[i].strip() if i < len(cols) else '') for i in range(len(keys))}
+            linhas.append(item)
+    elif ext == 'xlsx':
+        try:
+            from openpyxl import load_workbook
+        except Exception:
+            return redirect(url_for('gerenciar_tabelas'))
+        wb = load_workbook(file, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return redirect(url_for('gerenciar_tabelas'))
+        headers = [str(h) if h is not None else '' for h in rows[0]]
+        keys = [_norm_header(h) for h in headers]
+        for r in rows[1:]:
+            item = {keys[i]: (r[i] if i < len(keys) else None) for i in range(len(keys))}
+            linhas.append(item)
+    else:
+        db.session.rollback()
+        return redirect(url_for('gerenciar_tabelas'))
+
+    # Campos esperados (normalizados)
+    def g(d, *names):
+        for n in names:
+            v = d.get(n)
+            if v not in (None, ''):
+                return v
+        return None
+
+    def dec(v):
+        return _parse_money(v) if v not in (None, '') else None
+
+    def intval(v):
+        try:
+            return int(str(v).strip()) if v not in (None, '') else None
+        except Exception:
+            return None
+
+    for row in linhas:
+        codigo = str(g(row, 'codigo')) if g(row, 'codigo') is not None else None
+        descricao = str(g(row, 'procedimento', 'descricao')) if g(row, 'procedimento', 'descricao') is not None else ''
+        if not codigo:
+            continue
+        item = CBHPMItem(
+            codigo=codigo,
+            procedimento=descricao,
+            uf=uf,
+            porte=str(g(row, 'porte')) if g(row, 'porte') is not None else None,
+            fracao_porte=dec(g(row, 'fracaoporte', 'fraçãoporte')),
+            valor_porte=dec(g(row, 'valorporte', 'valor_do_porte')),
+            total_porte=dec(g(row, 'totalporte')),
+            incidencias=str(g(row, 'incidencias', 'incidências')) if g(row, 'incidencias', 'incidências') is not None else None,
+            filme=dec(g(row, 'filme')),
+            total_filme=dec(g(row, 'totalfilme')),
+            uco=dec(g(row, 'uco')),
+            total_uco=dec(g(row, 'totaluco')),
+            porte_anestesico=str(g(row, 'porteanestesico', 'porteanestésico')) if g(row, 'porteanestesico', 'porteanestésico') is not None else None,
+            valor_porte_anestesico=dec(g(row, 'valorporteanestesico', 'valorporteanestésico')),
+            total_porte_anestesico=dec(g(row, 'totalporteanestesico', 'totalporteanestésico')),
+            numero_auxiliares=intval(g(row, 'numero_de_auxiliares', 'numerodeauxiliares')),
+            total_auxiliares=dec(g(row, 'totalauxiliares')),
+            total_1_aux=dec(g(row, 'total1oauxiliar', 'total1ºauxiliar', 'total1auxiliar')),
+            total_2_aux=dec(g(row, 'total2oauxiliar', 'total2ºauxiliar', 'total2auxiliar')),
+            total_3_aux=dec(g(row, 'total3oauxiliar', 'total3ºauxiliar', 'total3auxiliar')),
+            total_4_aux=dec(g(row, 'total4oauxiliar', 'total4ºauxiliar', 'total4auxiliar')),
+            subtotal=dec(g(row, 'subtotal')),
+            id_tabela=tab.id,
+        )
+        db.session.add(item)
+
+    db.session.commit()
+    return redirect(url_for('gerenciar_tabelas'))
+
+
+# --- 9. Visualização de Itens da Tabela ---
+@app.template_filter('brl')
+def brl(value):
+    try:
+        d = Decimal(value)
+    except Exception:
+        return value
+    s = f"{d:,.2f}"
+    return f"R$ {s}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+@app.template_filter('date_br')
+def date_br(value):
+    try:
+        return value.strftime('%d/%m/%Y') if value else '-'
+    except Exception:
+        return str(value) if value else '-'
+
+
+@app.route('/tabelas/<int:tid>/itens')
+@admin_required
+def tabela_itens(tid):
+    tabela = Tabela.query.get_or_404(tid)
+    q = request.args.get('q', '').strip()
+    # Se for CBHPM, lista a partir da tabela específica
+    if tabela.tipo_tabela == 'cbhpm':
+        query = CBHPMItem.query.filter_by(id_tabela=tid)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(
+                (CBHPMItem.codigo.ilike(like)) | (CBHPMItem.procedimento.ilike(like))
+            )
+        rows = query.order_by(CBHPMItem.codigo).all()
+        # Mapeia para o formato consumido pelo template (codigo, descricao, valor)
+        itens = []
+        for r in rows:
+            val = r.subtotal
+            if val in (None, Decimal('0')):
+                val = compute_cbhpm_total(r, tabela)
+            itens.append({
+                'codigo': r.codigo,
+                'descricao': r.procedimento,
+                'valor': val,
+            })
+        return render_template('tabela-itens.html', tabela=tabela, itens=itens, q=q)
+
+    if tabela.tipo_tabela == 'porte':
+        query = PorteValorItem.query.filter_by(id_tabela=tid)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(PorteValorItem.porte.ilike(like))
+        rows = query.order_by(PorteValorItem.porte).all()
+        itens = [{'porte': r.porte, 'valor': r.valor, 'uf': r.uf} for r in rows]
+        return render_template('tabela-porte-itens.html', tabela=tabela, itens=itens, q=q, label='Porte')
+
+    if tabela.tipo_tabela == 'porte_anestesico':
+        query = PorteAnestesicoValorItem.query.filter_by(id_tabela=tid)
+        if q:
+            like = f"%{q}%"
+            query = query.filter(PorteAnestesicoValorItem.porte_an.ilike(like))
+        rows = query.order_by(PorteAnestesicoValorItem.porte_an).all()
+        itens = [{'porte': r.porte_an, 'valor': r.valor, 'uf': r.uf} for r in rows]
+        return render_template('tabela-porte-itens.html', tabela=tabela, itens=itens, q=q, label='Porte AN')
+
+    # Default: procedimentos comuns
+    query = Procedimento.query.filter_by(id_tabela=tid)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            (Procedimento.codigo.ilike(like)) | (Procedimento.descricao.ilike(like))
+        )
+    itens = query.order_by(Procedimento.codigo).all()
+    return render_template('tabela-itens.html', tabela=tabela, itens=itens, q=q)
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

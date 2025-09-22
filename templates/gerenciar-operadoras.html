@@ -1,0 +1,36 @@
+{% extends 'base.html' %}
+{% block title %}Operadoras{% endblock %}
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <h4 class="mb-0">Gerenciamento de Operadoras</h4>
+  <a class="btn btn-primary" href="{{ url_for('operadora_nova') }}">Adicionar Operadora</a>
+</div>
+
+<div class="card p-0">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>ID</th><th>Nome</th><th>UF</th><th>CNPJ</th><th>Status</th><th class="text-end">Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for op in operadoras %}
+        <tr>
+          <td>{{ op.id }}</td>
+          <td>{{ op.nome }}</td>
+          <td>{{ op.uf or '-' }}</td>
+          <td>{{ op.cnpj or '-' }}</td>
+          <td><span class="badge text-bg-success">{{ op.status }}</span></td>
+          <td class="text-end">
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('operadora_editar', oid=op.id) }}">Editar</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-secondary py-4">Nenhuma operadora cadastrada</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

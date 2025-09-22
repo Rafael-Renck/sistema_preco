@@ -1,0 +1,12 @@
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+PyMySQL==1.1.0
+gunicorn==21.2.0
+python-dotenv==1.0.1
+openpyxl==3.1.5
+xlsxwriter==3.2.0
+reportlab==4.2.2
+svglib==1.5.1
+Pillow==10.4.0
+pydyf<0.11
+WeasyPrint==61.2

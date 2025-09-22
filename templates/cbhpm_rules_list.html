@@ -1,0 +1,285 @@
+{% extends 'base.html' %}
+{% block title %}Regras CBHPM{% endblock %}
+{% block head %}
+<style>
+  .rule-card{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);padding:20px}
+  .rule-badge{font-size:.75rem;letter-spacing:.05em;text-transform:uppercase}
+  .rule-summary{display:flex;flex-direction:column;gap:12px}
+  .rule-summary-section{border:1px dashed var(--border);border-radius:12px;padding:12px;background:var(--shell)}
+  .rule-summary-title{font-size:.8rem;font-weight:600;color:var(--ink);margin-bottom:6px}
+  .rule-summary-text{font-size:.85rem;color:var(--muted)}
+  .rule-chip-group{display:flex;flex-wrap:wrap;gap:6px}
+  .rule-chip{background:rgba(14,165,233,.12);color:var(--ink);border-radius:999px;padding:4px 10px;font-size:.78rem;font-weight:500}
+  .rule-table{width:100%;font-size:.78rem}
+  .rule-table th,.rule-table td{padding:4px 6px;border-bottom:1px solid var(--border)}
+  .rule-table th{font-weight:600;color:var(--muted)}
+  .rule-list{margin:0;padding-left:18px;font-size:.8rem}
+  .rule-json{background:#0f172a0d;border:1px solid var(--border);border-radius:12px;padding:16px;font-family:monospace;font-size:.82rem;white-space:pre-wrap}
+  .table-rules tbody tr.active-row{border-left:4px solid var(--brand);background:rgba(14,165,233,.06)}
+  details.rule-json-details summary{cursor:pointer;font-size:.8rem;color:var(--brand)}
+</style>
+{% endblock %}
+
+{% macro format_percent(value) %}
+  {% if value is number %}
+    {% set float_val = value|float %}
+    {% if float_val > 1 %}
+      {{ float_val }}%
+    {% else %}
+      {{ (float_val * 100)|round(2) }}%
+    {% endif %}
+  {% else %}
+    {{ value }}
+  {% endif %}
+{% endmacro %}
+
+{% macro render_rule_summary(rule_data) %}
+  {% if not rule_data %}
+    <div class="text-muted small">Sem detalhes cadastrados.</div>
+  {% else %}
+    <div class="rule-summary">
+      {% if rule_data.get('descricao') %}
+      <div class="rule-summary-section">
+        <div class="rule-summary-title">Descricao</div>
+        <div class="rule-summary-text">{{ rule_data.get('descricao') }}</div>
+      </div>
+      {% endif %}
+      {% set aux = rule_data.get('auxiliares') or {} %}
+      {% if aux %}
+      <div class="rule-summary-section">
+        <div class="rule-summary-title">Auxiliares</div>
+        {% if aux.get('percentuais') %}
+        <div class="mb-2">
+          <div class="rule-summary-text mb-1">Percentuais por auxiliar</div>
+          <div class="rule-chip-group">
+            {% for perc in aux.get('percentuais') %}
+              <span class="rule-chip">{{ format_percent(perc) }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+        {% if aux.get('max_por_porte') %}
+        <div>
+          <div class="rule-summary-text mb-1">Maximo permitido por porte</div>
+          <table class="rule-table">
+            <thead><tr><th>Porte</th><th>Auxiliares</th></tr></thead>
+            <tbody>
+              {% for porte, qtd in aux.get('max_por_porte')|dictsort %}
+              <tr>
+                <td>{{ 'Default' if porte == 'default' else porte }}</td>
+                <td>{{ qtd }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% set porte_cfg = rule_data.get('porte') or {} %}
+      {% if porte_cfg.get('reducoes_simultaneos') %}
+      <div class="rule-summary-section">
+        <div class="rule-summary-title">Reducao por simultaneidade</div>
+        <ul class="rule-list">
+          {% for perc in porte_cfg.get('reducoes_simultaneos') %}
+            <li>{{ loop.index }}&ordm; procedimento: {{ format_percent(perc) }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+      {% set pairs = [('Porte','porte'), ('Porte AN','porte_an'), ('Filme','filme'), ('UCO','uco')] %}
+      {% set ns = namespace(open=false) %}
+      {% for label, key in pairs %}
+        {% set cfg = rule_data.get(key) or {} %}
+        {% if cfg.get('multiplicador') is not none %}
+          {% if not ns.open %}
+          {% set ns.open = true %}
+          <div class="rule-summary-section">
+            <div class="rule-summary-title">Multiplicadores</div>
+            <div class="rule-chip-group">
+          {% endif %}
+            <span class="rule-chip">{{ label }}: x{{ cfg.get('multiplicador') }}</span>
+        {% endif %}
+      {% endfor %}
+      {% if ns.open %}
+            </div>
+          </div>
+      {% endif %}
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between mb-3">
+  <h4 class="mb-0">Regras CBHPM</h4>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('cbhpm_rules_new') }}">
+      <i class="bi bi-plus-circle"></i> Nova regra
+    </a>
+  </div>
+</div>
+
+{% if status %}
+  {% set alerts = {'created': 'Regra criada com sucesso.', 'updated': 'Regra atualizada.', 'activated': 'Regra marcada como ativa.'} %}
+  {% if alerts.get(status) %}
+  <div class="alert alert-success">{{ alerts[status] }}</div>
+  {% endif %}
+{% endif %}
+
+{% set active_rule = (rulesets | selectattr('ativo', 'equalto', True) | list | first) %}
+{% set total_rules = rulesets|length %}
+
+{% if not rulesets %}
+  <div class="card p-4 text-center text-muted">
+    Nenhuma regra configurada ainda. Clique em <strong>Nova regra</strong> para comecar.
+  </div>
+{% else %}
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-lg-7">
+      <div class="rule-card h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <span class="badge bg-success rule-badge mb-2">Regra ativa</span>
+            <h5 class="mb-1">{{ active_rule.nome if active_rule else 'Selecione uma regra' }}</h5>
+            <div class="text-muted small">{{ active_rule.descricao or 'Sem descricao cadastrada.' }}</div>
+          </div>
+          {% if active_rule %}
+          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('cbhpm_rules_edit', ruleset_id=active_rule.id) }}">
+            <i class="bi bi-pencil"></i> Editar
+          </a>
+          {% endif %}
+        </div>
+        {% if active_rule %}
+          {{ render_rule_summary(active_rule.regras or {}) }}
+          <details class="rule-json-details mt-3">
+            <summary>Ver JSON bruto</summary>
+            <pre class="rule-json mt-2 mb-0">{{ active_rule.regras | tojson(indent=2) }}</pre>
+          </details>
+        {% else %}
+        <div class="text-muted">Nenhuma regra ativa. Ative uma regra para que os calculos CBHPM utilizem suas definicoes.</div>
+        {% endif %}
+      </div>
+    </div>
+    <div class="col-12 col-lg-5">
+      <div class="rule-card h-100">
+        <h6 class="fw-semibold text-dark mb-3">Painel rapido</h6>
+        <div class="d-flex flex-column gap-2 small">
+          <div class="d-flex justify-content-between">
+            <span>Total de regras</span>
+            <span class="fw-semibold">{{ total_rules }}</span>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span>Ativas</span>
+            <span class="fw-semibold">{{ 1 if active_rule else 0 }}</span>
+          </div>
+          <div class="d-flex justify-content-between">
+            <span>Ultima atualizacao</span>
+            <span class="fw-semibold">{{ rulesets[0].atualizado_em.strftime('%d/%m/%Y %H:%M') if rulesets and rulesets[0].atualizado_em else '-' }}</span>
+          </div>
+        </div>
+        <div class="mt-3 small text-muted">
+          Dica: mantenha apenas variacoes relevantes. Regras antigas podem ser arquivadas baixando o JSON e removendo do sistema.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card p-3">
+    <h6 class="fw-semibold mb-3">Historico de regras</h6>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle table-striped table-rules">
+        <thead class="table-light">
+          <tr>
+            <th>Nome</th>
+            <th>Versao</th>
+            <th>Descricao</th>
+            <th>Atualizado em</th>
+            <th style="width:200px;" class="text-end">Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rulesets %}
+          {% set row_active = 'active-row' if r.ativo else '' %}
+          <tr class="{{ row_active }}">
+            <td class="fw-semibold">{{ r.nome }}</td>
+            <td>{{ r.versao or '-' }}</td>
+            <td class="text-muted small" style="max-width:280px;">
+              {% set desc = r.descricao or 'Sem descricao' %}
+              {{ desc[:120] }}{% if desc|length > 120 %}...{% endif %}
+            </td>
+            <td>{{ r.atualizado_em.strftime('%d/%m/%Y %H:%M') if r.atualizado_em else '-' }}</td>
+            <td class="text-end">
+              <div class="d-inline-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#ruleJson{{ r.id }}" aria-expanded="false" aria-controls="ruleJson{{ r.id }}">
+                  <i class="bi bi-eye"></i>
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" type="button" data-copy-json='{{ r.regras | tojson | e }}'>
+                  <i class="bi bi-clipboard"></i>
+                </button>
+                <a class="btn btn-sm btn-outline-primary" href="{{ url_for('cbhpm_rules_edit', ruleset_id=r.id) }}" title="Editar">
+                  <i class="bi bi-pencil"></i>
+                </a>
+                {% if not r.ativo %}
+                <form method="post" action="{{ url_for('cbhpm_rules_activate', ruleset_id=r.id) }}" onsubmit="return confirm('Ativar esta regra?');" class="d-inline">
+                  <button type="submit" class="btn btn-sm btn-outline-success" title="Ativar">
+                    <i class="bi bi-lightning-charge"></i>
+                  </button>
+                </form>
+                {% else %}
+                <span class="badge bg-success-subtle text-success align-self-center">Atual</span>
+                {% endif %}
+              </div>
+              <div class="collapse mt-2" id="ruleJson{{ r.id }}">
+                {{ render_rule_summary(r.regras or {}) }}
+                <details class="rule-json-details mt-2">
+                  <summary>Ver JSON bruto</summary>
+                  <pre class="rule-json mt-2 mb-0">{{ r.regras | tojson(indent=2) }}</pre>
+                </details>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+
+<div class="card p-3 mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h6 class="fw-semibold mb-0">Modelo padrao para novas regras</h6>
+    <button class="btn btn-sm btn-outline-secondary" type="button" data-copy-json='{{ default_rules | tojson | e }}'>
+      <i class="bi bi-clipboard"></i> Copiar
+    </button>
+  </div>
+  <p class="text-muted small mb-3">Ao criar uma regra, este JSON e usado como base. Ajuste percentuais, limites e multiplicadores conforme o contrato.</p>
+  {{ render_rule_summary(default_rules) }}
+  <details class="rule-json-details mt-2">
+    <summary>Ver JSON bruto</summary>
+    <pre class="rule-json mt-2 mb-0">{{ default_rules | tojson(indent=2) }}</pre>
+  </details>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+  document.addEventListener('click', function(ev){
+    const btn = ev.target.closest('[data-copy-json]');
+    if(!btn){return;}
+    const raw = btn.getAttribute('data-copy-json');
+    try {
+      navigator.clipboard.writeText(raw);
+      btn.classList.add('btn-success');
+      btn.classList.remove('btn-outline-secondary');
+      setTimeout(()=>{
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline-secondary');
+      }, 1500);
+    } catch(err){
+      console.error('copy-json', err);
+      alert('Nao foi possivel copiar automaticamente. Copie manualmente.');
+    }
+  });
+</script>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block title %}Itens — {{ tabela.nome }}{% endblock %}
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between">
+  <div>
+    <h4 class="mb-1">{{ tabela.nome }}</h4>
+    <div class="small muted">
+      Operadora: <strong>{{ tabela.operadora.nome if tabela.operadora else '-' }}</strong> ·
+      Prestador: <strong>{{ tabela.prestador or '-' }}</strong> ·
+      Tipo: <strong>{{ tabela.tipo_tabela or '-' }}</strong> ·
+      UF: <strong>{{ tabela.uf or '-' }}</strong> ·
+      Vigência: <strong>{{ tabela.data_vigencia|date_br }}</strong>
+    </div>
+  </div>
+  <div class="d-flex gap-2">
+    <a class="btn btn-outline-secondary" href="{{ url_for('gerenciar_tabelas') }}">Voltar</a>
+  </div>
+</div>
+
+<div class="card p-3 mb-3">
+  <form method="get" action="{{ url_for('tabela_itens', tid=tabela.id) }}" class="row g-2 align-items-end">
+    <div class="col-12 col-md-6">
+      <label class="form-label" for="q">Buscar (código ou descrição)</label>
+      <input class="form-control" id="q" name="q" value="{{ q }}" placeholder="Ex.: 30101018 ou hemograma">
+    </div>
+    <div class="col-12 col-md-2 d-grid">
+      <button class="btn btn-primary" type="submit">Buscar</button>
+    </div>
+  </form>
+</div>
+
+<div class="card p-0">
+  <div class="table-responsive">
+    <table class="table table-hover align-middle mb-0">
+      <thead class="table-light"><tr><th>Código</th><th>Descrição</th><th class="text-end">Valor</th></tr></thead>
+      <tbody>
+        {% for p in itens %}
+        <tr><td>{{ p.codigo }}</td><td>{{ p.descricao }}</td><td class="text-end">{{ p.valor|brl }}</td></tr>
+        {% else %}
+        <tr><td colspan="3" class="text-center text-secondary py-4">Nenhum item encontrado</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

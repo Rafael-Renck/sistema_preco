@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8" />
+    <title>Relatório de Simulação Murta PriceHealth</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 24mm 15mm 28mm;
+            @bottom-left {
+                content: "Murta PriceHealth";
+                color: #5d6d7e;
+                font-size: 10px;
+            }
+            @bottom-right {
+                content: "Página " counter(page);
+                color: #5d6d7e;
+                font-size: 10px;
+            }
+        }
+
+        /* Cores da nova paleta */
+        :root {
+            --brand-dark: #2c3e50;
+            --brand-accent: #3498db;
+            --text-muted: #7f8c8d;
+            --border: #ecf0f1;
+            --table-header: #34495e;
+            --table-alt: #f8f9f9;
+            --summary-bg: #eaf2f8;
+            --summary-accent: #2980b9;
+            --summary-highlight: #3498db;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Helvetica', 'Arial', sans-serif;
+            font-size: 12px;
+            color: var(--brand-dark);
+            margin: 0;
+            padding: 0;
+            background: #ffffff;
+        }
+        .container {
+            padding: 24px 32px 24px;
+        }
+        h1 {
+            font-size: 26px;
+            margin: 0;
+            color: var(--brand-dark);
+        }
+        p { margin: 0; }
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 24px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 12px;
+        }
+        .header .logo {
+            max-width: 200px;
+            height: auto;
+            {% if logo_height_mm %}
+            max-height: {{ logo_height_mm }}mm;
+            {% endif %}
+        }
+        .header .title {
+            text-align: right;
+        }
+        .header .title p {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .meta-table {
+            border: 1px solid var(--border);
+            background: #ffffff;
+            margin-bottom: 18px;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .meta-table th {
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 600;
+            padding: 8px 10px;
+            width: 22%;
+            border-right: 1px solid var(--border);
+            background: #f8fafc;
+        }
+        .meta-table td {
+            font-size: 12px;
+            padding: 8px 10px;
+            border-right: 1px solid var(--border);
+        }
+        .meta-table th:last-child,
+        .meta-table td:last-child {
+            border-right: none;
+        }
+        .codes {
+            font-size: 12px;
+            margin-bottom: 18px;
+            color: var(--text-muted);
+        }
+        .codes strong { 
+            color: var(--brand-dark); 
+            font-weight: 600;
+        }
+        /* Novo CSS para uma tabela flexível e responsiva */
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+.results-table th {
+    background: var(--table-header);
+    color: #ffffff;
+    padding: 10px 8px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    word-break: break-word;
+}
+.results-table td {
+    padding: 8px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    vertical-align: top;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+.results-table td.num {
+    text-align: right;
+    white-space: nowrap; /* Impede quebras de linha para valores numéricos */
+}
+.results-table tbody tr:nth-child(even) {
+    background: var(--table-alt);
+}
+
+/* Larguras ajustadas para melhor aproveitamento do espaço */
+.results-table th:nth-child(1) { width: 40%; } /* Descrição */
+.results-table th:nth-child(2) { width: 10%; } /* Total Porte */
+.results-table th:nth-child(3) { width: 10%; } /* Total Filme */
+.results-table th:nth-child(4) { width: 10%; } /* Total UCO */
+.results-table th:nth-child(5) { width: 10%; } /* Total Porte AN */
+.results-table th:nth-child(6) { width: 15%; } /* Auxiliares - Maior espaço */
+.results-table th:nth-child(7) { width: 10%; } /* Total */
+
+/* Estilo para a estrutura de Código + Descrição */
+td .code {
+    font-weight: bold;
+    font-size: 11px;
+    color: #333;
+    margin-bottom: 4px;
+    display: block;
+}
+td .description {
+    font-size: 12px;
+    color: #555;
+}
+.aux-breakdown {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+        .summary-table {
+            margin-top: 24px;
+            border: 1px solid var(--summary-accent);
+            background: var(--summary-bg);
+            border-radius: 6px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .summary-table th,
+        .summary-table td {
+            padding: 10px 12px;
+            border: 1px solid rgba(44, 62, 80, 0.1);
+            font-size: 13px;
+        }
+        .summary-table th { 
+            text-align: left; 
+            color: var(--brand-dark); 
+            font-weight: 600;
+            background: var(--summary-bg);
+        }
+        .summary-table td.num { 
+            text-align: right; 
+            font-weight: 700;
+        }
+        .summary-table tr.highlight {
+            background: var(--summary-highlight);
+            color: #ffffff;
+        }
+        .fallback-block {
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            background: #f8fafc;
+            margin-bottom: 18px;
+            font-size: 12px;
+            border-left: 4px solid var(--brand-accent);
+        }
+        .fallback-block strong { color: var(--brand-dark); }
+        footer {
+            position: fixed;
+            bottom: 24px;
+            left: 32px;
+            right: 32px;
+            font-size: 10px;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            border-top: 1px solid var(--border);
+            padding-top: 6px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            {% set logo_src = logo_data_uri or logo_static_path or 'static/logo-pdf.png' %}
+            {% if logo_src %}
+            <img src="{{ logo_src }}" alt="Logo Murta PriceHealth" class="logo" />
+            {% endif %}
+            <div class="title">
+                <h1>Relatório de Simulação Murta PriceHealth</h1>
+                <p>Gerado em {{ generated_at }}</p>
+            </div>
+        </header>
+
+        {% if meta_rows %}
+            <table class="meta-table">
+                <tbody>
+                    {% for row in meta_rows|batch(2, {'label': '', 'value': ''}) %}
+                        <tr>
+                            <th>{{ row[0].label }}</th>
+                            <td>{{ row[0].value }}</td>
+                            <th>{{ row[1].label }}</th>
+                            <td>{{ row[1].value }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% endif %}
+
+        {% if codes_preview %}
+            <div class="codes">
+                <strong>Códigos selecionados:</strong> {{ codes_preview }}
+                {% if codes_extra %}
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">
+                        +{{ codes_extra }} código(s) adicional(is) não exibido(s).
+                    </div>
+                {% endif %}
+            </div>
+        {% endif %}
+
+        {% if itens %}
+            <table class="results-table">
+                <thead>
+                    <tr>
+                        <th>Código e Descrição</th>
+                        <th>Total Porte</th>
+                        <th>Total Filme</th>
+                        <th>Total UCO</th>
+                        <th>Total Porte AN</th>
+                        <th>Auxiliares</th>
+                        <th>Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in itens %}
+                        <tr>
+                            <td>
+                                <div class="code">{{ item.codigo }}</div>
+                                <div class="description">{{ item.descricao }}</div>
+                            </td>
+                            <td class="num">{{ item.total_porte }}</td>
+                            <td class="num">{{ item.total_filme }}</td>
+                            <td class="num">{{ item.total_uco }}</td>
+                            <td class="num">{{ item.total_porte_an }}</td>
+                            <td class="num">{{ item.total_auxiliares }}
+                                {% if item.auxiliares_detalhe %}
+                                <div class="aux-breakdown">
+                                    {% for det in item.auxiliares_detalhe %}
+                                    <div>Aux {{ det.indice }}: {{ det.percentual or '-' }} -> {{ det.valor }}</div>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </td>
+                            <td class="num">{{ item.total }}</td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <div class="fallback-block">
+                <div><strong>Código:</strong> {{ fallback.codigo }}</div>
+                {% if fallback.descricao %}
+                    <div><strong>Descrição:</strong> {{ fallback.descricao }}</div>
+                {% endif %}
+            </div>
+        {% endif %}
+
+        <table class="summary-table">
+            <tbody>
+                {% for row in summary_rows|batch(2, None) %}
+                    <tr class="{{ 'highlight' if row[0] and row[0].highlight else '' }}">
+                        {% if row[0] %}
+                            <th>{{ row[0].label }}</th>
+                            <td class="num">{{ row[0].value }}</td>
+                        {% else %}
+                            <th></th>
+                            <td></td>
+                        {% endif %}
+                        {% if row[1] %}
+                            <th>{{ row[1].label }}</th>
+                            <td class="num">{{ row[1].value }}</td>
+                        {% else %}
+                            <th></th>
+                            <td></td>
+                        {% endif %}
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
