@@ -1,18 +1,23 @@
-# Ambientes Virtuais
+# Arquivos de ambiente - NUNCA envie para o Git
 .env
-.venv
-env/
-venv/
-ENV/
+*.env
 
-# Cache do Python
+# Artefatos do Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
-# Arquivos de IDEs
+# Pasta de ambiente virtual
+venv/
+.venv/
+env/
+.env/
+
+# Dados do Docker
+# Ignora a pasta de dados do banco de dados se ela for criada localmente
+db_data/
+
+# Arquivos específicos de IDEs
 .vscode/
 .idea/
-
-# Arquivos de sistema
-.DS_Store
-Thumbs.db
