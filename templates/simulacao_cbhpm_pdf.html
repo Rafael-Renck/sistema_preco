@@ -148,13 +148,8 @@
 }
 
 /* Larguras ajustadas para melhor aproveitamento do espaço */
-.results-table th:nth-child(1) { width: 40%; } /* Descrição */
-.results-table th:nth-child(2) { width: 10%; } /* Total Porte */
-.results-table th:nth-child(3) { width: 10%; } /* Total Filme */
-.results-table th:nth-child(4) { width: 10%; } /* Total UCO */
-.results-table th:nth-child(5) { width: 10%; } /* Total Porte AN */
-.results-table th:nth-child(6) { width: 15%; } /* Auxiliares - Maior espaço */
-.results-table th:nth-child(7) { width: 10%; } /* Total */
+.results-table th:nth-child(1) { width: 26%; }
+.results-table th:nth-child(n+2) { width: 8.2%; }
 
 /* Estilo para a estrutura de Código + Descrição */
 td .code {
@@ -203,6 +198,60 @@ td .description {
         .summary-table tr.highlight {
             background: var(--summary-highlight);
             color: #ffffff;
+        }
+        .calc-explanation {
+            margin-top: 24px;
+            padding: 16px 18px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #f8fafc;
+            font-size: 12px;
+            line-height: 1.6;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+        .calc-explanation h2 {
+            font-size: 16px;
+            margin: 0 0 12px;
+            color: var(--brand-dark);
+        }
+        .calc-block {
+            margin-bottom: 14px;
+        }
+        .calc-block:last-child {
+            margin-bottom: 0;
+        }
+        .calc-block h3 {
+            font-size: 13px;
+            margin: 0 0 6px;
+            color: var(--brand-dark);
+        }
+        .calc-block p {
+            margin: 0 0 6px;
+            font-size: 12px;
+            color: var(--brand-dark);
+        }
+        .calc-block ul {
+            margin: 0 0 8px 18px;
+            padding: 0;
+        }
+        .calc-block li {
+            margin-bottom: 4px;
+        }
+        .calc-block .formula {
+            display: inline-block;
+            margin-top: 4px;
+            font-weight: 600;
+            color: var(--brand-dark);
+        }
+        .teto-alert {
+            border-left: 4px solid #e74c3c;
+            background: #fdecea;
+            padding: 8px 10px;
+            border-radius: 6px;
+        }
+        .teto-alert ul {
+            margin: 6px 0 0 18px;
+            padding: 0;
         }
         .fallback-block {
             padding: 12px 14px;
@@ -276,7 +325,10 @@ td .description {
                         <th>Total UCO</th>
                         <th>Total Porte AN</th>
                         <th>Auxiliares</th>
+                        <th>Via entrada</th>
                         <th>Total</th>
+                        <th>Teto</th>
+                        <th>Excedente</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -299,7 +351,10 @@ td .description {
                                 </div>
                                 {% endif %}
                             </td>
+                            <td class="text-center">{{ item.via_entrada_pct or '-' }}</td>
                             <td class="num">{{ item.total }}</td>
+                            <td class="num">{{ item.teto_valor_total or '-' }}</td>
+                            <td class="num{% if item.teto_excedido %} text-danger{% endif %}">{{ item.teto_excedente or '-' }}</td>
                         </tr>
                     {% endfor %}
                 </tbody>
@@ -335,6 +390,71 @@ td .description {
                 {% endfor %}
             </tbody>
         </table>
+
+        <section class="calc-explanation">
+            <h2>Explicação do cálculo, redutor aplicado e regra de teto</h2>
+
+            <div class="calc-block">
+                <h3>Redutor por via de entrada</h3>
+                <p>Percentual aplicado sobre os valores de porte: <strong>{{ via_entrada_summary or '100%' }}</strong>.</p>
+                {% if via_entrada_pcts %}
+                    <ul>
+                        {% for codigo, pct in via_entrada_pcts.items() %}
+                            <li><strong>{{ codigo }}</strong>: {{ pct }}%</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+            </div>
+
+            <div class="calc-block">
+                <h3>Filme radiológico</h3>
+                {% if filme_explicacao %}
+                    <p>O valor do filme é calculado em duas etapas:</p>
+                    <ol>
+                        <li>
+                            Multiplica-se o <strong>fator filme</strong> pelo <strong>valor unitário do filme</strong> para obter o valor por filme.
+                            <span class="formula">{{ filme_explicacao.step1 }}</span>
+                            <div style="font-size:11px;color:var(--text-muted);">Equivalente a {{ filme_explicacao.valor_por_filme_brl }} por filme.</div>
+                        </li>
+                        <li>
+                            Multiplica-se esse resultado pelo <strong>número de incidências</strong> solicitadas.
+                            <span class="formula">{{ filme_explicacao.step2 }}</span>
+                            <div style="font-size:11px;color:var(--text-muted);">Resultado final: {{ filme_explicacao.total_brl }}.</div>
+                        </li>
+                    </ol>
+                    <p>O fator filme é definido pela CBHPM. O valor unitário utilizado foi {{ filme_explicacao.valor_unitario_brl }}, e foram consideradas {{ filme_explicacao.incidencias }} {{ filme_explicacao.incidencias_label }} informadas para o exame.</p>
+                {% else %}
+                    <p>Não foi possível detalhar o cálculo do filme radiológico para esta simulação.</p>
+                {% endif %}
+            </div>
+
+            <div class="calc-block">
+                <h3>Regra de teto</h3>
+                {% if teto_alertas and teto_alertas|length %}
+                    <div class="teto-alert">
+                        <strong>Itens que excederam o teto CBHPM:</strong>
+                        <ul>
+                            {% for alerta in teto_alertas %}
+                                <li>
+                                    {{ alerta.codigo }} — {{ alerta.descricao }}<br>
+                                    Total calculado {{ alerta.total_calculado }} × teto {{ alerta.teto_valor_total }} ⇒ excedente {{ alerta.excedente }}
+                                    {% if alerta.versao_ref %}<br><span style="font-size:11px;color:var(--text-muted);">Versão {{ alerta.versao_ref }}{% if alerta.descricao_teto %} · {{ alerta.descricao_teto }}{% endif %}</span>{% endif %}
+                                </li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                {% elif teto_referencias and teto_referencias|length %}
+                    <p>Os itens simulados ficaram dentro dos valores teto cadastrados:</p>
+                    <ul>
+                        {% for ref in teto_referencias %}
+                            <li>{{ ref.codigo }} — teto {{ ref.valor }}{% if ref.versao %} (versão {{ ref.versao }}){% endif %}</li>
+                        {% endfor %}
+                    </ul>
+                {% else %}
+                    <p>Não há teto CBHPM cadastrado para os códigos simulados.</p>
+                {% endif %}
+            </div>
+        </section>
     </div>
 </body>
 </html>

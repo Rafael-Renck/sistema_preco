@@ -91,6 +91,10 @@
           <a class="side-item {% if request.endpoint=='consulta_comparar' %}active{% endif %}" href="{{ url_for('consulta_comparar') }}">
             <i class="bi bi-search"></i><span>Consulta &amp; Comparar</span>
           </a>
+          {% set insumos_active = request.endpoint and request.endpoint.startswith('insumos_') %}
+          <a class="side-item {% if insumos_active %}active{% endif %}" href="{{ url_for('insumos_dashboard') }}">
+            <i class="bi bi-box-arrow-in-down"></i><span>Simpro &amp; Brasíndice</span>
+          </a>
         </div>
 
         {% if is_admin %}
@@ -124,6 +128,15 @@
           </div>
 
           <div class="content">
+            {% with messages = get_flashed_messages(with_categories=True) %}
+              {% if messages %}
+                <div class="mb-3">
+                  {% for category, message in messages %}
+                    <div class="alert alert-{{ category }} mb-2" role="alert">{{ message }}</div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            {% endwith %}
             {% block content %}{% endblock %}
           </div>
         </div>
@@ -135,5 +148,3 @@
   {% block scripts %}{% endblock %}
 </body>
 </html>
-
-

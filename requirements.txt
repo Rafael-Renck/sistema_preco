@@ -10,3 +10,5 @@ svglib==1.5.1
 Pillow==10.4.0
 pydyf<0.11
 WeasyPrint==61.2
+alembic==1.13.3
+pytest==8.3.2

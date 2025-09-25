@@ -1,15 +1,32 @@
 import os
 import time
-from flask import Flask, render_template, request, redirect, url_for, jsonify, session, send_file, g
+import csv
+import math
+import re
+from pathlib import Path
+
+import click
+from flask import (
+    Flask,
+    render_template,
+    request,
+    redirect,
+    url_for,
+    jsonify,
+    session,
+    send_file,
+    g,
+    abort,
+    flash,
+)
 import json
 from flask_sqlalchemy import SQLAlchemy
 import pymysql
 from dotenv import load_dotenv
-from flask import request, jsonify
 from functools import wraps
 from sqlalchemy import text, or_, func
 from werkzeug.utils import secure_filename
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import unicodedata
 import html
 import hashlib
@@ -17,6 +34,7 @@ from datetime import date, datetime
 from uuid import uuid4
 from flask import make_response
 import io
+import tempfile
 import xlsxwriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -206,6 +224,1404 @@ class CBHPMItem(db.Model):
     subtotal = db.Column(db.Numeric(12, 2), nullable=True)
     # vínculo
     id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+class CBHPMTeto(db.Model):
+    __tablename__ = 'cbhpm_teto'
+
+    codigo = db.Column(db.String(100), primary_key=True)
+    descricao = db.Column(db.String(500), nullable=True)
+    valor_total = db.Column(db.Numeric(12, 2), nullable=False)
+    versao_ref = db.Column(db.String(100), nullable=False)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+
+class BrasRaw(db.Model):
+    __tablename__ = 'bras_raw'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    arquivo = db.Column(db.String(255), nullable=False)
+    linha_num = db.Column(db.Integer, nullable=False)
+    col01 = db.Column(db.String(255))
+    col02 = db.Column(db.String(255))
+    col03 = db.Column(db.String(255))
+    col04 = db.Column(db.String(255))
+    col05 = db.Column(db.String(255))
+    col06 = db.Column(db.String(255))
+    col07 = db.Column(db.String(255))
+    col08 = db.Column(db.String(255))
+    col09 = db.Column(db.String(255))
+    col10 = db.Column(db.String(255))
+    col11 = db.Column(db.String(255))
+    col12 = db.Column(db.String(255))
+    col13 = db.Column(db.String(255))
+    col14 = db.Column(db.String(255))
+    col15 = db.Column(db.String(255))
+    col16 = db.Column(db.String(255))
+    col17 = db.Column(db.String(255))
+    col18 = db.Column(db.String(255))
+    col19 = db.Column(db.String(255))
+    col20 = db.Column(db.String(255))
+    col21 = db.Column(db.String(255))
+    col22 = db.Column(db.String(255))
+    col23 = db.Column(db.String(255))
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_bras_raw_arquivo', 'arquivo'),
+        db.Index('idx_bras_raw_col17', 'col17'),
+        db.Index('idx_bras_raw_col03', 'col03'),
+        db.Index('idx_bras_raw_col06', 'col06'),
+    )
+
+
+class BrasFixedStage(db.Model):
+    __tablename__ = 'bras_fixed_stage'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    arquivo = db.Column(db.String(255), nullable=False)
+    linha_num = db.Column(db.Integer, nullable=False)
+    linha = db.Column(db.Text, nullable=False)
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_bras_fixed_arquivo', 'arquivo'),
+    )
+
+
+class BrasItemNormalized(db.Model):
+    __tablename__ = 'bras_item_n'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    arquivo = db.Column(db.String(255), nullable=False)
+    linha_num = db.Column(db.Integer, nullable=False)
+    laboratorio_codigo = db.Column(db.String(50), nullable=True)
+    laboratorio_nome = db.Column(db.String(255), index=True, nullable=True)
+    produto_codigo = db.Column(db.String(50), index=True, nullable=True)
+    produto_nome = db.Column(db.String(255), index=True, nullable=True)
+    apresentacao_codigo = db.Column(db.String(50), nullable=True)
+    apresentacao_descricao = db.Column(db.String(255), index=True, nullable=True)
+    ean = db.Column(db.String(20), index=True, nullable=True)
+    registro_anvisa = db.Column(db.String(50), index=True, nullable=True)
+    edicao = db.Column(db.String(50), index=True, nullable=True)
+    preco_pmc_pacote = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pfb_pacote = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pmc_unit = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pfb_unit = db.Column(db.Numeric(15, 4), nullable=True)
+    aliquota_ou_ipi = db.Column(db.Numeric(15, 4), nullable=True)
+    quantidade_embalagem = db.Column(db.Integer, nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.Index('idx_bras_item_n_ean', 'ean'),
+        db.Index('idx_bras_item_n_prod', 'produto_codigo'),
+        db.Index('idx_bras_item_n_desc', 'produto_nome', 'apresentacao_descricao'),
+        db.Index('idx_bras_item_n_anvisa', 'registro_anvisa'),
+        db.Index('idx_bras_item_n_edicao', 'edicao'),
+    )
+
+
+class SimproItem(db.Model):
+    __tablename__ = 'simpro_item'
+
+    id = db.Column(db.Integer, primary_key=True)
+    tuss = db.Column(db.String(50), index=True, nullable=True)
+    tiss = db.Column(db.String(50), index=True, nullable=True)
+    anvisa = db.Column(db.String(50), index=True, nullable=True)
+    descricao = db.Column(db.String(500), nullable=False, index=True)
+    preco = db.Column(db.Numeric(12, 4), nullable=True)
+    aliquota = db.Column(db.Numeric(12, 4), nullable=True)
+    fabricante = db.Column(db.String(255), nullable=True)
+    versao_tabela = db.Column(db.String(100), nullable=True)
+    data_atualizacao = db.Column(db.Date, nullable=True)
+    uf_referencia = db.Column(db.String(5), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+
+class InsumoIndex(db.Model):
+    __tablename__ = 'insumos_index'
+
+    origem = db.Column(db.Enum('BRAS', 'SIMPRO', name='insumo_origem'), primary_key=True)
+    item_id = db.Column(db.Integer, primary_key=True)
+    tuss = db.Column(db.String(50), index=True, nullable=True)
+    tiss = db.Column(db.String(50), index=True, nullable=True)
+    descricao = db.Column(db.String(500), index=True, nullable=True)
+    preco = db.Column(db.Numeric(12, 4), nullable=True)
+    aliquota = db.Column(db.Numeric(12, 4), nullable=True)
+    fabricante = db.Column(db.String(255), nullable=True)
+    anvisa = db.Column(db.String(50), index=True, nullable=True)
+    versao_tabela = db.Column(db.String(100), nullable=True)
+    data_atualizacao = db.Column(db.Date, nullable=True)
+    uf_referencia = db.Column(db.String(5), nullable=True)
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+
+BRAS_DEFAULT_COLUMNS = ['tuss', 'tiss', 'anvisa', 'descricao', 'preco', 'fabricante', 'aliquota']
+SIMPRO_DEFAULT_COLUMNS = ['tuss', 'tiss', 'anvisa', 'descricao', 'preco', 'fabricante', 'aliquota']
+DECIMAL_FIELDS = {'preco', 'aliquota'}
+DATE_FIELDS = {'data_atualizacao'}
+DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
+BRAS_RAW_DEFAULT_COLUMNS = [
+    'col01', 'col02', 'col03', 'col04', 'col05', 'col06', 'col07', 'col08', 'col09', 'col10',
+    'col11', 'col12', 'col13', 'col14', 'col15', 'col16', 'col17', 'col18', 'col19', 'col20',
+    'col21', 'col22', 'col23'
+]
+
+
+def _clean_decimal_expression(column: str) -> str:
+    cleaned = f"REPLACE(REPLACE(REPLACE({column}, '.', ''), ' ', ''), ',', '.')"
+    return (
+        "CAST(\n"
+        "    CASE\n"
+        f"        WHEN {column} IS NULL THEN NULL\n"
+        f"        WHEN {cleaned} = '' THEN NULL\n"
+        f"        WHEN CHAR_LENGTH({cleaned}) > 32 THEN NULL\n"
+        f"        ELSE {cleaned}\n"
+        "    END AS DECIMAL(15,4)\n"
+        ")"
+    )
+
+
+def _build_bras_item_view_sql() -> str:
+    preco_pmc_pacote = _clean_decimal_expression('r.col21')
+    preco_pfb_pacote = _clean_decimal_expression('r.col22')
+    preco_pmc_unit = _clean_decimal_expression('r.col23')
+    preco_pfb_unit = _clean_decimal_expression('r.col22')
+    aliquota = _clean_decimal_expression('r.col20')
+    quantidade = (
+        "CAST(\n"
+        "    CASE\n"
+        "        WHEN r.col05 IS NULL THEN NULL\n"
+        "        WHEN TRIM(r.col05) = '' THEN NULL\n"
+        "        WHEN REPLACE(r.col05, ' ', '') REGEXP '^[0-9]+$'\n"
+        "            THEN REPLACE(r.col05, ' ', '')\n"
+        "        ELSE NULL\n"
+        "    END AS UNSIGNED\n"
+        ")"
+    )
+
+    return (
+        "CREATE OR REPLACE VIEW bras_item_v AS\n"
+        "SELECT\n"
+        "    r.id,\n"
+        "    r.arquivo,\n"
+        "    r.linha_num,\n"
+        "    r.col01 AS laboratorio_codigo,\n"
+        "    r.col02 AS laboratorio_nome,\n"
+        "    r.col03 AS produto_codigo,\n"
+        "    r.col04 AS produto_nome,\n"
+        "    r.col05 AS apresentacao_codigo,\n"
+        "    r.col06 AS apresentacao_descricao,\n"
+        "    r.col17 AS ean,\n"
+        "    r.col14 AS registro_anvisa,\n"
+        "    r.col19 AS edicao,\n"
+        f"    {preco_pmc_pacote} AS preco_pmc_pacote,\n"
+        f"    {preco_pfb_pacote} AS preco_pfb_pacote,\n"
+        f"    {preco_pmc_unit} AS preco_pmc_unit,\n"
+        f"    {preco_pfb_unit} AS preco_pfb_unit,\n"
+        f"    {aliquota} AS aliquota_ou_ipi,\n"
+        f"    {quantidade} AS quantidade_embalagem,\n"
+        "    r.imported_at\n"
+        "FROM bras_raw r\n"
+    )
+
+
+BRAS_ITEM_VIEW_SQL = _build_bras_item_view_sql()
+
+
+def _normalize_column_token(name: str | None) -> str:
+    if name is None:
+        return ''
+    token = str(name).strip().strip('"').strip("'")
+    if not token:
+        return ''
+    normalized = unicodedata.normalize('NFKD', token)
+    normalized = ''.join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = normalized.replace('-', '_').replace(' ', '_')
+    normalized = re.sub(r'[^0-9a-zA-Z_]', '', normalized)
+    return normalized.lower()
+
+
+def _columns_valid_for_model(model_cls, columns: list[str]) -> bool:
+    if not columns:
+        return False
+    valid = {col.name for col in model_cls.__table__.columns}
+    for col in columns:
+        if not col or col not in valid:
+            return False
+    return True
+
+
+def _build_encoding_list(primary: str | None) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str | None) -> None:
+        if not candidate:
+            return
+        normalized = candidate.strip()
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(normalized)
+
+    _add(primary)
+    for fallback in DEFAULT_IMPORT_ENCODINGS:
+        _add(fallback)
+    return ordered
+
+
+MYSQL_CHARSET_MAP = {
+    'utf-8-sig': 'utf8mb4',
+    'utf8-sig': 'utf8mb4',
+    'utf-8': 'utf8mb4',
+    'utf8': 'utf8mb4',
+    'utf8mb4': 'utf8mb4',
+    'latin-1': 'latin1',
+    'latin1': 'latin1',
+    'iso-8859-1': 'latin1',
+    'cp1252': 'cp1252',
+}
+
+
+def _encoding_to_mysql_charset(encoding: str | None) -> str:
+    if not encoding:
+        return 'utf8mb4'
+    return MYSQL_CHARSET_MAP.get(encoding.lower(), 'utf8mb4')
+
+
+def _sql_escape_literal(value: str) -> str:
+    escaped = value.replace('\\', r'\\').replace("'", r"\'")
+    return f"'{escaped}'"
+
+
+def _encode_line_terminator(value: str | None) -> str:
+    if not value:
+        return '\n'
+    return value.encode('unicode_escape').decode('ascii')
+
+
+def _delete_existing_bras_records(arquivo_label: str | None, truncate: bool) -> None:
+    if truncate:
+        db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'BRAS'"))
+        db.session.execute(text('TRUNCATE TABLE bras_item_n'))
+        db.session.execute(text('TRUNCATE TABLE bras_raw'))
+        db.session.execute(text('TRUNCATE TABLE bras_fixed_stage'))
+        db.session.commit()
+        return
+
+    if not arquivo_label:
+        return
+
+    params = {'arquivo': arquivo_label}
+    db.session.execute(
+        text(
+            "DELETE FROM insumos_index "
+            "WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)"
+        ),
+        params,
+    )
+    db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), params)
+    db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), params)
+    db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), params)
+    db.session.commit()
+
+
+def _bras_load_data_delimited(
+    *,
+    file_path: Path,
+    delimiter: str,
+    quotechar: str | None,
+    line_terminator: str,
+    skip_header: bool,
+    encoding: str | None,
+    arquivo_label: str,
+) -> int:
+    charset = _encoding_to_mysql_charset(encoding)
+    delimiter_lit = _sql_escape_literal(delimiter)
+    line_term_lit = _sql_escape_literal(_encode_line_terminator(line_terminator))
+    file_literal = _sql_escape_literal(str(file_path))
+    arquivo_literal = _sql_escape_literal(arquivo_label)
+    quote_clause = ''
+    if quotechar:
+        quote_clause = f"OPTIONALLY ENCLOSED BY {_sql_escape_literal(quotechar)}\n"
+
+    ignore_clause = 'IGNORE 1 LINES\n' if skip_header else ''
+
+    bindings = [f"@col{idx:02d}" for idx in range(1, 24)]
+    set_lines = [
+        f"col{idx:02d} = NULLIF(@col{idx:02d}, '')"
+        for idx in range(1, 24)
+    ]
+    set_lines.append(f"arquivo = {arquivo_literal}")
+    set_lines.append("linha_num = (@row := @row + 1)")
+    set_clause = ',\n        '.join(set_lines)
+
+    sql = (
+        "SET @row := 0;\n"
+        f"LOAD DATA LOCAL INFILE {file_literal}\n"
+        "INTO TABLE bras_raw\n"
+        f"CHARACTER SET {charset}\n"
+        f"FIELDS TERMINATED BY {delimiter_lit}\n"
+        f"{quote_clause}"
+        f"LINES TERMINATED BY {line_term_lit}\n"
+        f"{ignore_clause}"
+        f"({', '.join(bindings)})\n"
+        f"SET {set_clause}"
+    )
+
+    with db.engine.begin() as conn:
+        result = conn.exec_driver_sql(sql)
+        return result.rowcount or 0
+
+
+def _bras_csv_fallback(
+    *,
+    file_path: Path,
+    delimiter: str,
+    quotechar: str | None,
+    skip_header: bool,
+    encodings: list[str],
+    arquivo_label: str,
+) -> int:
+    for enc in encodings:
+        try:
+            with file_path.open('r', encoding=enc, newline='') as handle:
+                reader = csv.reader(handle, delimiter=delimiter, quotechar=quotechar or '"')
+                rows: list[dict] = []
+                for idx, raw in enumerate(reader, start=1):
+                    if skip_header and idx == 1:
+                        continue
+                    values = (raw or [])[:23]
+                    values += [''] * (23 - len(values))
+                    mapping = {
+                        'arquivo': arquivo_label,
+                        'linha_num': len(rows) + 1,
+                        **{f'col{pos:02d}': (val.strip() or None) if isinstance(val, str) else None for pos, val in enumerate(values, start=1)}
+                    }
+                    rows.append(mapping)
+            if rows:
+                db.session.bulk_insert_mappings(BrasRaw, rows)
+                db.session.commit()
+                return len(rows)
+            return 0
+        except UnicodeDecodeError:
+            db.session.rollback()
+            continue
+    raise click.ClickException('Não foi possível decodificar o arquivo com as codificações testadas.')
+
+
+def _stage_bras_delimited(
+    *,
+    file_path: Path,
+    delimiter: str,
+    quotechar: str | None,
+    line_terminator: str,
+    skip_header: bool,
+    encoding: str | None,
+    arquivo_label: str,
+    use_load_data: bool,
+) -> int:
+    encodings = _build_encoding_list(encoding)
+    inserted = 0
+    if use_load_data:
+        try:
+            inserted = _bras_load_data_delimited(
+                file_path=file_path,
+                delimiter=delimiter,
+                quotechar=quotechar,
+                line_terminator=line_terminator,
+                skip_header=skip_header,
+                encoding=encodings[0],
+                arquivo_label=arquivo_label,
+            )
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning('LOAD DATA falhou (%s); usando fallback Python.', exc)
+            inserted = 0
+
+    if not inserted:
+        inserted = _bras_csv_fallback(
+            file_path=file_path,
+            delimiter=delimiter,
+            quotechar=quotechar,
+            skip_header=skip_header,
+            encodings=encodings,
+            arquivo_label=arquivo_label,
+        )
+    return inserted
+
+
+def _stage_bras_fixed(
+    *,
+    file_path: Path,
+    map_config: dict,
+    encoding: str | None,
+    line_terminator: str,
+    arquivo_label: str,
+) -> int:
+    columns_cfg = map_config.get('columns') or []
+    if not columns_cfg:
+        raise click.ClickException('Arquivo de mapeamento precisa definir "columns".')
+
+    encodings = _build_encoding_list(encoding)
+    inserted = 0
+    for enc in encodings:
+        try:
+            rows_stage: list[dict] = []
+            rows_raw: list[dict] = []
+            with file_path.open('r', encoding=enc, newline='') as handle:
+                for idx, raw_line in enumerate(handle, start=1):
+                    line = raw_line.rstrip('\r\n')
+                    rows_stage.append({'arquivo': arquivo_label, 'linha_num': idx, 'linha': line})
+                    mapping = {'arquivo': arquivo_label, 'linha_num': idx}
+                    for col in columns_cfg:
+                        name = col.get('name')
+                        start = int(col.get('start', 1)) - 1
+                        length = int(col.get('length', 0))
+                        if not name or length <= 0:
+                            continue
+                        snippet = line[start:start + length]
+                        mapping[name] = snippet.strip() or None
+                    rows_raw.append(mapping)
+            if rows_stage:
+                db.session.bulk_insert_mappings(BrasFixedStage, rows_stage)
+            if rows_raw:
+                db.session.bulk_insert_mappings(BrasRaw, rows_raw)
+            db.session.commit()
+            inserted = len(rows_raw)
+            break
+        except UnicodeDecodeError:
+            db.session.rollback()
+            continue
+    if not inserted:
+        raise click.ClickException('Não foi possível decodificar o arquivo de largura fixa.')
+    return inserted
+
+
+def _ensure_bras_item_view_exists() -> None:
+    with db.engine.begin() as conn:
+        conn.exec_driver_sql(BRAS_ITEM_VIEW_SQL)
+
+
+def _materialize_bras_items(arquivo_label: str | None) -> int:
+    _ensure_bras_item_view_exists()
+    params: dict[str, str] = {}
+    where_clause = ''
+    if arquivo_label:
+        params['arquivo'] = arquivo_label
+        where_clause = 'WHERE arquivo = :arquivo'
+
+    insert_sql = text(
+        """
+        INSERT INTO bras_item_n (
+            id, arquivo, linha_num,
+            laboratorio_codigo, laboratorio_nome,
+            produto_codigo, produto_nome,
+            apresentacao_codigo, apresentacao_descricao,
+            ean, registro_anvisa, edicao,
+            preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
+            aliquota_ou_ipi, quantidade_embalagem, imported_at
+        )
+        SELECT
+            id, arquivo, linha_num,
+            laboratorio_codigo, laboratorio_nome,
+            produto_codigo, produto_nome,
+            apresentacao_codigo, apresentacao_descricao,
+            ean, registro_anvisa, edicao,
+            preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
+            aliquota_ou_ipi, quantidade_embalagem, imported_at
+        FROM bras_item_v
+        {where_clause}
+        ON DUPLICATE KEY UPDATE
+            arquivo = VALUES(arquivo),
+            linha_num = VALUES(linha_num),
+            laboratorio_codigo = VALUES(laboratorio_codigo),
+            laboratorio_nome = VALUES(laboratorio_nome),
+            produto_codigo = VALUES(produto_codigo),
+            produto_nome = VALUES(produto_nome),
+            apresentacao_codigo = VALUES(apresentacao_codigo),
+            apresentacao_descricao = VALUES(apresentacao_descricao),
+            ean = VALUES(ean),
+            registro_anvisa = VALUES(registro_anvisa),
+            edicao = VALUES(edicao),
+            preco_pmc_pacote = VALUES(preco_pmc_pacote),
+            preco_pfb_pacote = VALUES(preco_pfb_pacote),
+            preco_pmc_unit = VALUES(preco_pmc_unit),
+            preco_pfb_unit = VALUES(preco_pfb_unit),
+            aliquota_ou_ipi = VALUES(aliquota_ou_ipi),
+            quantidade_embalagem = VALUES(quantidade_embalagem),
+            imported_at = VALUES(imported_at)
+        """.replace('{where_clause}', where_clause)
+    )
+
+    result = db.session.execute(insert_sql, params)
+    db.session.commit()
+    return result.rowcount or 0
+
+
+def _sync_bras_insumo_index(arquivo_label: str | None) -> None:
+    params: dict[str, str] = {}
+    where_clause = ''
+    if arquivo_label:
+        params['arquivo'] = arquivo_label
+        where_clause = 'WHERE arquivo = :arquivo'
+
+    upsert_sql = text(
+        """
+        INSERT INTO insumos_index (
+            origem, item_id, tuss, tiss, descricao, preco, aliquota,
+            fabricante, anvisa, versao_tabela, data_atualizacao,
+            uf_referencia, updated_at
+        )
+        SELECT
+            'BRAS' AS origem,
+            n.id AS item_id,
+            NULL AS tuss,
+            NULL AS tiss,
+            TRIM(CONCAT_WS(' • ', NULLIF(n.produto_nome, ''), NULLIF(n.apresentacao_descricao, ''))) AS descricao,
+            n.preco_pmc_unit AS preco,
+            n.aliquota_ou_ipi AS aliquota,
+            n.laboratorio_nome AS fabricante,
+            n.registro_anvisa AS anvisa,
+            COALESCE(n.edicao, n.arquivo) AS versao_tabela,
+            NULL AS data_atualizacao,
+            NULL AS uf_referencia,
+            NOW() AS updated_at
+        FROM bras_item_n n
+        {where_clause}
+        ON DUPLICATE KEY UPDATE
+            tuss = VALUES(tuss),
+            tiss = VALUES(tiss),
+            descricao = VALUES(descricao),
+            preco = VALUES(preco),
+            aliquota = VALUES(aliquota),
+            fabricante = VALUES(fabricante),
+            anvisa = VALUES(anvisa),
+            versao_tabela = VALUES(versao_tabela),
+            data_atualizacao = VALUES(data_atualizacao),
+            uf_referencia = VALUES(uf_referencia),
+            updated_at = VALUES(updated_at)
+        """.replace('{where_clause}', where_clause)
+    )
+
+    db.session.execute(upsert_sql, params)
+    db.session.commit()
+
+
+def _import_bras(
+    *,
+    file_path: Path,
+    versao: str,
+    data_ref: str | None,
+    fmt: str,
+    delimiter: str,
+    quotechar: str | None,
+    line_terminator: str,
+    skip_header: bool,
+    encoding: str | None,
+    map_config: dict,
+    truncate: bool,
+) -> dict:
+    del data_ref
+    arquivo_label = map_config.get('arquivo') or versao or file_path.name
+
+    _delete_existing_bras_records(arquivo_label, truncate)
+
+    inserted = 0
+    if fmt == 'delimited':
+        inserted = _stage_bras_delimited(
+            file_path=file_path,
+            delimiter=delimiter,
+            quotechar=quotechar,
+            line_terminator=line_terminator,
+            skip_header=skip_header,
+            encoding=encoding,
+            arquivo_label=arquivo_label,
+            use_load_data=not map_config.get('disable_load_data', False),
+        )
+    else:
+        inserted = _stage_bras_fixed(
+            file_path=file_path,
+            map_config=map_config,
+            encoding=encoding,
+            line_terminator=line_terminator,
+            arquivo_label=arquivo_label,
+        )
+
+    materialized = _materialize_bras_items(arquivo_label if not truncate else None)
+    _sync_bras_insumo_index(arquivo_label if not truncate else None)
+
+    return {
+        'arquivo': arquivo_label,
+        'linhas_raw': inserted,
+        'linhas_materializadas': materialized,
+    }
+
+
+DECIMAL_SANITIZE_RE = re.compile(r'[^0-9,\.-]')
+
+
+def _coerce_decimal(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return format(value, 'f')
+    if isinstance(value, (int, float)):
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+        return format(decimal_value, 'f')
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    raw = raw.replace('\xa0', '').replace(' ', '')
+    if raw.endswith('-') and raw.count('-') == 1:
+        raw = '-' + raw[:-1]
+    raw = DECIMAL_SANITIZE_RE.sub('', raw)
+
+    if not raw or raw in {'-', '.', ',', '-.', '-,'}:
+        return None
+    if raw.count('-') > 1 or (raw[0] == '-' and '-' in raw[1:]):
+        return None
+
+    negative = raw.startswith('-')
+    if negative:
+        raw = raw[1:]
+
+    if not raw:
+        return None
+
+    decimal_sep = None
+    if ',' in raw and '.' in raw:
+        last_comma = raw.rfind(',')
+        last_dot = raw.rfind('.')
+        sep_index = max(last_comma, last_dot)
+        decimal_sep = raw[sep_index]
+        integer_part = raw[:sep_index].replace(',', '').replace('.', '')
+        fractional_part = raw[sep_index + 1:]
+    else:
+        sep = None
+        if ',' in raw:
+            sep = ','
+        elif '.' in raw:
+            sep = '.'
+
+        if sep is not None:
+            occurrences = [idx for idx, ch in enumerate(raw) if ch == sep]
+            last_idx = occurrences[-1]
+            decimals_len = len(raw) - last_idx - 1
+            if 0 < decimals_len <= 6:
+                decimal_sep = sep
+                integer_part = raw[:last_idx].replace(',', '').replace('.', '')
+                fractional_part = raw[last_idx + 1:]
+            else:
+                integer_part = raw.replace(',', '').replace('.', '')
+                fractional_part = ''
+        else:
+            integer_part = raw
+            fractional_part = ''
+
+    if decimal_sep is None:
+        normalized = integer_part
+    else:
+        normalized = f"{integer_part}.{fractional_part}" if fractional_part else integer_part
+
+    if negative:
+        normalized = f"-{normalized}"
+
+    if not normalized or normalized in {'-', '.', '-.'}:
+        return None
+
+    try:
+        decimal_value = Decimal(normalized)
+    except (InvalidOperation, ValueError):
+        return None
+
+    return format(decimal_value, 'f')
+
+
+def _coerce_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y'):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_delimiter(delimiter: str) -> str:
+    if delimiter.lower() in {'\t', 'tab'}:
+        return '\t'
+    return delimiter
+
+
+def _resolve_columns(config_columns: list[str] | None, default_columns: list[str], header: list[str] | None) -> list[str]:
+    if config_columns:
+        sanitized = [_normalize_column_token(col) for col in config_columns]
+        cols = [col for col in sanitized if col]
+        return cols or default_columns
+    if header:
+        sanitized = [_normalize_column_token(h) for h in header]
+        cols = [col for col in sanitized if col]
+        return cols or default_columns
+    return default_columns
+
+
+def _parse_positive_int(value: str | None, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return minimum
+    if maximum is not None and parsed > maximum:
+        return maximum
+    return parsed
+
+
+def _decimal_to_string(value: Decimal | None, precision: int = 4) -> str | None:
+    if value is None:
+        return None
+    quantize_target = Decimal('1').scaleb(-precision)
+    try:
+        normalized = value.quantize(quantize_target)
+    except (InvalidOperation, ValueError):
+        normalized = value
+    normalized = normalized.normalize()
+    as_str = format(normalized, 'f')
+    if '.' in as_str:
+        as_str = as_str.rstrip('0').rstrip('.')
+    return as_str
+
+
+def _serialize_insumo_index(item: 'InsumoIndex') -> dict:
+    return {
+        'origem': item.origem,
+        'item_id': item.item_id,
+        'tuss': item.tuss,
+        'tiss': item.tiss,
+        'descricao': item.descricao,
+        'preco': _decimal_to_string(item.preco),
+        'aliquota': _decimal_to_string(item.aliquota),
+        'fabricante': item.fabricante,
+        'anvisa': item.anvisa,
+        'versao_tabela': item.versao_tabela,
+        'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
+        'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
+        'uf_referencia': item.uf_referencia,
+    }
+
+
+def _serialize_insumo_detail(origem: str, item: BrasItemNormalized | SimproItem) -> dict:
+    if isinstance(item, BrasItemNormalized):
+        descricao = item.produto_nome or ''
+        if item.apresentacao_descricao:
+            descricao = f"{descricao} • {item.apresentacao_descricao}" if descricao else item.apresentacao_descricao
+        return {
+            'origem': 'BRAS',
+            'item_id': item.id,
+            'tuss': None,
+            'tiss': None,
+            'anvisa': item.registro_anvisa,
+            'descricao': descricao,
+            'preco': _decimal_to_string(item.preco_pmc_unit) or _decimal_to_string(item.preco_pmc_pacote),
+            'aliquota': _decimal_to_string(item.aliquota_ou_ipi),
+            'fabricante': item.laboratorio_nome,
+            'versao_tabela': item.edicao or item.arquivo,
+            'data_atualizacao': None,
+            'updated_at': item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None,
+            'created_at': None,
+            'uf_referencia': None,
+            'arquivo': item.arquivo,
+            'linha_num': item.linha_num,
+            'preco_pmc_pacote': _decimal_to_string(item.preco_pmc_pacote),
+            'preco_pfb_pacote': _decimal_to_string(item.preco_pfb_pacote),
+            'preco_pfb_unit': _decimal_to_string(item.preco_pfb_unit),
+            'quantidade_embalagem': item.quantidade_embalagem,
+        }
+
+    return {
+        'origem': origem,
+        'item_id': item.id,
+        'tuss': item.tuss,
+        'tiss': item.tiss,
+        'anvisa': item.anvisa,
+        'descricao': item.descricao,
+        'preco': _decimal_to_string(item.preco),
+        'aliquota': _decimal_to_string(item.aliquota),
+        'fabricante': item.fabricante,
+        'versao_tabela': item.versao_tabela,
+        'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
+        'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
+        'created_at': item.created_at.isoformat() if isinstance(item.created_at, datetime) else None,
+        'uf_referencia': item.uf_referencia,
+    }
+
+
+def _extract_insumo_filters(args) -> dict:
+    origem = (args.get('origem') or '').strip().upper()
+    uf_ref = (args.get('uf_referencia') or args.get('uf') or '').strip().upper()
+    aliquota_raw = (args.get('aliquota') or '').strip()
+    aliquota_filter = _coerce_decimal(aliquota_raw) if aliquota_raw else None
+    aliquota_value = Decimal(aliquota_filter) if aliquota_filter is not None else None
+    filters = {
+        'origem': origem if origem in {'BRAS', 'SIMPRO'} else None,
+        'tuss': (args.get('tuss') or '').strip() or None,
+        'tiss': (args.get('tiss') or '').strip() or None,
+        'anvisa': (args.get('anvisa') or '').strip() or None,
+        'fabricante': (args.get('fabricante') or '').strip() or None,
+        'versao_tabela': (args.get('versao_tabela') or '').strip() or None,
+        'uf_referencia': uf_ref or None,
+        'aliquota': aliquota_value,
+    }
+    q = (args.get('q') or '').strip()
+    tokens = [token.lower() for token in re.split(r'\s+', q) if token]
+    filters['tokens'] = tokens[:6]
+    filters['raw_q'] = q
+    return filters
+
+
+def _apply_insumo_filters(query, filters: dict):
+    origem = filters.get('origem')
+    if origem:
+        query = query.filter(InsumoIndex.origem == origem)
+
+    if filters.get('tuss'):
+        query = query.filter(InsumoIndex.tuss == filters['tuss'])
+    if filters.get('tiss'):
+        query = query.filter(InsumoIndex.tiss == filters['tiss'])
+    if filters.get('anvisa'):
+        query = query.filter(InsumoIndex.anvisa == filters['anvisa'])
+    if filters.get('fabricante'):
+        fabricante = filters['fabricante'].lower()
+        query = query.filter(func.lower(InsumoIndex.fabricante).like(f"%{fabricante}%"))
+    if filters.get('versao_tabela'):
+        query = query.filter(InsumoIndex.versao_tabela == filters['versao_tabela'])
+    if filters.get('uf_referencia'):
+        query = query.filter(func.upper(InsumoIndex.uf_referencia) == filters['uf_referencia'])
+    if filters.get('aliquota') is not None:
+        query = query.filter(InsumoIndex.aliquota == filters['aliquota'])
+
+    tokens = filters.get('tokens') or []
+    for token in tokens:
+        pattern = f"%{token}%"
+        query = query.filter(
+            or_(
+                func.lower(InsumoIndex.descricao).like(pattern),
+                func.lower(InsumoIndex.fabricante).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.tuss, '')).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.tiss, '')).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.anvisa, '')).like(pattern),
+            )
+        )
+
+    return query
+
+
+def _insumo_summary(model_cls) -> dict:
+    total = db.session.query(func.count(model_cls.id)).scalar() or 0
+
+    updated_column = None
+    for candidate in ('updated_at', 'imported_at'):
+        updated_column = getattr(model_cls, candidate, None)
+        if updated_column is not None:
+            break
+    last_updated = db.session.query(func.max(updated_column)).scalar() if updated_column is not None else None
+
+    data_column = getattr(model_cls, 'data_atualizacao', None)
+    last_data = db.session.query(func.max(data_column)).scalar() if data_column is not None else None
+
+    version_column = None
+    for candidate in ('versao_tabela', 'edicao', 'arquivo'):
+        version_column = getattr(model_cls, candidate, None)
+        if version_column is not None:
+            break
+
+    latest_version = None
+    if version_column is not None:
+        latest_version = (
+            db.session.query(version_column)
+            .filter(version_column.isnot(None))
+            .order_by(version_column.desc())
+            .limit(1)
+            .scalar()
+        )
+
+    return {
+        'total': int(total),
+        'last_updated': last_updated,
+        'last_data_ref': last_data,
+        'latest_version': latest_version,
+    }
+
+
+def _insumo_distinct_versions(model_cls) -> list[str]:
+    version_column = None
+    for candidate in ('versao_tabela', 'edicao', 'arquivo'):
+        version_column = getattr(model_cls, candidate, None)
+        if version_column is not None:
+            break
+
+    if version_column is None:
+        return []
+
+    rows = (
+        db.session.query(version_column)
+        .filter(version_column.isnot(None))
+        .distinct()
+        .order_by(version_column)
+        .all()
+    )
+    return [row[0] for row in rows if row[0]]
+
+
+def _get_teto_map(codigos: list[str]) -> dict[str, 'CBHPMTeto']:
+    unique_codes = {str(c).strip() for c in codigos if str(c).strip()}
+    if not unique_codes:
+        return {}
+    rows = CBHPMTeto.query.filter(CBHPMTeto.codigo.in_(unique_codes)).all()
+    return {row.codigo: row for row in rows}
+
+
+def _load_data_local_infile(engine, table_name: str, columns: list[str], file_path: Path, delimiter: str,
+                             quotechar: str | None, skip_lines: int, extra_assignments: dict[str, str | None],
+                             charset: str | None) -> int:
+    bindings = [f"@col{idx}" for idx in range(len(columns))]
+    set_clauses: list[str] = []
+    params: dict[str, str | None] = {'file_path': str(file_path), 'delimiter': delimiter}
+    if quotechar:
+        params['enclosed'] = quotechar
+
+    for name, binding in zip(columns, bindings):
+        if name in DECIMAL_FIELDS:
+            normalized = f"REPLACE({binding}, ',', '.')"
+            set_clauses.append(
+                f"{name} = CASE WHEN {normalized} REGEXP '^-?[0-9]+(\\.[0-9]+)?$' "
+                f"THEN NULLIF({normalized}, '') ELSE NULL END"
+            )
+        else:
+            set_clauses.append(f"{name} = NULLIF({binding}, '')")
+
+    for key, value in extra_assignments.items():
+        param_key = f"extra_{key}"
+        set_clauses.append(f"{key} = :{param_key}")
+        params[param_key] = value
+
+    sql_parts = [
+        "LOAD DATA LOCAL INFILE :file_path",
+        f"INTO TABLE {table_name}",
+        "FIELDS TERMINATED BY :delimiter",
+    ]
+    if charset:
+        sql_parts.insert(2, f"CHARACTER SET {charset}")
+    if quotechar:
+        sql_parts.append("OPTIONALLY ENCLOSED BY :enclosed")
+    sql_parts.append("LINES TERMINATED BY '\n'")
+    if skip_lines:
+        sql_parts.append(f"IGNORE {skip_lines} LINES")
+    sql_parts.append(f"({', '.join(bindings)})")
+    sql_parts.append(f"SET {', '.join(set_clauses)}")
+    sql = "\n".join(sql_parts)
+
+    with engine.begin() as conn:
+        result = conn.exec_driver_sql(sql, params)
+        return result.rowcount or 0
+
+
+def _fallback_delimited(model_cls, columns: list[str], file_path: Path, delimiter: str, quotechar: str | None,
+                        skip_header: bool, extra_assignments: dict[str, object | None],
+                        encodings: list[str]) -> int:
+    delimiter = delimiter or ';'
+    quotechar = quotechar or '"'
+    tried: list[str] = []
+
+    for encoding in encodings:
+        try:
+            created = 0
+            with file_path.open('r', encoding=encoding, newline='') as fh:
+                reader = csv.reader(fh, delimiter=delimiter, quotechar=quotechar)
+                if skip_header:
+                    next(reader, None)
+                rows = []
+                for raw_row in reader:
+                    record: dict[str, object | None] = {}
+                    for idx, col in enumerate(columns):
+                        value = raw_row[idx] if idx < len(raw_row) else ''
+                        value = value.strip() if isinstance(value, str) else value
+                        if not value:
+                            record[col] = None
+                        elif col in DECIMAL_FIELDS:
+                            coerced = _coerce_decimal(value)
+                            record[col] = Decimal(coerced) if coerced is not None else None
+                        elif col in DATE_FIELDS:
+                            record[col] = _coerce_date(value)
+                        else:
+                            record[col] = value
+                    record.update(extra_assignments)
+                    rows.append(model_cls(**record))
+                if rows:
+                    db.session.bulk_save_objects(rows)
+                    db.session.commit()
+                    created = len(rows)
+            return created
+        except UnicodeDecodeError:
+            tried.append(encoding)
+            db.session.rollback()
+            continue
+
+    tried_display = ', '.join(tried) if tried else 'utf-8'
+    raise click.ClickException(
+        f'Não foi possível decodificar o arquivo com as codificações testadas ({tried_display}). '
+        'Informe a codificação correta ou converta o arquivo para UTF-8.'
+    )
+
+
+def _handle_delimited_import(*, model_cls, table_name: str, file_path: Path, versao: str,
+                             data_ref: date | None, delimiter: str, quotechar: str | None,
+                             columns_cfg: list[str] | None, skip_header: bool, use_load_data: bool,
+                             truncate: bool, encoding: str | None,
+                             extra_assignments: dict[str, object | None]) -> int:
+    if truncate:
+        db.session.query(model_cls).delete(synchronize_session=False)
+        db.session.commit()
+
+    encodings = _build_encoding_list(encoding)
+    chosen_encoding = encodings[0] if encodings else 'utf-8-sig'
+    header: list[str] | None = None
+    if skip_header:
+        effective_delimiter = delimiter or ';'
+        effective_quotechar = (quotechar or '"') if quotechar is not None else '"'
+        raw_header: list[str] = []
+        try:
+            for encoding_option in encodings:
+                try:
+                    with file_path.open('r', encoding=encoding_option, newline='') as fh:
+                        reader = csv.reader(fh, delimiter=effective_delimiter, quotechar=effective_quotechar)
+                        raw_header = next(reader, [])
+                        chosen_encoding = encoding_option
+                        break
+                except UnicodeDecodeError:
+                    db.session.rollback()
+                    raw_header = []
+                    continue
+        except Exception:
+            raw_header = []
+
+        header = [_normalize_column_token(h) for h in raw_header]
+        if not _columns_valid_for_model(model_cls, header):
+            header = None
+            skip_header = False
+
+    default_cols = BRAS_DEFAULT_COLUMNS if table_name == 'bras_item' else SIMPRO_DEFAULT_COLUMNS
+    columns = _resolve_columns(columns_cfg, default_cols, header)
+
+    has_decimal_columns = any(col in DECIMAL_FIELDS for col in columns)
+    if has_decimal_columns:
+        use_load_data = False
+
+    inserted = 0
+    if use_load_data:
+        try:
+            inserted = _load_data_local_infile(
+                db.engine,
+                table_name,
+                columns,
+                file_path,
+                delimiter,
+                quotechar,
+                1 if skip_header else 0,
+                {k: (_decimal_to_string(v) if isinstance(v, (Decimal, float)) else (v.isoformat() if isinstance(v, date) else v)) for k, v in extra_assignments.items()},
+                _encoding_to_mysql_charset(chosen_encoding),
+            )
+        except Exception:
+            db.session.rollback()
+            inserted = 0
+
+    if not inserted:
+        inserted = _fallback_delimited(
+            model_cls,
+            columns,
+            file_path,
+            delimiter,
+            quotechar,
+            skip_header,
+            extra_assignments,
+            encodings,
+        )
+    return inserted
+
+
+def _handle_fixed_import(*, model_cls, file_path: Path, versao: str, data_ref: date | None,
+                         map_config: dict, truncate: bool,
+                         extra_assignments: dict[str, object | None]) -> int:
+    columns_cfg = map_config.get('columns') or []
+    if not columns_cfg:
+        raise click.ClickException('Arquivo de mapeamento precisa definir "columns".')
+    if truncate:
+        db.session.query(model_cls).delete(synchronize_session=False)
+        db.session.commit()
+
+    extra_assignments_local = dict(extra_assignments)
+
+    rows = []
+    encoding = map_config.get('encoding', 'utf-8-sig')
+    with file_path.open('r', encoding=encoding) as fh:
+        for raw_line in fh:
+            record: dict[str, object | None] = {}
+            for cfg in columns_cfg:
+                name = cfg.get('name')
+                if not name:
+                    continue
+                start = int(cfg.get('start', 1)) - 1
+                length = int(cfg.get('length', 0))
+                value = raw_line[start:start + length].strip()
+                if not value:
+                    record[name] = None
+                elif name in DECIMAL_FIELDS or cfg.get('type') == 'decimal':
+                    coerced = _coerce_decimal(value)
+                    record[name] = Decimal(coerced) if coerced is not None else None
+                elif name in DATE_FIELDS or cfg.get('type') == 'date':
+                    record[name] = _coerce_date(value)
+                else:
+                    record[name] = value
+            record.update(extra_assignments_local)
+            rows.append(model_cls(**record))
+    if rows:
+        db.session.bulk_save_objects(rows)
+        db.session.commit()
+    return len(rows)
+
+
+def _run_insumo_import(resource: str, model_cls, table_name: str, file_path: Path, versao: str,
+                       data_str: str | None, fmt: str, delimiter: str, quotechar: str | None,
+                       map_path: Path | None, no_header: bool, truncate: bool, encoding: str | None,
+                       uf_referencia: str | None, aliquota: Decimal | None) -> None:
+    file_path = file_path.resolve()
+    if not file_path.exists():
+        raise click.ClickException(f'Arquivo não encontrado: {file_path}')
+
+    data_ref = _coerce_date(data_str)
+    map_config: dict = {}
+    if map_path:
+        try:
+            map_config = json.loads(map_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f'Não foi possível ler o arquivo de mapeamento: {exc}') from exc
+        if not isinstance(map_config, dict):
+            raise click.ClickException('Arquivo de mapeamento deve conter um objeto JSON na raiz.')
+
+    delimiter = _normalize_delimiter(map_config.get('delimiter', delimiter)) if fmt == 'delimited' else delimiter
+    quotechar_cfg = map_config.get('quotechar') if fmt == 'delimited' else None
+    if quotechar_cfg is not None:
+        quotechar = quotechar_cfg
+    if quotechar is not None and not str(quotechar).strip():
+        quotechar = None
+
+    encoding_cfg = map_config.get('encoding') if fmt == 'delimited' else map_config.get('encoding')
+    if isinstance(encoding_cfg, str) and encoding_cfg.strip():
+        encoding = encoding_cfg.strip()
+    elif isinstance(encoding_cfg, list) and encoding_cfg:
+        encoding = str(encoding_cfg[0]).strip() or encoding
+
+    skip_header = map_config.get('skip_header') if fmt == 'delimited' and 'skip_header' in map_config else (not no_header)
+    columns_cfg = map_config.get('columns') if fmt == 'delimited' else map_config.get('columns')
+
+    base_assignments: dict[str, object | None] = {
+        'versao_tabela': versao,
+        'data_atualizacao': data_ref,
+    }
+    if uf_referencia:
+        base_assignments['uf_referencia'] = uf_referencia
+    if aliquota is not None:
+        base_assignments['aliquota'] = aliquota
+
+    extra_from_map = map_config.get('extra') if isinstance(map_config.get('extra'), dict) else {}
+
+    merged_assignments = dict(extra_from_map)
+    merged_assignments.update(base_assignments)
+
+    for key, value in list(merged_assignments.items()):
+        if key in DECIMAL_FIELDS and value is not None:
+            if isinstance(value, Decimal):
+                continue
+            if isinstance(value, (int, float)):
+                merged_assignments[key] = Decimal(str(value))
+            else:
+                coerced = _coerce_decimal(str(value))
+                merged_assignments[key] = Decimal(coerced) if coerced is not None else None
+
+    if fmt == 'delimited':
+        _handle_delimited_import(
+            model_cls=model_cls,
+            table_name=table_name,
+            file_path=file_path,
+            versao=versao,
+            data_ref=data_ref,
+            delimiter=_normalize_delimiter(delimiter or ';'),
+            quotechar=quotechar,
+            columns_cfg=columns_cfg,
+            skip_header=bool(skip_header),
+            use_load_data=not map_config.get('disable_load_data', False),
+            truncate=truncate,
+            encoding=encoding,
+            extra_assignments=merged_assignments,
+        )
+    else:
+        if not map_path:
+            raise click.ClickException('Formato fixed requer arquivo de mapeamento (--map).')
+        _handle_fixed_import(
+            model_cls=model_cls,
+            file_path=file_path,
+            versao=versao,
+            data_ref=data_ref,
+            map_config=map_config,
+            truncate=truncate,
+            extra_assignments=merged_assignments,
+        )
+
+
+def _common_import_options(func):
+    func = click.option('--truncate', is_flag=True, default=False, help='Limpa a tabela antes de importar.')(func)
+    func = click.option('--no-header', is_flag=True, default=False, help='Arquivo sem cabeçalho (delimited).')(func)
+    func = click.option('--map', 'map_path', type=click.Path(exists=True, dir_okay=False, path_type=Path), help='Arquivo JSON com configuração.')(func)
+    func = click.option('--quotechar', default='"', show_default=True, help='Delimitador de texto (apenas delimited).')(func)
+    func = click.option('--delimiter', default=';', show_default=True, help='Delimitador (apenas delimited).')(func)
+    func = click.option('--lines-terminated', 'lines_terminated', default='\n', show_default=True, help='Terminador de linha do arquivo.')(func)
+    func = click.option('--encoding', default=None, help='Codificação do arquivo (tenta auto se omitido).')(func)
+    func = click.option('--uf', 'uf_referencia', default=None, help='UF de referência da tabela importada.')(func)
+    func = click.option('--aliquota', default=None, help='Alíquota associada à tabela (percentual).')(func)
+    func = click.option('--format', 'fmt', type=click.Choice(['delimited', 'fixed']), default='delimited', show_default=True)(func)
+    func = click.option('--data', 'data_str', required=False, help='Data de atualização (YYYY-MM-DD).')(func)
+    func = click.option('--versao', required=True, help='Versão de referência da tabela.')(func)
+    func = click.option('--file', 'file_path', type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)(func)
+    return func
+
+
+@app.cli.command('bras:import')
+@_common_import_options
+def bras_import(file_path: Path, versao: str, data_str: str | None, fmt: str, delimiter: str,
+                quotechar: str, map_path: Path | None, no_header: bool, truncate: bool,
+                encoding: str | None, uf_referencia: str | None, aliquota: str | None,
+                lines_terminated: str) -> None:
+    """Importa arquivo da Brasíndice (pipeline staging + materialização)."""
+    del uf_referencia, aliquota  # metadados não utilizados na nova estrutura
+
+    file_path = file_path.resolve()
+    if not file_path.exists():
+        raise click.ClickException(f'Arquivo não encontrado: {file_path}')
+
+    map_config: dict = {}
+    if map_path:
+        try:
+            map_config = json.loads(map_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f'Não foi possível ler o arquivo de mapeamento: {exc}') from exc
+        if not isinstance(map_config, dict):
+            raise click.ClickException('Arquivo de mapeamento deve conter um objeto JSON na raiz.')
+
+    delimiter = map_config.get('delimiter', delimiter) if fmt == 'delimited' else delimiter
+    quote_cfg = map_config.get('quotechar') if fmt == 'delimited' else None
+    if quote_cfg is not None:
+        quotechar = quote_cfg
+    if quotechar is not None and not str(quotechar).strip():
+        quotechar = None
+
+    encoding_cfg = map_config.get('encoding')
+    if isinstance(encoding_cfg, str) and encoding_cfg.strip():
+        encoding = encoding_cfg.strip()
+
+    line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
+    if line_cfg:
+        lines_terminated = line_cfg
+
+    skip_header_cfg = map_config.get('skip_header') if 'skip_header' in map_config else None
+    skip_header = bool(skip_header_cfg) if skip_header_cfg is not None else (not no_header)
+
+    result = _import_bras(
+        file_path=file_path,
+        versao=versao,
+        data_ref=data_str,
+        fmt=fmt,
+        delimiter=_normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter,
+        quotechar=quotechar,
+        line_terminator=lines_terminated or '\n',
+        skip_header=skip_header,
+        encoding=encoding,
+        map_config=map_config,
+        truncate=truncate,
+    )
+
+    click.echo(f"Brasíndice importado: arquivo={result['arquivo']} linhas_raw={result['linhas_raw']} materializadas={result['linhas_materializadas']}")
+
+
+@app.cli.command('simpro:import')
+@_common_import_options
+def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, delimiter: str,
+                  quotechar: str, map_path: Path | None, no_header: bool, truncate: bool,
+                  encoding: str | None, uf_referencia: str | None, aliquota: str | None,
+                  lines_terminated: str) -> None:
+    """Importa arquivo do SIMPRO."""
+    del lines_terminated
+    uf_value = (uf_referencia or '').strip().upper() or None
+    aliquota_value = None
+    if aliquota:
+        aliquota_str = _coerce_decimal(aliquota)
+        if aliquota_str is None:
+            raise click.ClickException('Valor de alíquota inválido.')
+        aliquota_value = Decimal(aliquota_str)
+    _run_insumo_import(
+        resource='SIMPRO',
+        model_cls=SimproItem,
+        table_name='simpro_item',
+        file_path=file_path,
+        versao=versao,
+        data_str=data_str,
+        fmt=fmt,
+        delimiter=delimiter,
+        quotechar=quotechar,
+        map_path=map_path,
+        no_header=no_header,
+        truncate=truncate,
+        encoding=encoding,
+        uf_referencia=uf_value,
+        aliquota=aliquota_value,
+    )
 
 
 class CBHPMRuleSet(db.Model):
@@ -502,6 +1918,48 @@ def _compute_simulacao_cbhpm(data):
         'id': ruleset_model.id if ruleset_model else None,
     }
 
+    quantize_money = Decimal('0.01')
+
+    via_pct_map_raw = data.get('via_entrada_pcts')
+    via_pct_map: dict[str, Decimal] = {}
+    if isinstance(via_pct_map_raw, dict):
+        for key, value in via_pct_map_raw.items():
+            key_norm = str(key or '').strip()
+            if not key_norm:
+                continue
+            pct = _as_decimal(value)
+            if pct is None:
+                continue
+            try:
+                pct = max(Decimal('0'), min(Decimal('100'), pct))
+            except Exception:
+                continue
+            via_pct_map[key_norm] = pct
+    if '__default__' not in via_pct_map:
+        via_pct_map['__default__'] = Decimal('100')
+    applied_via_map: dict[str, Decimal] = {}
+
+    def apply_via_entrada(breakdown: dict | None, code_key: str | None):
+        if not breakdown:
+            return breakdown
+        normalized = str(code_key or '').strip() or '__default__'
+        pct = via_pct_map.get(normalized, via_pct_map.get('__default__', Decimal('100')))
+        applied_via_map[normalized] = pct
+        factor = (pct / Decimal('100')) if pct is not None else Decimal('1')
+        breakdown['via_entrada_pct'] = pct
+        breakdown['via_entrada_factor'] = factor
+        total_porte = _as_decimal(breakdown.get('total_porte'))
+        if total_porte is not None:
+            reduced_porte = (total_porte * factor).quantize(quantize_money, rounding=ROUND_HALF_UP)
+            breakdown['total_porte'] = reduced_porte
+            breakdown['total'] = _sum_decimals([
+                reduced_porte,
+                breakdown.get('total_filme'),
+                breakdown.get('total_uco'),
+                breakdown.get('total_porte_an'),
+                breakdown.get('total_auxiliares'),
+            ])
+        return breakdown
 
     codigo = (data.get('codigo') or '').strip()
     codigos = data.get('codigos') or []
@@ -619,6 +2077,7 @@ def _compute_simulacao_cbhpm(data):
     if codigos or dtp_items:
         itens = []
         cbhpm_results = []
+        teto_alerts: list[dict] = []
         d0 = Decimal('0')
 
         def to_decimal(value):
@@ -683,6 +2142,7 @@ def _compute_simulacao_cbhpm(data):
                     ajuste_porte_pct=aj_porte_pct, ajuste_porte_an_pct=aj_an_pct,
                     rules=ruleset_dict
                 )
+                br = apply_via_entrada(br, cod)
                 item_out = {k: _stringify_for_output(v) for k, v in br.items()}
                 if br.get('applied_rules'):
                     item_out['applied_rules'] = _stringify_for_output(br['applied_rules'])
@@ -727,10 +2187,10 @@ def _compute_simulacao_cbhpm(data):
                 delta = original - adjusted
                 entry['totals']['total_porte'] = adjusted
                 entry['totals']['total'] = entry['totals']['total'] - delta
-                payload = entry['payload']
-                payload['total_porte'] = str(adjusted)
-                payload['total'] = str(entry['totals']['total'])
-                applied = list(payload.get('applied_rules') or [])
+                payload_entry = entry['payload']
+                payload_entry['total_porte'] = str(adjusted)
+                payload_entry['total'] = str(entry['totals']['total'])
+                applied = list(payload_entry.get('applied_rules') or [])
                 applied.append({
                     'component': 'porte',
                     'rule': 'reducoes_simultaneos',
@@ -739,7 +2199,49 @@ def _compute_simulacao_cbhpm(data):
                     'reduzido_de': str(original),
                     'reduzido_para': str(adjusted),
                 })
-                payload['applied_rules'] = applied
+                payload_entry['applied_rules'] = applied
+
+        if cbhpm_results:
+            codes_to_check = [entry['payload'].get('codigo') for entry in cbhpm_results]
+            teto_map = _get_teto_map(codes_to_check)
+            for entry in cbhpm_results:
+                payload_entry = entry['payload']
+                codigo_item = payload_entry.get('codigo')
+                if not codigo_item:
+                    continue
+                teto_row = teto_map.get(codigo_item)
+                if not teto_row:
+                    continue
+                teto_val = _as_decimal(teto_row.valor_total)
+                calc_total = entry['totals'].get('total')
+                if calc_total is None:
+                    calc_total = _as_decimal(payload_entry.get('total'))
+                excedido = False
+                excedente = None
+                if teto_val is not None and calc_total is not None:
+                    diff = (calc_total - teto_val).quantize(quantize_money, rounding=ROUND_HALF_UP)
+                    if diff > Decimal('0'):
+                        excedido = True
+                        excedente = diff
+                payload_entry['teto_valor_total'] = str(teto_val) if teto_val is not None else None
+                payload_entry['teto_descricao'] = teto_row.descricao
+                payload_entry['teto_versao'] = teto_row.versao_ref
+                payload_entry['teto_excedente'] = str(excedente) if excedente is not None else None
+                payload_entry['teto_excedido'] = excedido
+                payload_entry['teto_status'] = 'EXCEDIDO' if excedido else 'DENTRO'
+                if excedido:
+                    total_fmt = str(calc_total)
+                    teto_fmt = str(teto_val)
+                    excedente_fmt = str(excedente)
+                    teto_alerts.append({
+                        'codigo': codigo_item,
+                        'descricao': payload_entry.get('descricao'),
+                        'total_calculado': total_fmt,
+                        'teto_valor_total': teto_fmt,
+                        'excedente': excedente_fmt,
+                        'versao_ref': teto_row.versao_ref,
+                        'descricao_teto': teto_row.descricao,
+                    })
 
         itens.extend([entry['payload'] for entry in cbhpm_results])
 
@@ -771,6 +2273,12 @@ def _compute_simulacao_cbhpm(data):
         sum_aux = sum(to_decimal(item.get('total_auxiliares')) for item in itens)
         sum_total = sum(to_decimal(item.get('total')) for item in itens)
 
+        via_out_map = {
+            key: str(value)
+            for key, value in applied_via_map.items()
+            if key != '__default__'
+        }
+
         payload_agregado = {
             'itens': itens,
             'total_porte': str(sum_porte),
@@ -785,7 +2293,10 @@ def _compute_simulacao_cbhpm(data):
             'versao_base': versao,
             'ajuste_porte_pct': str(aj_porte_pct),
             'ajuste_porte_an_pct': str(aj_an_pct),
+            'via_entrada_pcts': via_out_map,
             'cbhpm_rules_info': rules_meta,
+            'teto_alertas': teto_alerts,
+            'teto_status': 'EXCEDIDO' if teto_alerts else 'DENTRO',
         }
         return payload_agregado, 200
 
@@ -795,6 +2306,7 @@ def _compute_simulacao_cbhpm(data):
         ajuste_porte_pct=aj_porte_pct, ajuste_porte_an_pct=aj_an_pct,
         rules=ruleset_dict
     )
+    breakdown = apply_via_entrada(breakdown, codigo)
     resp = {k: _stringify_for_output(v) for k, v in breakdown.items()}
     resp.update({
         'codigo': codigo,
@@ -805,9 +2317,47 @@ def _compute_simulacao_cbhpm(data):
         'porte_an_tabela_usada': (porte_an_tab_name or _resolve_porte_an_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_an_hint, base.porte_anestesico)),
         'ajuste_porte_pct': str(aj_porte_pct),
         'ajuste_porte_an_pct': str(aj_an_pct),
+        'via_entrada_pct': str(breakdown.get('via_entrada_pct')) if breakdown.get('via_entrada_pct') is not None else None,
+        'via_entrada_pcts': {
+            key: str(value)
+            for key, value in applied_via_map.items()
+            if key != '__default__'
+        },
         'cbhpm_rules_info': rules_meta,
     })
+
+    if codigo:
+        teto_row = _get_teto_map([codigo]).get(codigo)
+        if teto_row:
+            teto_val = _as_decimal(teto_row.valor_total)
+            calc_total = _as_decimal(resp.get('total'))
+            excedido = False
+            excedente = None
+            if teto_val is not None and calc_total is not None:
+                diff = (calc_total - teto_val).quantize(quantize_money, rounding=ROUND_HALF_UP)
+                if diff > Decimal('0'):
+                    excedido = True
+                    excedente = diff
+            resp['teto_valor_total'] = str(teto_val) if teto_val is not None else None
+            resp['teto_descricao'] = teto_row.descricao
+            resp['teto_versao'] = teto_row.versao_ref
+            resp['teto_excedente'] = str(excedente) if excedente is not None else None
+            resp['teto_excedido'] = excedido
+            resp['teto_status'] = 'EXCEDIDO' if excedido else 'DENTRO'
+            resp['teto_alertas'] = [{
+                'codigo': codigo,
+                'descricao': resp.get('descricao'),
+                'total_calculado': str(calc_total) if calc_total is not None else None,
+                'teto_valor_total': str(teto_val) if teto_val is not None else None,
+                'excedente': str(excedente) if excedente is not None else None,
+                'versao_ref': teto_row.versao_ref,
+                'descricao_teto': teto_row.descricao,
+            }] if excedido else []
+        else:
+            resp['teto_alertas'] = []
+            resp['teto_status'] = 'DENTRO'
     return resp, 200
+
 
 
 @app.route('/api/simulacao_cbhpm', methods=['POST'])
@@ -827,6 +2377,8 @@ def api_simulacao_cbhpm():
             'uco_valor': data.get('uco_valor') or '',
             'filme_valor': data.get('filme_valor') or '',
             'incidencias': data.get('incidencias') or '',
+            'via_entrada_pcts': data.get('via_entrada_pcts') or {},
+            'via_entrada_pct': data.get('via_entrada_pct') or '',
             'ajuste_porte_pct': data.get('ajuste_porte_pct') or '',
             'ajuste_porte_an_pct': data.get('ajuste_porte_an_pct') or '',
         }
@@ -1345,7 +2897,19 @@ def export_simulacao_xlsx():
     bold = workbook.add_format({'bold': True})
     money = workbook.add_format({'num_format': 'R$ #,##0.00'})
 
-    headers = ["Codigo", "Descricao", "Total Porte", "Total Filme", "Total UCO", "Total Porte AN", "Total Auxiliares", "Total"]
+    headers = [
+        "Codigo",
+        "Descricao",
+        "Total Porte",
+        "Total Filme",
+        "Total UCO",
+        "Total Porte AN",
+        "Total Auxiliares",
+        "Via Entrada",
+        "Total",
+        "Teto",
+        "Excedente",
+    ]
     for col, header in enumerate(headers):
         worksheet.write(0, col, header, bold)
 
@@ -1360,16 +2924,39 @@ def export_simulacao_xlsx():
             worksheet.write_number(row_idx, 4, to_number(item.get('total_uco')), money)
             worksheet.write_number(row_idx, 5, to_number(item.get('total_porte_an')), money)
             worksheet.write_number(row_idx, 6, to_number(item.get('total_auxiliares')), money)
-            worksheet.write_number(row_idx, 7, to_number(item.get('total')), money)
+            worksheet.write(row_idx, 7, item.get('via_entrada_pct') or '-')
+            worksheet.write_number(row_idx, 8, to_number(item.get('total')), money)
+            teto_value = item.get('teto_valor_total')
+            excedente_value = item.get('teto_excedente')
+            if teto_value not in (None, '', 'None'):
+                worksheet.write_number(row_idx, 9, to_number(teto_value), money)
+            else:
+                worksheet.write_blank(row_idx, 9, None)
+            if excedente_value not in (None, '', 'None'):
+                worksheet.write_number(row_idx, 10, to_number(excedente_value), money)
+            else:
+                worksheet.write_blank(row_idx, 10, None)
             row_idx += 1
     else:
         worksheet.write(row_idx, 0, payload.get('codigo'))
         worksheet.write(row_idx, 1, payload.get('descricao') or '')
-        worksheet.write_number(row_idx, 7, to_number(payload.get('total')), money)
+        worksheet.write_number(row_idx, 2, to_number(payload.get('total_porte')), money)
+        worksheet.write_number(row_idx, 3, to_number(payload.get('total_filme')), money)
+        worksheet.write_number(row_idx, 4, to_number(payload.get('total_uco')), money)
+        worksheet.write_number(row_idx, 5, to_number(payload.get('total_porte_an')), money)
+        worksheet.write_number(row_idx, 6, to_number(payload.get('total_auxiliares')), money)
+        worksheet.write(row_idx, 7, payload.get('via_entrada_pct') or (payload.get('via_entrada_summary') or '-'))
+        worksheet.write_number(row_idx, 8, to_number(payload.get('total')), money)
+        teto_value = payload.get('teto_valor_total')
+        excedente_value = payload.get('teto_excedente')
+        if teto_value not in (None, '', 'None'):
+            worksheet.write_number(row_idx, 9, to_number(teto_value), money)
+        if excedente_value not in (None, '', 'None'):
+            worksheet.write_number(row_idx, 10, to_number(excedente_value), money)
         row_idx += 1
 
-    worksheet.write(row_idx + 1, 6, 'TOTAL GERAL', bold)
-    worksheet.write_number(row_idx + 1, 7, to_number(payload.get('total')), money)
+    worksheet.write(row_idx + 1, 7, 'TOTAL GERAL', bold)
+    worksheet.write_number(row_idx + 1, 8, to_number(payload.get('total')), money)
 
     workbook.close()
     output.seek(0)
@@ -1689,6 +3276,16 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                     db.session.rollback()
                 try:
                     db.session.execute(text("ALTER TABLE tabelas ADD COLUMN uco_valor DECIMAL(12,2) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE bras_item ADD COLUMN tipo_preco VARCHAR(50) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE bras_item ADD COLUMN ean VARCHAR(64) NULL"))
                     db.session.commit()
                 except Exception:
                     db.session.rollback()
@@ -2770,23 +4367,265 @@ def tabela_itens(tid):
     itens = query.order_by(Procedimento.codigo).all()
     return render_template('tabela-itens.html', tabela=tabela, itens=itens, q=q)
 
-    
+
+@app.route('/insumos/search')
+@login_required
+def insumos_search():
+    page = _parse_positive_int(request.args.get('page'), 1, maximum=500)
+    per_page = _parse_positive_int(request.args.get('per_page'), 50, maximum=500)
+
+    filters = _extract_insumo_filters(request.args)
+    query = _apply_insumo_filters(InsumoIndex.query, filters)
+    query = query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
+
+    total = query.count()
+    items = (
+        query
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    payload = {
+        'items': [_serialize_insumo_index(item) for item in items],
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'pages': math.ceil(total / per_page) if total else 0,
+        }
+    }
+    return jsonify(payload)
 
 
+@app.route('/insumos/<origem>/<int:item_id>')
+@login_required
+def insumo_detail(origem: str, item_id: int):
+    origem = (origem or '').upper()
+    if origem not in {'BRAS', 'SIMPRO'}:
+        abort(404)
+
+    model = BrasItemNormalized if origem == 'BRAS' else SimproItem
+    item = model.query.get(item_id)
+    if not item:
+        abort(404)
+
+    return jsonify(_serialize_insumo_detail(origem, item))
 
 
+@app.route('/insumos')
+@login_required
+def insumos_dashboard():
+    bras_summary = _insumo_summary(BrasItemNormalized)
+    simpro_summary = _insumo_summary(SimproItem)
+    bras_versions = _insumo_distinct_versions(BrasItemNormalized)
+    simpro_versions = _insumo_distinct_versions(SimproItem)
+    versions = sorted(set(bras_versions + simpro_versions))
+
+    return render_template(
+        'insumos_index.html',
+        bras_summary=bras_summary,
+        simpro_summary=simpro_summary,
+        bras_versions=bras_versions,
+        simpro_versions=simpro_versions,
+        versions=versions,
+        is_admin=(session.get('perfil') == 'adm'),
+    )
 
 
+@app.route('/insumos/export/xlsx')
+@login_required
+def insumos_export_xlsx():
+    filters = _extract_insumo_filters(request.args)
+    query = _apply_insumo_filters(InsumoIndex.query, filters)
+    query = query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
+
+    limit = _parse_positive_int(request.args.get('limit'), 5000, maximum=20000)
+    rows = query.limit(limit).all()
+
+    output = io.BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    worksheet = workbook.add_worksheet('Insumos')
+
+    header_fmt = workbook.add_format({'bold': True, 'bg_color': '#0EA5E9', 'font_color': '#ffffff'})
+    money_fmt = workbook.add_format({'num_format': '#,##0.0000'})
+
+    headers = ['Origem', 'TUSS', 'TISS', 'ANVISA', 'Descrição', 'Preço', 'Alíquota', 'Fabricante', 'UF', 'Versão', 'Data Atualização', 'Atualizado em']
+    for col, title in enumerate(headers):
+        worksheet.write(0, col, title, header_fmt)
+
+    for row_idx, item in enumerate(rows, start=1):
+        worksheet.write(row_idx, 0, item.origem)
+        worksheet.write(row_idx, 1, item.tuss or '')
+        worksheet.write(row_idx, 2, item.tiss or '')
+        worksheet.write(row_idx, 3, item.anvisa or '')
+        worksheet.write(row_idx, 4, item.descricao or '')
+        if item.preco is not None:
+            worksheet.write_number(row_idx, 5, float(item.preco), money_fmt)
+        else:
+            worksheet.write_blank(row_idx, 5, None)
+        if item.aliquota is not None:
+            worksheet.write_number(row_idx, 6, float(item.aliquota), money_fmt)
+        else:
+            worksheet.write_blank(row_idx, 6, None)
+        worksheet.write(row_idx, 7, item.fabricante or '')
+        worksheet.write(row_idx, 8, item.uf_referencia or '')
+        worksheet.write(row_idx, 9, item.versao_tabela or '')
+        worksheet.write(row_idx, 10, item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else '')
+        worksheet.write(row_idx, 11, item.updated_at.isoformat(sep=' ') if isinstance(item.updated_at, datetime) else '')
+
+    worksheet.autofilter(0, 0, max(len(rows), 1), len(headers) - 1)
+    worksheet.freeze_panes(1, 0)
+
+    workbook.close()
+    output.seek(0)
+    stamp = datetime.now().strftime('%Y%m%d_%H%M')
+    filename = f'insumos_{stamp}.xlsx'
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename,
+    )
 
 
+@app.route('/insumos/import', methods=['POST'])
+@admin_required
+def insumos_import():
+    origem = (request.form.get('origem') or '').upper()
+    if origem not in {'BRAS', 'SIMPRO'}:
+        flash('Origem inválida para importação.', 'danger')
+        return redirect(url_for('insumos_dashboard'))
 
+    upload = request.files.get('arquivo')
+    if not upload or not upload.filename:
+        flash('Selecione um arquivo TXT/CSV para importar.', 'danger')
+        return redirect(url_for('insumos_dashboard'))
 
+    fmt = (request.form.get('format') or 'delimited').lower()
+    delimiter = request.form.get('delimiter') or ';'
+    quotechar = request.form.get('quotechar') or '"'
+    versao = (request.form.get('versao') or '').strip()
+    data_ref = (request.form.get('data_atualizacao') or '').strip() or None
+    no_header = request.form.get('no_header') == 'on'
+    truncate = request.form.get('truncate') == 'on'
+    encoding = (request.form.get('encoding') or '').strip() or None
+    uf_referencia = (request.form.get('uf') or request.form.get('uf_referencia') or '').strip().upper() or None
+    aliquota_input = (request.form.get('aliquota') or '').strip() or None
+    aliquota_value: Decimal | None = None
+    if aliquota_input:
+        aliquota_str = _coerce_decimal(aliquota_input)
+        if aliquota_str is None:
+            flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
+            return redirect(url_for('insumos_dashboard'))
+        aliquota_value = Decimal(aliquota_str)
 
+    if not versao:
+        flash('Informe a versão de referência da tabela.', 'danger')
+        return redirect(url_for('insumos_dashboard'))
 
+    map_upload = request.files.get('map_config')
+    map_temp_path: Path | None = None
+    file_temp_path: Path | None = None
 
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(upload.filename).suffix) as tmp_file:
+            upload.save(tmp_file)
+            file_temp_path = Path(tmp_file.name)
 
+        if map_upload and map_upload.filename:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(map_upload.filename).suffix or '.json') as tmp_map:
+                map_upload.save(tmp_map)
+                map_temp_path = Path(tmp_map.name)
 
+        map_config: dict = {}
+        if map_temp_path:
+            try:
+                map_config = json.loads(map_temp_path.read_text(encoding='utf-8'))
+            except json.JSONDecodeError as exc:
+                flash(f'Erro ao ler o mapa: {exc}', 'danger')
+                return redirect(url_for('insumos_dashboard'))
+            if not isinstance(map_config, dict):
+                flash('Arquivo de mapeamento deve conter um objeto JSON.', 'danger')
+                return redirect(url_for('insumos_dashboard'))
 
+        if origem == 'BRAS':
+            if fmt == 'fixed' and not map_config.get('columns'):
+                flash('Envie um arquivo de mapeamento contendo "columns" para largura fixa.', 'danger')
+                return redirect(url_for('insumos_dashboard'))
 
+            line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
+            lines_terminated = line_cfg or (request.form.get('lines_terminated') or '\n')
 
+            encoding_cfg = map_config.get('encoding')
+            if isinstance(encoding_cfg, str) and encoding_cfg.strip():
+                encoding = encoding_cfg.strip()
 
+            skip_header_cfg = map_config.get('skip_header') if 'skip_header' in map_config else None
+            skip_header = bool(skip_header_cfg) if skip_header_cfg is not None else (not no_header)
+
+            delimiter_cfg = map_config.get('delimiter') if fmt == 'delimited' else None
+            if delimiter_cfg:
+                delimiter = delimiter_cfg
+            quote_cfg = map_config.get('quotechar') if fmt == 'delimited' else None
+            if quote_cfg is not None:
+                quotechar = quote_cfg
+            if quotechar is not None and not str(quotechar).strip():
+                quotechar = None
+
+            result = _import_bras(
+                file_path=file_temp_path,
+                versao=versao,
+                data_ref=data_ref,
+                fmt=fmt,
+                delimiter=_normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter,
+                quotechar=quotechar,
+                line_terminator=lines_terminated or '\n',
+                skip_header=skip_header,
+                encoding=encoding,
+                map_config=map_config,
+                truncate=truncate,
+            )
+            flash(
+                f"Importação BRAS concluída ({result['linhas_raw']} linhas brutas, "
+                f"{result['linhas_materializadas']} materializadas).",
+                'success'
+            )
+        else:
+            if fmt == 'fixed' and not map_temp_path:
+                flash('Envie um arquivo de mapeamento para importação de largura fixa.', 'danger')
+                return redirect(url_for('insumos_dashboard'))
+
+            model_cls = SimproItem
+            table_name = 'simpro_item'
+
+            _run_insumo_import(
+                resource='SIMPRO',
+                model_cls=model_cls,
+                table_name=table_name,
+                file_path=file_temp_path,
+                versao=versao,
+                data_str=data_ref,
+                fmt=fmt,
+                delimiter=delimiter,
+                quotechar=quotechar,
+                map_path=map_temp_path,
+                no_header=no_header,
+                truncate=truncate,
+                encoding=encoding,
+                uf_referencia=uf_referencia,
+                aliquota=aliquota_value,
+            )
+
+            flash('Importação SIMPRO concluída com sucesso.', 'success')
+    except click.ClickException as exc:
+        flash(str(exc), 'danger')
+    except Exception as exc:  # noqa: BLE001
+        flash(f'Erro inesperado ao importar: {exc}', 'danger')
+    finally:
+        if file_temp_path and file_temp_path.exists():
+            file_temp_path.unlink(missing_ok=True)
+        if map_temp_path and map_temp_path.exists():
+            map_temp_path.unlink(missing_ok=True)
+
+    return redirect(url_for('insumos_dashboard'))

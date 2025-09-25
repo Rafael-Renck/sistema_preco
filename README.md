@@ -42,3 +42,79 @@ Se não houver usuários, ele cria um admin inicial definido por variáveis de a
 - CRUD completo (forms e APIs) para Usuários, Operadoras, Tabelas e Procedimentos.
 - Upload/parse de tabelas de preços (CSV/Excel) e rotina de comparação.
 - Testes automatizados e migrações com Alembic.
+
+## Simpro & Brasíndice
+
+O sistema agora possui um módulo completo de consulta aos insumos do Brasíndice e do SIMPRO:
+
+- Menu lateral **Simpro & Brasíndice** exibindo resumos por origem, filtros avançados (termo, versão, TUSS/TISS, fabricante) e paginação dinâmica.
+- Exportação direta da busca para XLSX (`/insumos/export/xlsx`).
+- Importação web (apenas administradores) com suporte a TXT delimitado ou largura fixa – os arquivos JSON de mapeamento podem ser enviados junto ao upload.
+- Feedback visual de erros/sucesso durante a importação.
+
+### CLI de importação
+
+As importações também podem ser executadas via CLI Flask (útil para cargas grandes ou automações).
+
+#### Brasíndice (`bras:import`)
+
+A rotina cria um pipeline completo: staging (`bras_raw`), staging de largura fixa (`bras_fixed_stage`), view normalizada (`bras_item_v`), materialização tipada (`bras_item_n`) e atualização do índice global (`insumos_index`).
+
+```
+flask bras:import --file caminho/bras.txt --versao 2025-09 \
+    --format delimited --delimiter ';' --quotechar '"' --lines-terminated '\n'
+
+flask bras:import --file caminho/bras_fixed.txt --versao 2025-09 \
+    --format fixed --map bras_fixed.json
+```
+
+Opções principais:
+
+- `--format`: `delimited` (padrão) ou `fixed`.
+- `--delimiter`, `--quotechar`, `--no-header`, `--lines-terminated` para ajustar TXT delimitado.
+- `--map`: JSON com configurações extras. Para largura fixa defina `columns` com `{ "name": "col01", "start": 1, "length": 10 }` etc. Também é possível informar `encoding`, `lines_terminated`, `skip_header` ou `disable_load_data`.
+- `--truncate`: limpa `bras_raw`, `bras_item_n`, `bras_fixed_stage` e remove itens BRAS do índice antes de carregar.
+- `--encoding`: força a codificação (UTF-8/Latin-1/Windows-1252). Caso omita, o loader tenta automaticamente múltiplas opções.
+
+Fluxo resumido:
+
+1. O arquivo é carregado em `bras_raw` (via `LOAD DATA LOCAL INFILE`; fallback Python/csv quando Local Infile estiver desligado).
+2. Opcionalmente, um arquivo de largura fixa passa primeiro por `bras_fixed_stage` antes de ser decomposto em `bras_raw`.
+3. A view `bras_item_v` normaliza e converte os números (PMC/PFB, alíquota, etc.).
+4. Os dados são materializados em `bras_item_n` e o índice unificado (`insumos_index`) recebe upsert automático para os itens BRAS.
+
+#### SIMPRO (`simpro:import`)
+
+Permanece com o fluxo anterior, escrevendo direto na tabela tipada `simpro_item` e atualizando o índice (triggers existentes). Exemplo:
+
+```
+flask simpro:import --file caminho/simpro.txt --versao 2025-09 --data 2025-09-01 \
+    --format fixed --map config.json --uf RJ --aliquota 12
+```
+
+As mesmas opções de delimitador, mapa e encoding são válidas. No SIMPRO os campos `--uf` e `--aliquota` ainda alimentam metadados do índice.
+
+As mesmas regras valem para o formulário web (campos espelham as flags da CLI). O import de Brasíndice agora aceita também um arquivo de mapeamento JSON para largura fixa diretamente na interface.
+
+## Simulador CBHPM: redutor individual e teto
+
+- O redutor por via de entrada passou a ser individual por procedimento. A tabela e o PDF informam o percentual usado em cada linha.
+- O cálculo exibe alertas quando o total ultrapassa o valor teto cadastrado em `cbhpm_teto`:
+  - Na tela: badge/alerta em vermelho e detalhamento do excedente.
+  - No PDF/XLSX: colunas adicionais (Teto / Excedente) e seção explicativa “Explicação do cálculo, redutor aplicado e regra de teto”.
+- A explicação do filme radiológico ganhou um passo-a-passo explicitando fator, valor unitário e incidências.
+
+## Testes
+
+Foi iniciado um conjunto de testes automatizados (pytest) cobrindo:
+
+- Busca e detalhamento de insumos (`/insumos/search` e `/insumos/<origem>/<id>`).
+- Cálculo CBHPM com alerta de teto (função `_compute_simulacao_cbhpm`).
+
+Execute-os com:
+
+```
+pytest
+```
+
+Os testes utilizam SQLite em disco temporário para isolamento – nenhuma base MySQL é alterada.

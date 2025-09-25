@@ -477,6 +477,7 @@ window._procedimentosSelecionados = {{ (procedimentos_raw or [])|tojson }};
 /* ===== Util ===== */
 const $$ = (sel,ctx=document)=>Array.from(ctx.querySelectorAll(sel));
 const brl = (v)=>{ if(v===null||v===undefined||v==='')return '-'; const n=Number(v); return Number.isNaN(n)?v:n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); };
+const esc = (value)=> String(value ?? '').replace(/[&<>"']/g, (ch)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
 const toCSV = (rows)=>rows.map(r=>r.map(v=>{const s=(v??'').toString();return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(';')).join('\n');
 const download = (filename, text)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8;'})); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); };
 
@@ -551,34 +552,142 @@ function openDetalhe(codigo){
 
 /* ===== Simuladores ===== */
 const parsePacote = (t)=> (t||'').split(/\r?\n|[;,]+/g).map(s=>s.trim()).filter(Boolean);
+const VIA_PCT_OPTIONS = ['100','70','50','30'];
+const _hasValue = (value)=> !(value === null || value === undefined || value === '' || value === 'None');
+const _toNumber = (value)=> {
+  if(value === null || value === undefined || value === '' || value === 'None') return 0;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+window._cbhpmHasResult = window._cbhpmHasResult || false;
+window._cbhpmLastPayload = window._cbhpmLastPayload || null;
+window._cbhpmViaPctByCode = window._cbhpmViaPctByCode || {};
+
+const _normalizeCode = (code)=> (code||'').toString().trim();
+const _formatPctLabel = (pct)=> `${Number(pct||'100').toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:2})}%`;
+
+function _setViaPctFor(code, pct){
+  const key = _normalizeCode(code);
+  if(!key || key === '__default__') return;
+  window._cbhpmViaPctByCode[key] = String(pct);
+}
+
+function _getViaPctFor(code){
+  const key = _normalizeCode(code);
+  if(!key) return '100';
+  return window._cbhpmViaPctByCode[key] || '100';
+}
+
+function _pruneViaPctStore(activeCodes){
+  const keep = new Set(activeCodes.map(_normalizeCode));
+  Object.keys(window._cbhpmViaPctByCode).forEach(key=>{
+    if(!keep.has(key)){
+      delete window._cbhpmViaPctByCode[key];
+    }
+  });
+}
+
+function _viaSummary(map){
+  const numericValues = Object.values(map || {}).map(v=> Number(v)).filter(v=> Number.isFinite(v));
+  if(!numericValues.length) return '100%';
+  const unique = new Set(numericValues);
+  if(unique.size === 1){
+    const val = unique.values().next().value;
+    return _formatPctLabel(val);
+  }
+  return 'Personalizado';
+}
 
 function simularCBHPM(){
   const payload = getCBHPMPayload();
   const out=document.getElementById('cbhpm-out');
   if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
     out.innerHTML='<div class="alert alert-warning">Informe ao menos um codigo ou selecione itens.</div>';
+    window._cbhpmHasResult = false;
+    window._cbhpmLastPayload = null;
     return;
   }
+  window._cbhpmLastPayload = payload;
   out.innerHTML='<div class="soft">Calculando...</div>';
 
   fetch('/api/simulacao_cbhpm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
     .then(r=>r.json())
     .then(data=>{
+      window._cbhpmHasResult = !data.error;
       if(data.error){ out.innerHTML='<div class="alert alert-danger">'+data.error+'</div>'; return; }
+
+      const serverMapRaw = (data.via_entrada_pcts && typeof data.via_entrada_pcts === 'object') ? data.via_entrada_pcts : {};
+      const serverMap = {};
+      Object.entries(serverMapRaw).forEach(([key,val])=>{
+        const normKey = _normalizeCode(key);
+        if(!normKey || normKey === '__default__') return;
+        serverMap[normKey] = String(val);
+      });
+      Object.entries(serverMap).forEach(([key,val])=> _setViaPctFor(key, val));
+
+      const tetoAlertas = Array.isArray(data.teto_alertas) ? data.teto_alertas : [];
+      const hasTetoInfo = Array.isArray(data.itens)
+        ? data.itens.some(it => it && it.origem !== 'dtp' && _hasValue(it.teto_valor_total))
+        : _hasValue(data.teto_valor_total);
+      const tetoStatusRaw = data.teto_status || (tetoAlertas.length ? 'EXCEDIDO' : 'DENTRO');
+      const tetoStatus = String(tetoStatusRaw || 'DENTRO').toUpperCase();
+      const excedenteTotal = tetoAlertas.reduce((acc, alerta)=> acc + _toNumber(alerta.excedente), 0);
+
       if(Array.isArray(data.itens)){
-        let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
-        html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th><th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-end">Total</th></tr></thead><tbody>';
-        
-data.itens.forEach(it=>{
+        const viaSummary = _viaSummary(serverMap);
+        const statusBadge = !hasTetoInfo
+          ? '—'
+          : (tetoStatus === 'EXCEDIDO'
+              ? '<span class="badge bg-danger-subtle text-danger">Excedeu teto</span>'
+              : '<span class="badge bg-success-subtle text-success">Dentro do teto</span>');
+        let html='';
+        if(tetoAlertas.length){
+          const list = tetoAlertas.map(alerta=>{
+            const excedenteFmt = brl(alerta.excedente);
+            const versao = alerta.versao_ref ? ` (versão ${esc(alerta.versao_ref)}${alerta.descricao_teto ? ' · '+esc(alerta.descricao_teto) : ''})` : '';
+            return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong>${versao}</li>`;
+          }).join('');
+          html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3"><i class="bi bi-exclamation-triangle-fill fs-5"></i><div><strong>Excedeu o teto CBHPM</strong><ul class="mb-0 mt-2 ps-3">${list}</ul></div></div>`;
+        } else if(hasTetoInfo){
+          html += '<div class="alert alert-info d-flex align-items-start gap-2 mb-3"><i class="bi bi-info-circle-fill fs-5"></i><div>Todos os itens ficaram dentro do teto CBHPM cadastrado.</div></div>';
+        }
+
+        html+='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+        html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th><th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-end">Excedente</th></tr></thead><tbody>';
+
+        const activeCodes = new Set();
+        data.itens.forEach(it=>{
           const isDtp = (it.origem === 'dtp');
           const descricao = (it.descricao||'-');
-          const descHtml = isDtp ? descricao + ' <span class="badge bg-info-subtle text-info ms-1">DTP</span>' : descricao;
+          const descHtml = isDtp ? `${descricao} <span class="badge bg-info-subtle text-info ms-1">DTP</span>` : descricao;
           const porte = isDtp ? '-' : brl(it.total_porte);
           const filme = isDtp ? '-' : brl(it.total_filme);
           const uco = isDtp ? '-' : brl(it.total_uco);
           const porteAn = isDtp ? '-' : brl(it.total_porte_an);
           const aux = isDtp ? '-' : brl(it.total_auxiliares);
           const total = brl(it.total);
+          const codeKey = _normalizeCode(it.codigo);
+          if(!isDtp && codeKey){
+            activeCodes.add(codeKey);
+            if(!(codeKey in serverMap)){
+              const current = _getViaPctFor(codeKey);
+              _setViaPctFor(codeKey, current);
+              serverMap[codeKey] = current;
+            }
+          }
+          const currentPct = isDtp ? '100' : (serverMap[codeKey] || _getViaPctFor(codeKey));
+          const selectHtml = isDtp ? '-' : `<select class="form-select form-select-sm via-selector" data-code="${codeKey}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')}</select>`;
+          const tetoValor = (!isDtp && _hasValue(it.teto_valor_total)) ? brl(it.teto_valor_total) : '-';
+          let excedenteValor = (!isDtp && _hasValue(it.teto_excedente)) ? brl(it.teto_excedente) : '-';
+          const tetoClass = (!isDtp && it.teto_excedido) ? 'text-end text-danger fw-semibold' : 'text-end';
+          let excedClass = tetoClass;
+          if(excedenteValor === '-' && (!isDtp && it.teto_excedido)){
+            excedenteValor = 'Excedido';
+          }
+          if(!it.teto_excedido){
+            excedClass = 'text-end';
+          }
           html+='<tr>'
              +  '<td>'+ (it.codigo||'-') +'</td>'
              +  '<td>'+ descHtml +'</td>'
@@ -587,31 +696,104 @@ data.itens.forEach(it=>{
              +  '<td class="text-end">'+ uco +'</td>'
              +  '<td class="text-end">'+ porteAn +'</td>'
              +  '<td class="text-end">'+ aux +'</td>'
+             +  `<td class="text-center">${selectHtml}</td>`
              +  '<td class="text-end fw-semibold">'+ total +'</td>'
+             +  `<td class="${tetoClass}">${tetoValor}</td>`
+             +  `<td class="${excedClass}">${excedenteValor}</td>`
              +  '</tr>';
-
         });
+
+        _pruneViaPctStore([...activeCodes]);
+
         html+='</tbody></table></div>';
         html+='<div class="mt-3"><span class="mini-label">Porte:</span> <strong>'+brl(data.total_porte)+'</strong> · '
              + '<span class="mini-label">Filme:</span> <strong>'+brl(data.total_filme)+'</strong> · '
              + '<span class="mini-label">UCO:</span> <strong>'+brl(data.total_uco)+'</strong> · '
              + '<span class="mini-label">Porte AN:</span> <strong>'+brl(data.total_porte_an)+'</strong> · '
              + '<span class="mini-label">Aux.:</span> <strong>'+brl(data.total_auxiliares)+'</strong> · '
-             + '<span class="mini-label">TOTAL:</span> <strong>'+brl(data.total)+'</strong></div>';
-        html+='<div class="soft mt-1">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong></div>';
+             + '<span class="mini-label">TOTAL:</span> <strong>'+brl(data.total)+'</strong> · '
+             + '<span class="mini-label">Teto:</span> '+ statusBadge;
+        if(excedenteTotal > 0){
+          html += ' · <span class="mini-label">Excedente acumulado:</span> <strong>'+brl(excedenteTotal)+'</strong>';
+        }
+        html+='</div>';
+        html+='<div class="soft mt-1">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Redutor via entrada: <strong>'+ viaSummary +'</strong></div>';
         out.innerHTML=html; if(window.lucide)lucide.createIcons();
+        out.querySelectorAll('.via-selector').forEach(sel=>{
+          sel.addEventListener('change', (ev)=>{
+            const code = ev.target.dataset.code;
+            const val = ev.target.value;
+            _setViaPctFor(code, val);
+            simularCBHPM();
+          });
+        });
         return;
       }
-      let html='<div class="row g-3">';
+
+      const baseCode = _normalizeCode(data.codigo);
+      if(baseCode && !(baseCode in serverMap)){
+        const fallbackPct = _getViaPctFor(baseCode);
+        _setViaPctFor(baseCode, fallbackPct);
+        serverMap[baseCode] = fallbackPct;
+      }
+      const basePctSource = baseCode ? serverMap[baseCode] : (data.via_entrada_pct || '100');
+      const numericBasePct = Number(basePctSource);
+      const pctLabel = Number.isFinite(numericBasePct) ? _formatPctLabel(numericBasePct) : '100%';
+
+      const statusBadgeSingle = !hasTetoInfo
+        ? '—'
+        : (tetoStatus === 'EXCEDIDO'
+            ? '<span class="badge bg-danger-subtle text-danger">Excedeu teto</span>'
+            : '<span class="badge bg-success-subtle text-success">Dentro do teto</span>');
+      const tetoValorSingle = _hasValue(data.teto_valor_total) ? brl(data.teto_valor_total) : '-';
+      const excedenteSingle = _hasValue(data.teto_excedente) ? brl(data.teto_excedente) : '-';
+      const tetoCardSubtitle = data.teto_excedido
+        ? (excedenteSingle !== '-' ? `Excedente ${excedenteSingle}` : 'Excedido')
+        : (excedenteSingle !== '-' ? `Excedente ${excedenteSingle}` : 'Dentro do limite');
+
+      let html='';
+      if(tetoAlertas.length){
+        const list = tetoAlertas.map(alerta=>{
+          const excedenteFmt = brl(alerta.excedente);
+          const versao = alerta.versao_ref ? ` (versão ${esc(alerta.versao_ref)}${alerta.descricao_teto ? ' · '+esc(alerta.descricao_teto) : ''})` : '';
+          return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong>${versao}</li>`;
+        }).join('');
+        html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3"><i class="bi bi-exclamation-triangle-fill fs-5"></i><div><strong>Excedeu o teto CBHPM</strong><ul class="mb-0 mt-2 ps-3">${list}</ul></div></div>`;
+      } else if(hasTetoInfo){
+        html += '<div class="alert alert-info d-flex align-items-start gap-2 mb-3"><i class="bi bi-info-circle-fill fs-5"></i><div>O procedimento permaneceu dentro do teto CBHPM cadastrado.</div></div>';
+      }
+
+      html+='<div class="row g-3">';
       html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Porte</div><div class="fs-5 fw-semibold">'+brl(data.total_porte)+'</div></div></div>';
       html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Filme</div><div class="fs-5 fw-semibold">'+brl(data.total_filme)+'</div></div></div>';
       html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total UCO</div><div class="fs-5 fw-semibold">'+brl(data.total_uco)+'</div></div></div>';
       html+='<div class="col-12 col-lg-3"><div class="card p-3"><div class="mini-label">Total Porte AN</div><div class="fs-5 fw-semibold">'+brl(data.total_porte_an)+'</div></div></div>';
+      html+='<div class="col-12 col-lg-3"><div class="card p-3'+(data.teto_excedido?' border border-danger-subtle':'')+'"><div class="mini-label">Teto</div><div class="fs-5 fw-semibold">'+tetoValorSingle+'</div><div class="mini-label '+(data.teto_excedido?'text-danger fw-semibold':'text-muted')+'">'+tetoCardSubtitle+'</div></div></div>';
       html+='<div class="col-12"><div class="card p-3 bg-light"><div class="mini-label">TOTAL</div><div class="fs-4 fw-bold">'+brl(data.total)+'</div></div></div>';
-      html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong></div>';
+      html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong> · Redutor via entrada: <strong>'+ pctLabel +'</strong> · Teto: '+ statusBadgeSingle +'</div>';
+      if(excedenteSingle !== '-' && hasTetoInfo){
+        html+='<div class="soft text-danger">Excedente calculado: <strong>'+excedenteSingle+'</strong></div>';
+      }
+      if(baseCode){
+        const currentPct = serverMap[baseCode] || _getViaPctFor(baseCode);
+        html+='<div class="mt-3"><label class="form-label">Redutor por via de entrada</label>'+
+          `<select class="form-select form-select-sm via-selector" data-code="${baseCode}">`+
+          VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')+
+          '</select></div>';
+        _setViaPctFor(baseCode, currentPct);
+        _pruneViaPctStore([baseCode]);
+      }
       out.innerHTML=html;
+      out.querySelectorAll('.via-selector').forEach(sel=>{
+        sel.addEventListener('change', (ev)=>{
+          const code = ev.target.dataset.code;
+          const val = ev.target.value;
+          _setViaPctFor(code, val);
+          simularCBHPM();
+        });
+      });
     })
-    .catch(()=>{ document.getElementById('cbhpm-out').innerHTML='<div class="alert alert-danger">Erro ao simular.</div>'; });
+    .catch(()=>{ window._cbhpmHasResult = false; document.getElementById('cbhpm-out').innerHTML='<div class="alert alert-danger">Erro ao simular.</div>'; });
 }
 
 function simularDTP(){
@@ -1067,6 +1249,18 @@ function getCBHPMPayload(){
   const ativos = new Set(allCodes);
   Array.from(cbhpmDtpMeta.keys()).forEach(code=>{ if(!ativos.has(code)) cbhpmDtpMeta.delete(code); });
 
+  const activeCodes = new Set(codigos);
+  if(codigo) activeCodes.add(codigo);
+  const viaMap = {};
+  activeCodes.forEach(code=>{
+    const key = _normalizeCode(code);
+    if(!key) return;
+    const pct = _getViaPctFor(key);
+    _setViaPctFor(key, pct);
+    viaMap[key] = pct;
+  });
+  _pruneViaPctStore([...activeCodes]);
+
   return {
     codigo,
     codigos,
@@ -1080,6 +1274,7 @@ function getCBHPMPayload(){
     incidencias:document.getElementById('cbhpm-incid').value,
     ajuste_porte_pct:document.getElementById('cbhpm-aj-porte').value||0,
     ajuste_porte_an_pct:document.getElementById('cbhpm-aj-an').value||0,
+    via_entrada_pcts: viaMap,
   };
 }
 
@@ -1105,6 +1300,17 @@ function setCBHPMPayload(data){
   if(pacoteField){
     pacoteField.value = codigos.join('\n');
   }
+
+  window._cbhpmViaPctByCode = {};
+  const viaMap = (data.via_entrada_pcts && typeof data.via_entrada_pcts === 'object') ? data.via_entrada_pcts : {};
+  Object.entries(viaMap).forEach(([key,val])=> _setViaPctFor(key, val));
+  if(!Object.keys(window._cbhpmViaPctByCode).length && data.codigo && data.via_entrada_pct){
+    _setViaPctFor(data.codigo, data.via_entrada_pct);
+  }
+  const activeForRestore = [...codigos];
+  if(data.codigo) activeForRestore.push(data.codigo);
+  _pruneViaPctStore(activeForRestore);
+
   cbhpmDtpMeta.clear();
   const dtpItems = Array.isArray(data.dtp_items) ? data.dtp_items : [];
   dtpItems.forEach(item=>{

@@ -1,0 +1,555 @@
+{% extends 'base.html' %}
+
+{% block title %}Simpro & Brasíndice{% endblock %}
+{% block page_title %}Simpro & Brasíndice{% endblock %}
+
+{% block content %}
+<div class="row gy-3">
+  <div class="col-12 col-xl-6">
+    <div class="border rounded-3 p-3 h-100 bg-white">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+          <div class="text-uppercase text-muted small">Brasíndice</div>
+          <h6 class="mb-0">{{ bras_summary.total | default(0) }} itens</h6>
+        </div>
+        <i class="bi bi-collection text-primary fs-3"></i>
+      </div>
+      <dl class="row mb-0 small">
+        <dt class="col-5 text-muted">Versão mais recente</dt>
+        <dd class="col-7">{{ bras_summary.latest_version or '—' }}</dd>
+        <dt class="col-5 text-muted">Atualizado em</dt>
+        <dd class="col-7">{{ bras_summary.last_updated.strftime('%d/%m/%Y %H:%M') if bras_summary.last_updated else '—' }}</dd>
+        <dt class="col-5 text-muted">Data referência</dt>
+        <dd class="col-7">{{ bras_summary.last_data_ref.strftime('%d/%m/%Y') if bras_summary.last_data_ref else '—' }}</dd>
+      </dl>
+    </div>
+  </div>
+  <div class="col-12 col-xl-6">
+    <div class="border rounded-3 p-3 h-100 bg-white">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+          <div class="text-uppercase text-muted small">SIMPRO</div>
+          <h6 class="mb-0">{{ simpro_summary.total | default(0) }} itens</h6>
+        </div>
+        <i class="bi bi-boxes text-success fs-3"></i>
+      </div>
+      <dl class="row mb-0 small">
+        <dt class="col-5 text-muted">Versão mais recente</dt>
+        <dd class="col-7">{{ simpro_summary.latest_version or '—' }}</dd>
+        <dt class="col-5 text-muted">Atualizado em</dt>
+        <dd class="col-7">{{ simpro_summary.last_updated.strftime('%d/%m/%Y %H:%M') if simpro_summary.last_updated else '—' }}</dd>
+        <dt class="col-5 text-muted">Data referência</dt>
+        <dd class="col-7">{{ simpro_summary.last_data_ref.strftime('%d/%m/%Y') if simpro_summary.last_data_ref else '—' }}</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+
+<div class="border rounded-3 p-3 bg-white mt-4">
+  <form id="insumoFilters" class="row gy-3">
+    <div class="col-12 col-md-4">
+      <label class="form-label">Buscar termo</label>
+      <input type="text" class="form-control" id="fTermo" placeholder="Descrição, fabricante, código" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">Origem</label>
+      <select id="fOrigem" class="form-select">
+        <option value="">Todas</option>
+        <option value="BRAS">Brasíndice</option>
+        <option value="SIMPRO">SIMPRO</option>
+      </select>
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">Versão</label>
+      <select id="fVersao" class="form-select">
+        <option value="">Todas</option>
+        {% for ver in versions %}
+        <option value="{{ ver }}">{{ ver }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">TUSS</label>
+      <input type="text" class="form-control" id="fTuss" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">TISS</label>
+      <input type="text" class="form-control" id="fTiss" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">ANVISA</label>
+      <input type="text" class="form-control" id="fAnvisa" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">UF</label>
+      <input type="text" class="form-control" id="fUf" maxlength="5" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">Alíquota (%)</label>
+      <input type="text" class="form-control" id="fAliquota" autocomplete="off" placeholder="ex.: 18 ou 18,5">
+    </div>
+    <div class="col-6 col-md-3">
+      <label class="form-label">Fabricante</label>
+      <input type="text" class="form-control" id="fFabricante" autocomplete="off">
+    </div>
+    <div class="col-6 col-md-2">
+      <label class="form-label">Itens por página</label>
+      <select id="fPerPage" class="form-select">
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="250">250</option>
+      </select>
+    </div>
+    <div class="col-12 col-lg-3 align-self-end">
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary flex-fill" id="btnBuscar">
+          <i class="bi bi-search me-1"></i>Buscar
+        </button>
+        <button type="button" class="btn btn-outline-secondary" id="btnLimpar">
+          <i class="bi bi-eraser"></i>
+        </button>
+      </div>
+    </div>
+    <div class="col-12 col-lg-3 ms-auto align-self-end">
+      <button type="button" class="btn btn-outline-success w-100" id="btnExportar">
+        <i class="bi bi-file-earmark-spreadsheet me-1"></i>Exportar XLSX
+      </button>
+    </div>
+  </form>
+
+  <div class="mt-4">
+    <div class="d-flex justify-content-between flex-wrap gap-2 mb-2">
+      <div id="resultadoResumo" class="small text-muted">Preencha os filtros e clique em buscar.</div>
+      <div class="btn-group" role="group" aria-label="Paginação">
+        <button class="btn btn-outline-secondary btn-sm" id="paginacaoAnterior" disabled><i class="bi bi-chevron-left"></i></button>
+        <button class="btn btn-outline-secondary btn-sm" id="paginacaoProximo" disabled><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </div>
+
+    <div class="table-responsive position-relative">
+      <div id="resultadoLoading" class="position-absolute top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-white bg-opacity-75" style="display:none;">
+        <div class="spinner-border" role="status"><span class="visually-hidden">Carregando…</span></div>
+      </div>
+      <table class="table table-clean align-middle mb-0" id="resultadoTabela">
+        <thead>
+          <tr>
+            <th style="width:90px;">Origem</th>
+            <th style="width:140px;">Códigos</th>
+            <th>Descrição</th>
+            <th style="width:130px;" class="text-end">Preço</th>
+            <th style="width:90px;" class="text-center">UF</th>
+            <th style="width:130px;" class="text-end">Alíquota</th>
+            <th style="width:150px;">Versão</th>
+            <th style="width:110px;">Atualização</th>
+            <th style="width:90px;"></th>
+          </tr>
+        </thead>
+        <tbody id="resultadoBody">
+          <tr><td colspan="9" class="text-center text-muted py-4">Nenhuma busca realizada.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% if is_admin %}
+<div class="border rounded-3 p-3 bg-white mt-4">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h6 class="mb-0">Importar tabelas</h6>
+    <span class="text-muted small">Somente administradores</span>
+  </div>
+  <div class="row g-4">
+    <div class="col-12 col-lg-6">
+      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="border rounded-3 p-3 bg-light-subtle">
+        <input type="hidden" name="origem" value="BRAS">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h6 class="mb-0">Brasíndice</h6>
+          <span class="badge text-bg-primary">BRAS</span>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Arquivo TXT</label>
+          <input type="file" name="arquivo" class="form-control" accept=".txt,.csv" required>
+        </div>
+        <div class="row g-2">
+          <div class="col-8">
+            <label class="form-label">Versão</label>
+            <input type="text" name="versao" class="form-control" placeholder="ex.: 2025-09" required>
+          </div>
+          <div class="col-4">
+            <label class="form-label">Data ref.</label>
+            <input type="date" name="data_atualizacao" class="form-control">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-4">
+            <label class="form-label">UF</label>
+            <input type="text" name="uf" class="form-control" maxlength="5" placeholder="ex.: SP">
+          </div>
+          <div class="col-4">
+            <label class="form-label">Alíquota (%)</label>
+            <input type="text" name="aliquota" class="form-control" placeholder="ex.: 18,5">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <label class="form-label">Formato</label>
+            <select name="format" class="form-select">
+              <option value="delimited">Delimitado</option>
+              <option value="fixed">Largura fixa</option>
+            </select>
+          </div>
+          <div class="col-3">
+            <label class="form-label">Delimitador</label>
+            <input type="text" name="delimiter" class="form-control" value=";">
+          </div>
+          <div class="col-3">
+            <label class="form-label">Quote</label>
+            <input type="text" name="quotechar" class="form-control" value="&quot;">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <label class="form-label">Codificação</label>
+            <select name="encoding" class="form-select">
+              <option value="">Automática (UTF-8/Latin-1)</option>
+              <option value="utf-8">UTF-8</option>
+              <option value="latin-1">Latin-1</option>
+              <option value="cp1252">Windows-1252</option>
+            </select>
+          </div>
+        </div>
+        <div class="mb-2 mt-1">
+          <label class="form-label">Mapa JSON (opcional)</label>
+          <input type="file" name="map_config" class="form-control" accept=".json">
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="no_header" id="brasNoHeader">
+          <label class="form-check-label" for="brasNoHeader">Arquivo sem cabeçalho</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="truncate" id="brasTruncate">
+          <label class="form-check-label" for="brasTruncate">Limpar tabela antes de importar</label>
+        </div>
+        <div class="d-grid mt-3">
+          <button type="submit" class="btn btn-primary">Importar Brasíndice</button>
+        </div>
+      </form>
+    </div>
+    <div class="col-12 col-lg-6">
+      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="border rounded-3 p-3 bg-light-subtle">
+        <input type="hidden" name="origem" value="SIMPRO">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h6 class="mb-0">SIMPRO</h6>
+          <span class="badge text-bg-success">SIMPRO</span>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">Arquivo TXT</label>
+          <input type="file" name="arquivo" class="form-control" accept=".txt,.csv" required>
+        </div>
+        <div class="row g-2">
+          <div class="col-8">
+            <label class="form-label">Versão</label>
+            <input type="text" name="versao" class="form-control" placeholder="ex.: 2025-09" required>
+          </div>
+          <div class="col-4">
+            <label class="form-label">Data ref.</label>
+            <input type="date" name="data_atualizacao" class="form-control">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-4">
+            <label class="form-label">UF</label>
+            <input type="text" name="uf" class="form-control" maxlength="5" placeholder="ex.: SP">
+          </div>
+          <div class="col-4">
+            <label class="form-label">Alíquota (%)</label>
+            <input type="text" name="aliquota" class="form-control" placeholder="ex.: 18,5">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <label class="form-label">Formato</label>
+            <select name="format" class="form-select">
+              <option value="delimited">Delimitado</option>
+              <option value="fixed">Largura fixa</option>
+            </select>
+          </div>
+          <div class="col-3">
+            <label class="form-label">Delimitador</label>
+            <input type="text" name="delimiter" class="form-control" value=";">
+          </div>
+          <div class="col-3">
+            <label class="form-label">Quote</label>
+            <input type="text" name="quotechar" class="form-control" value="&quot;">
+          </div>
+        </div>
+        <div class="row g-2 mt-1">
+          <div class="col-6">
+            <label class="form-label">Codificação</label>
+            <select name="encoding" class="form-select">
+              <option value="">Automática (UTF-8/Latin-1)</option>
+              <option value="utf-8">UTF-8</option>
+              <option value="latin-1">Latin-1</option>
+              <option value="cp1252">Windows-1252</option>
+            </select>
+          </div>
+        </div>
+        <div class="mb-2 mt-1">
+          <label class="form-label">Mapa JSON (opcional)</label>
+          <input type="file" name="map_config" class="form-control" accept=".json">
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="no_header" id="simproNoHeader">
+          <label class="form-check-label" for="simproNoHeader">Arquivo sem cabeçalho</label>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" name="truncate" id="simproTruncate">
+          <label class="form-check-label" for="simproTruncate">Limpar tabela antes de importar</label>
+        </div>
+        <div class="d-grid mt-3">
+          <button type="submit" class="btn btn-success">Importar SIMPRO</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="modal fade" id="detalheModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Detalhes do item</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <dl class="row mb-0" id="detalheConteudo"></dl>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function(){
+  const form = document.getElementById('insumoFilters');
+  const tbody = document.getElementById('resultadoBody');
+  const resumo = document.getElementById('resultadoResumo');
+  const loading = document.getElementById('resultadoLoading');
+  const btnPrev = document.getElementById('paginacaoAnterior');
+  const btnNext = document.getElementById('paginacaoProximo');
+  const perPageSelect = document.getElementById('fPerPage');
+  const btnExportar = document.getElementById('btnExportar');
+  const btnLimpar = document.getElementById('btnLimpar');
+  const modalEl = document.getElementById('detalheModal');
+  const modalBody = document.getElementById('detalheConteudo');
+  let modal;
+  if (modalEl){ modal = new bootstrap.Modal(modalEl); }
+
+  let page = 1;
+  let totalPages = 0;
+  let lastParams = new URLSearchParams();
+
+  function escapeHtml(str){
+    return (str || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
+  }
+
+  function formatMoney(value){
+    if(value === null || value === undefined || value === '') return '—';
+    const num = Number(value);
+    if(Number.isNaN(num)) return value;
+    return num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:4});
+  }
+
+  function formatAliquota(value){
+    if(value === null || value === undefined || value === '') return '—';
+    const num = Number(value);
+    if(Number.isNaN(num)) return value;
+    return num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:4}) + '%';
+  }
+
+  function getFilters(){
+    const data = new URLSearchParams();
+    const termo = document.getElementById('fTermo').value.trim();
+    const origem = document.getElementById('fOrigem').value;
+    const versao = document.getElementById('fVersao').value;
+    const tuss = document.getElementById('fTuss').value.trim();
+    const tiss = document.getElementById('fTiss').value.trim();
+    const anvisa = document.getElementById('fAnvisa').value.trim();
+    const uf = document.getElementById('fUf').value.trim();
+    const aliquota = document.getElementById('fAliquota').value.trim();
+    const fabricante = document.getElementById('fFabricante').value.trim();
+    data.set('page', page);
+    data.set('per_page', perPageSelect.value || '50');
+    if(termo) data.set('q', termo);
+    if(origem) data.set('origem', origem);
+    if(versao) data.set('versao_tabela', versao);
+    if(tuss) data.set('tuss', tuss);
+    if(tiss) data.set('tiss', tiss);
+    if(anvisa) data.set('anvisa', anvisa);
+    if(uf) data.set('uf_referencia', uf);
+    if(aliquota) data.set('aliquota', aliquota);
+    if(fabricante) data.set('fabricante', fabricante);
+    return data;
+  }
+
+  function renderRows(items){
+    if(!items.length){
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Nenhum item encontrado.</td></tr>';
+      return;
+    }
+    const rows = items.map(item => {
+      const preco = formatMoney(item.preco);
+      const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
+      const dataRef = item.data_atualizacao || '—';
+      const origem = escapeHtml(item.origem);
+      const uf = escapeHtml(item.uf_referencia || '—');
+      const aliquota = formatAliquota(item.aliquota);
+      return `
+        <tr>
+          <td class="fw-semibold">${origem}</td>
+          <td>
+            <div class="small fw-semibold">${escapeHtml(item.tuss || '—')}</div>
+            <div class="small text-muted">TISS: ${escapeHtml(item.tiss || '—')}</div>
+            <div class="small text-muted">ANVISA: ${escapeHtml(item.anvisa || '—')}</div>
+          </td>
+          <td>
+            <div class="fw-semibold">${escapeHtml(item.descricao || '')}</div>
+            <div class="small text-muted">${escapeHtml(item.fabricante || '')}</div>
+          </td>
+          <td class="text-end">${preco}</td>
+          <td class="text-center">${uf}</td>
+          <td class="text-end">${aliquota}</td>
+          <td>
+            <div>${escapeHtml(item.versao_tabela || '—')}</div>
+            <div class="small text-muted">Ref.: ${escapeHtml(dataRef)}</div>
+          </td>
+          <td class="small">${atualizacao}</td>
+          <td class="text-end">
+            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}">
+              <i class="bi bi-eye"></i>
+            </button>
+          </td>
+        </tr>`;
+    }).join('');
+    tbody.innerHTML = rows;
+  }
+
+  async function carregar(){
+    const params = getFilters();
+    lastParams = new URLSearchParams(params.toString());
+    loading.style.display = 'flex';
+    try{
+      const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`);
+      if(!response.ok){
+        throw new Error('Falha ao buscar itens.');
+      }
+      const payload = await response.json();
+      const items = payload.items || [];
+      const pagination = payload.pagination || {};
+      const total = Number(pagination.total || 0);
+      page = Number(pagination.page || 1);
+      totalPages = Number(pagination.pages || 0);
+      renderRows(items);
+
+      if(total > 0){
+        const start = ((page - 1) * Number(pagination.per_page || 0)) + 1;
+        const end = start + items.length - 1;
+        resumo.textContent = `Exibindo ${start}-${end} de ${total} itens`;
+      } else {
+        resumo.textContent = 'Nenhum item encontrado para os filtros informados.';
+      }
+      btnPrev.disabled = page <= 1;
+      btnNext.disabled = !totalPages || page >= totalPages;
+    } catch(err){
+      resumo.textContent = err.message;
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger py-4">Não foi possível carregar os itens.</td></tr>';
+    } finally {
+      loading.style.display = 'none';
+    }
+  }
+
+  form.addEventListener('submit', function(evt){
+    evt.preventDefault();
+    page = 1;
+    carregar();
+  });
+
+  perPageSelect.addEventListener('change', function(){
+    page = 1;
+    carregar();
+  });
+
+  btnPrev.addEventListener('click', function(evt){
+    evt.preventDefault();
+    if(page > 1){
+      page -= 1;
+      carregar();
+    }
+  });
+
+  btnNext.addEventListener('click', function(evt){
+    evt.preventDefault();
+    if(totalPages && page < totalPages){
+      page += 1;
+      carregar();
+    }
+  });
+
+  btnLimpar.addEventListener('click', function(){
+    form.reset();
+    document.getElementById('fPerPage').value = '50';
+  });
+
+  tbody.addEventListener('click', async function(evt){
+    const btn = evt.target.closest('.visualizar-item');
+    if(!btn){ return; }
+    const origem = btn.getAttribute('data-origem');
+    const itemId = btn.getAttribute('data-id');
+    if(!origem || !itemId){ return; }
+    try{
+      btn.disabled = true;
+      const res = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}`);
+      if(!res.ok){ throw new Error('Item não encontrado.'); }
+      const data = await res.json();
+      const entries = [
+        ['Origem', data.origem],
+        ['TUSS', data.tuss || '—'],
+        ['TISS', data.tiss || '—'],
+        ['ANVISA', data.anvisa || '—'],
+        ['Descrição', data.descricao || ''],
+        ['Fabricante', data.fabricante || '—'],
+        ['Preço', formatMoney(data.preco)],
+        ['Alíquota', formatAliquota(data.aliquota)],
+        ['UF', data.uf_referencia || '—'],
+        ['Versão', data.versao_tabela || '—'],
+        ['Data ref.', data.data_atualizacao || '—'],
+        ['Criado em', data.created_at ? data.created_at.replace('T',' ') : '—'],
+        ['Atualizado em', data.updated_at ? data.updated_at.replace('T',' ') : '—']
+      ];
+      modalBody.innerHTML = entries.map(([label, value]) => `
+        <dt class="col-4 text-muted small">${escapeHtml(label)}</dt>
+        <dd class="col-8 small">${escapeHtml(String(value))}</dd>
+      `).join('');
+      modal.show();
+    } catch(err){
+      alert(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  btnExportar.addEventListener('click', function(){
+    if(!lastParams.toString()){
+      lastParams = getFilters();
+    }
+    const query = lastParams.toString();
+    const url = `{{ url_for('insumos_export_xlsx') }}?${query}`;
+    window.open(url, '_blank');
+  });
+})();
+</script>
+{% endblock %}
