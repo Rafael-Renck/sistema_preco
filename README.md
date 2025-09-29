@@ -94,6 +94,16 @@ flask simpro:import --file caminho/simpro.txt --versao 2025-09 --data 2025-09-01
 
 As mesmas opções de delimitador, mapa e encoding são válidas. No SIMPRO os campos `--uf` e `--aliquota` ainda alimentam metadados do índice.
 
+> **Importação manual (largura fixa)**: para executar diretamente no MySQL sem passar pela CLI,
+> utilize o roteiro em `sql/simpro_fixed_pipeline.sql`, que inclui criação de tabelas de staging,
+> comandos `LOAD DATA`, normalização com `INSERT ... SELECT`, rotinas de reimportação e consultas
+> básicas de validação.
+
+> **Novo pipeline SIMPRO**: o app agora grava os arquivos de largura fixa em `simpro_fixed_stage`
+> e materializa os campos normalizados em `simpro_item_norm` (códigos, quatro preços, validade
+> ANVISA, situação etc.). Rode `flask db upgrade` para criar as tabelas e reimporte usando um
+> mapa JSON com os offsets (`codigo`, `descricao`, `preco1` … `preco4`, `validade_anvisa`, `ean`).
+
 As mesmas regras valem para o formulário web (campos espelham as flags da CLI). O import de Brasíndice agora aceita também um arquivo de mapeamento JSON para largura fixa diretamente na interface.
 
 ## Simulador CBHPM: redutor individual e teto

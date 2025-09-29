@@ -102,6 +102,7 @@
           <div class="side-title">Cadastros</div>
           <a class="side-item {% if request.endpoint=='gerenciar_operadoras' %}active{% endif %}" href="{{ url_for('gerenciar_operadoras') }}"><i class="bi bi-building"></i><span>Operadoras</span></a>
           <a class="side-item {% if request.endpoint=='gerenciar_tabelas' %}active{% endif %}" href="{{ url_for('gerenciar_tabelas') }}"><i class="bi bi-table"></i><span>Tabelas</span></a>
+          <a class="side-item {% if request.endpoint and request.endpoint.startswith('admin_tetos') %}active{% endif %}" href="{{ url_for('admin_tetos') }}"><i class="bi bi-speedometer2"></i><span>Teto de Valores</span></a>
           <a class="side-item {% if request.endpoint=='gerenciar_usuarios' %}active{% endif %}" href="{{ url_for('gerenciar_usuarios') }}"><i class="bi bi-people"></i><span>Usuarios</span></a>          <a class="side-item {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}"><i class="bi bi-sliders"></i><span>Regras CBHPM</span></a>
         </div>
         {% endif %}

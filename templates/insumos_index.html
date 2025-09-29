@@ -82,7 +82,12 @@
     </div>
     <div class="col-6 col-md-2">
       <label class="form-label">UF</label>
-      <input type="text" class="form-control" id="fUf" maxlength="5" autocomplete="off">
+      <select class="form-select" id="fUf">
+        <option value="">Selecione…</option>
+        {% for uf in UFS %}
+        <option value="{{ uf }}">{{ uf }}</option>
+        {% endfor %}
+      </select>
     </div>
     <div class="col-6 col-md-2">
       <label class="form-label">Alíquota (%)</label>
@@ -128,7 +133,7 @@
     </div>
 
     <div class="table-responsive position-relative">
-      <div id="resultadoLoading" class="position-absolute top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-white bg-opacity-75" style="display:none;">
+      <div id="resultadoLoading" class="position-absolute top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center bg-white bg-opacity-75 d-none" style="pointer-events:none;">
         <div class="spinner-border" role="status"><span class="visually-hidden">Carregando…</span></div>
       </div>
       <table class="table table-clean align-middle mb-0" id="resultadoTabela">
@@ -137,7 +142,8 @@
             <th style="width:90px;">Origem</th>
             <th style="width:140px;">Códigos</th>
             <th>Descrição</th>
-            <th style="width:130px;" class="text-end">Preço</th>
+            <th style="width:130px;" class="text-end">PMC</th>
+            <th style="width:130px;" class="text-end">PFB</th>
             <th style="width:90px;" class="text-center">UF</th>
             <th style="width:130px;" class="text-end">Alíquota</th>
             <th style="width:150px;">Versão</th>
@@ -146,7 +152,7 @@
           </tr>
         </thead>
         <tbody id="resultadoBody">
-          <tr><td colspan="9" class="text-center text-muted py-4">Nenhuma busca realizada.</td></tr>
+          <tr><td colspan="10" class="text-center text-muted py-4">Nenhuma busca realizada.</td></tr>
         </tbody>
       </table>
     </div>
@@ -154,165 +160,9 @@
 </div>
 
 {% if is_admin %}
-<div class="border rounded-3 p-3 bg-white mt-4">
-  <div class="d-flex align-items-center justify-content-between mb-3">
-    <h6 class="mb-0">Importar tabelas</h6>
-    <span class="text-muted small">Somente administradores</span>
-  </div>
-  <div class="row g-4">
-    <div class="col-12 col-lg-6">
-      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="border rounded-3 p-3 bg-light-subtle">
-        <input type="hidden" name="origem" value="BRAS">
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <h6 class="mb-0">Brasíndice</h6>
-          <span class="badge text-bg-primary">BRAS</span>
-        </div>
-        <div class="mb-2">
-          <label class="form-label">Arquivo TXT</label>
-          <input type="file" name="arquivo" class="form-control" accept=".txt,.csv" required>
-        </div>
-        <div class="row g-2">
-          <div class="col-8">
-            <label class="form-label">Versão</label>
-            <input type="text" name="versao" class="form-control" placeholder="ex.: 2025-09" required>
-          </div>
-          <div class="col-4">
-            <label class="form-label">Data ref.</label>
-            <input type="date" name="data_atualizacao" class="form-control">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-4">
-            <label class="form-label">UF</label>
-            <input type="text" name="uf" class="form-control" maxlength="5" placeholder="ex.: SP">
-          </div>
-          <div class="col-4">
-            <label class="form-label">Alíquota (%)</label>
-            <input type="text" name="aliquota" class="form-control" placeholder="ex.: 18,5">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-6">
-            <label class="form-label">Formato</label>
-            <select name="format" class="form-select">
-              <option value="delimited">Delimitado</option>
-              <option value="fixed">Largura fixa</option>
-            </select>
-          </div>
-          <div class="col-3">
-            <label class="form-label">Delimitador</label>
-            <input type="text" name="delimiter" class="form-control" value=";">
-          </div>
-          <div class="col-3">
-            <label class="form-label">Quote</label>
-            <input type="text" name="quotechar" class="form-control" value="&quot;">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-6">
-            <label class="form-label">Codificação</label>
-            <select name="encoding" class="form-select">
-              <option value="">Automática (UTF-8/Latin-1)</option>
-              <option value="utf-8">UTF-8</option>
-              <option value="latin-1">Latin-1</option>
-              <option value="cp1252">Windows-1252</option>
-            </select>
-          </div>
-        </div>
-        <div class="mb-2 mt-1">
-          <label class="form-label">Mapa JSON (opcional)</label>
-          <input type="file" name="map_config" class="form-control" accept=".json">
-        </div>
-        <div class="form-check form-switch">
-          <input class="form-check-input" type="checkbox" name="no_header" id="brasNoHeader">
-          <label class="form-check-label" for="brasNoHeader">Arquivo sem cabeçalho</label>
-        </div>
-        <div class="form-check form-switch">
-          <input class="form-check-input" type="checkbox" name="truncate" id="brasTruncate">
-          <label class="form-check-label" for="brasTruncate">Limpar tabela antes de importar</label>
-        </div>
-        <div class="d-grid mt-3">
-          <button type="submit" class="btn btn-primary">Importar Brasíndice</button>
-        </div>
-      </form>
-    </div>
-    <div class="col-12 col-lg-6">
-      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="border rounded-3 p-3 bg-light-subtle">
-        <input type="hidden" name="origem" value="SIMPRO">
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <h6 class="mb-0">SIMPRO</h6>
-          <span class="badge text-bg-success">SIMPRO</span>
-        </div>
-        <div class="mb-2">
-          <label class="form-label">Arquivo TXT</label>
-          <input type="file" name="arquivo" class="form-control" accept=".txt,.csv" required>
-        </div>
-        <div class="row g-2">
-          <div class="col-8">
-            <label class="form-label">Versão</label>
-            <input type="text" name="versao" class="form-control" placeholder="ex.: 2025-09" required>
-          </div>
-          <div class="col-4">
-            <label class="form-label">Data ref.</label>
-            <input type="date" name="data_atualizacao" class="form-control">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-4">
-            <label class="form-label">UF</label>
-            <input type="text" name="uf" class="form-control" maxlength="5" placeholder="ex.: SP">
-          </div>
-          <div class="col-4">
-            <label class="form-label">Alíquota (%)</label>
-            <input type="text" name="aliquota" class="form-control" placeholder="ex.: 18,5">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-6">
-            <label class="form-label">Formato</label>
-            <select name="format" class="form-select">
-              <option value="delimited">Delimitado</option>
-              <option value="fixed">Largura fixa</option>
-            </select>
-          </div>
-          <div class="col-3">
-            <label class="form-label">Delimitador</label>
-            <input type="text" name="delimiter" class="form-control" value=";">
-          </div>
-          <div class="col-3">
-            <label class="form-label">Quote</label>
-            <input type="text" name="quotechar" class="form-control" value="&quot;">
-          </div>
-        </div>
-        <div class="row g-2 mt-1">
-          <div class="col-6">
-            <label class="form-label">Codificação</label>
-            <select name="encoding" class="form-select">
-              <option value="">Automática (UTF-8/Latin-1)</option>
-              <option value="utf-8">UTF-8</option>
-              <option value="latin-1">Latin-1</option>
-              <option value="cp1252">Windows-1252</option>
-            </select>
-          </div>
-        </div>
-        <div class="mb-2 mt-1">
-          <label class="form-label">Mapa JSON (opcional)</label>
-          <input type="file" name="map_config" class="form-control" accept=".json">
-        </div>
-        <div class="form-check form-switch">
-          <input class="form-check-input" type="checkbox" name="no_header" id="simproNoHeader">
-          <label class="form-check-label" for="simproNoHeader">Arquivo sem cabeçalho</label>
-        </div>
-        <div class="form-check form-switch">
-          <input class="form-check-input" type="checkbox" name="truncate" id="simproTruncate">
-          <label class="form-check-label" for="simproTruncate">Limpar tabela antes de importar</label>
-        </div>
-        <div class="d-grid mt-3">
-          <button type="submit" class="btn btn-success">Importar SIMPRO</button>
-        </div>
-      </form>
-    </div>
-  </div>
+<div class="alert alert-info mt-4" role="alert">
+  As importações de Brasíndice e SIMPRO agora estão centralizadas em <strong>Gerenciar Tabelas</strong>.
+  Vá até a seção "Insumos" para carregar novos arquivos.
 </div>
 {% endif %}
 
@@ -352,6 +202,14 @@
   let page = 1;
   let totalPages = 0;
   let lastParams = new URLSearchParams();
+
+  function toggleLoading(state){
+    if(state){
+      loading.classList.remove('d-none');
+    } else {
+      loading.classList.add('d-none');
+    }
+  }
 
   function escapeHtml(str){
     return (str || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
@@ -398,11 +256,10 @@
 
   function renderRows(items){
     if(!items.length){
-      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-4">Nenhum item encontrado.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Nenhum item encontrado.</td></tr>';
       return;
     }
     const rows = items.map(item => {
-      const preco = formatMoney(item.preco);
       const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
       const dataRef = item.data_atualizacao || '—';
       const origem = escapeHtml(item.origem);
@@ -420,7 +277,8 @@
             <div class="fw-semibold">${escapeHtml(item.descricao || '')}</div>
             <div class="small text-muted">${escapeHtml(item.fabricante || '')}</div>
           </td>
-          <td class="text-end">${preco}</td>
+          <td class="text-end">${formatMoney(item.preco_pmc)}</td>
+          <td class="text-end">${formatMoney(item.preco_pfb)}</td>
           <td class="text-center">${uf}</td>
           <td class="text-end">${aliquota}</td>
           <td>
@@ -439,9 +297,19 @@
   }
 
   async function carregar(){
+    const origemSel = document.getElementById('fOrigem').value;
+    const ufSel = document.getElementById('fUf').value.trim();
+    if(!ufSel){
+      resumo.textContent = 'Informe uma UF antes de buscar.';
+      tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Selecione uma UF para consultar.</td></tr>';
+      btnPrev.disabled = true;
+      btnNext.disabled = true;
+      return;
+    }
+
     const params = getFilters();
     lastParams = new URLSearchParams(params.toString());
-    loading.style.display = 'flex';
+    toggleLoading(true);
     try{
       const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`);
       if(!response.ok){
@@ -466,9 +334,9 @@
       btnNext.disabled = !totalPages || page >= totalPages;
     } catch(err){
       resumo.textContent = err.message;
-      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-danger py-4">Não foi possível carregar os itens.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger py-4">Não foi possível carregar os itens.</td></tr>';
     } finally {
-      loading.style.display = 'none';
+      toggleLoading(false);
     }
   }
 
@@ -522,7 +390,8 @@
         ['ANVISA', data.anvisa || '—'],
         ['Descrição', data.descricao || ''],
         ['Fabricante', data.fabricante || '—'],
-        ['Preço', formatMoney(data.preco)],
+        ['PMC', formatMoney(data.preco_pmc ?? data.preco)],
+        ['PFB', formatMoney(data.preco_pfb ?? data.preco)],
         ['Alíquota', formatAliquota(data.aliquota)],
         ['UF', data.uf_referencia || '—'],
         ['Versão', data.versao_tabela || '—'],
@@ -543,6 +412,11 @@
   });
 
   btnExportar.addEventListener('click', function(){
+    const ufSel = document.getElementById('fUf').value.trim();
+    if(!ufSel){
+      alert('Informe uma UF para exportar os itens.');
+      return;
+    }
     if(!lastParams.toString()){
       lastParams = getFilters();
     }

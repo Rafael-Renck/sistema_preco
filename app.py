@@ -25,6 +25,7 @@ import pymysql
 from dotenv import load_dotenv
 from functools import wraps
 from sqlalchemy import text, or_, func
+from sqlalchemy.dialects.mysql import insert as mysql_insert
 from werkzeug.utils import secure_filename
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import unicodedata
@@ -226,18 +227,21 @@ class CBHPMItem(db.Model):
     id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
 
 
-class CBHPMTeto(db.Model):
+class CbhpmTeto(db.Model):
     __tablename__ = 'cbhpm_teto'
 
-    codigo = db.Column(db.String(100), primary_key=True)
-    descricao = db.Column(db.String(500), nullable=True)
-    valor_total = db.Column(db.Numeric(12, 2), nullable=False)
-    versao_ref = db.Column(db.String(100), nullable=False)
+    codigo = db.Column(db.String(20), primary_key=True)
+    descricao = db.Column(db.String(255), nullable=False)
+    valor_total = db.Column(db.Numeric(15, 2), nullable=False)
     updated_at = db.Column(
-        db.DateTime,
+        db.TIMESTAMP,
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'),
         server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_cbhpm_teto_descricao', 'descricao'),
     )
 
 
@@ -357,6 +361,62 @@ class SimproItem(db.Model):
     )
 
 
+class SimproFixedStage(db.Model):
+    __tablename__ = 'simpro_fixed_stage'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    arquivo = db.Column(db.String(255), nullable=False)
+    linha_num = db.Column(db.Integer, nullable=False)
+    linha = db.Column(db.Text, nullable=False)
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_simpro_fixed_arquivo', 'arquivo'),
+    )
+
+
+class SimproItemNormalized(db.Model):
+    __tablename__ = 'simpro_item_norm'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    arquivo = db.Column(db.String(255), nullable=False)
+    linha_num = db.Column(db.Integer, nullable=False)
+    codigo = db.Column(db.String(20), index=True, nullable=False)
+    codigo_alt = db.Column(db.String(20), index=True, nullable=True)
+    descricao = db.Column(db.String(255), index=True, nullable=False)
+    data_ref = db.Column(db.Date, nullable=True)
+    tipo_reg = db.Column(db.String(4), nullable=True)
+    preco1 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco2 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco3 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco4 = db.Column(db.Numeric(15, 4), nullable=True)
+    unidade = db.Column(db.String(16), nullable=True)
+    qtd_unidade = db.Column(db.Integer, nullable=True)
+    fabricante = db.Column(db.String(80), nullable=True)
+    anvisa = db.Column(db.String(20), index=True, nullable=True)
+    validade_anvisa = db.Column(db.Date, nullable=True)
+    ean = db.Column(db.String(32), index=True, nullable=True)
+    situacao = db.Column(db.String(40), nullable=True)
+    versao = db.Column(db.String(100), nullable=True)
+    uf_referencia = db.Column(db.String(5), nullable=True)
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_simpro_item_norm_desc', 'descricao'),
+        db.Index('idx_simpro_item_norm_ean', 'ean'),
+        db.Index('idx_simpro_item_norm_anvisa', 'anvisa'),
+        db.Index('idx_simpro_item_norm_versao', 'versao'),
+    )
+
+
 class InsumoIndex(db.Model):
     __tablename__ = 'insumos_index'
 
@@ -381,10 +441,15 @@ class InsumoIndex(db.Model):
 
 
 BRAS_DEFAULT_COLUMNS = ['tuss', 'tiss', 'anvisa', 'descricao', 'preco', 'fabricante', 'aliquota']
-SIMPRO_DEFAULT_COLUMNS = ['tuss', 'tiss', 'anvisa', 'descricao', 'preco', 'fabricante', 'aliquota']
+SIMPRO_DEFAULT_COLUMNS = [
+    'codigo', 'codigo_alt', 'descricao', 'data_ref', 'tipo_reg',
+    'preco1', 'preco2', 'preco3', 'preco4', 'unidade', 'qtd_unidade',
+    'fabricante', 'anvisa', 'validade_anvisa', 'ean', 'situacao'
+]
 DECIMAL_FIELDS = {'preco', 'aliquota'}
 DATE_FIELDS = {'data_atualizacao'}
 DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
+TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
 BRAS_RAW_DEFAULT_COLUMNS = [
     'col01', 'col02', 'col03', 'col04', 'col05', 'col06', 'col07', 'col08', 'col09', 'col10',
     'col11', 'col12', 'col13', 'col14', 'col15', 'col16', 'col17', 'col18', 'col19', 'col20',
@@ -393,36 +458,25 @@ BRAS_RAW_DEFAULT_COLUMNS = [
 
 
 def _clean_decimal_expression(column: str) -> str:
-    cleaned = f"REPLACE(REPLACE(REPLACE({column}, '.', ''), ' ', ''), ',', '.')"
+    sanitized = f"REPLACE(REPLACE(REPLACE({column}, '.', ''), ' ', ''), ',', '.')"
+    integer_part = f"SUBSTRING_INDEX({sanitized}, '.', 1)"
+    scale_expr = f"GREATEST(CHAR_LENGTH({integer_part}) - 8, 2)"
     return (
         "CAST(\n"
         "    CASE\n"
         f"        WHEN {column} IS NULL THEN NULL\n"
-        f"        WHEN {cleaned} = '' THEN NULL\n"
-        f"        WHEN CHAR_LENGTH({cleaned}) > 32 THEN NULL\n"
-        f"        ELSE {cleaned}\n"
+        f"        WHEN {sanitized} = '' THEN NULL\n"
+        f"        WHEN {sanitized} NOT REGEXP '^[0-9]+(\\.[0-9]+)?$' THEN NULL\n"
+        f"        WHEN CHAR_LENGTH({sanitized}) > 32 THEN NULL\n"
+        f"        ELSE (CAST({sanitized} AS DECIMAL(38,6)) / POW(10, {scale_expr}))\n"
         "    END AS DECIMAL(15,4)\n"
         ")"
     )
 
 
 def _build_bras_item_view_sql() -> str:
-    preco_pmc_pacote = _clean_decimal_expression('r.col21')
-    preco_pfb_pacote = _clean_decimal_expression('r.col22')
-    preco_pmc_unit = _clean_decimal_expression('r.col23')
-    preco_pfb_unit = _clean_decimal_expression('r.col22')
-    aliquota = _clean_decimal_expression('r.col20')
-    quantidade = (
-        "CAST(\n"
-        "    CASE\n"
-        "        WHEN r.col05 IS NULL THEN NULL\n"
-        "        WHEN TRIM(r.col05) = '' THEN NULL\n"
-        "        WHEN REPLACE(r.col05, ' ', '') REGEXP '^[0-9]+$'\n"
-        "            THEN REPLACE(r.col05, ' ', '')\n"
-        "        ELSE NULL\n"
-        "    END AS UNSIGNED\n"
-        ")"
-    )
+    preco_pmc = _clean_decimal_expression('r.col07')
+    preco_pfb = _clean_decimal_expression('r.col08')
 
     return (
         "CREATE OR REPLACE VIEW bras_item_v AS\n"
@@ -432,19 +486,19 @@ def _build_bras_item_view_sql() -> str:
         "    r.linha_num,\n"
         "    r.col01 AS laboratorio_codigo,\n"
         "    r.col02 AS laboratorio_nome,\n"
-        "    r.col03 AS produto_codigo,\n"
+        "    r.col20 AS produto_codigo,\n"
         "    r.col04 AS produto_nome,\n"
-        "    r.col05 AS apresentacao_codigo,\n"
+        "    r.col18 AS apresentacao_codigo,\n"
         "    r.col06 AS apresentacao_descricao,\n"
         "    r.col17 AS ean,\n"
-        "    r.col14 AS registro_anvisa,\n"
-        "    r.col19 AS edicao,\n"
-        f"    {preco_pmc_pacote} AS preco_pmc_pacote,\n"
-        f"    {preco_pfb_pacote} AS preco_pfb_pacote,\n"
-        f"    {preco_pmc_unit} AS preco_pmc_unit,\n"
-        f"    {preco_pfb_unit} AS preco_pfb_unit,\n"
-        f"    {aliquota} AS aliquota_ou_ipi,\n"
-        f"    {quantidade} AS quantidade_embalagem,\n"
+        "    r.col22 AS registro_anvisa,\n"
+        "    r.col14 AS edicao,\n"
+        f"    {preco_pmc} AS preco_pmc_pacote,\n"
+        f"    {preco_pfb} AS preco_pfb_pacote,\n"
+        f"    {preco_pmc} AS preco_pmc_unit,\n"
+        f"    {preco_pfb} AS preco_pfb_unit,\n"
+        "    NULL AS aliquota_ou_ipi,\n"
+        "    NULL AS quantidade_embalagem,\n"
         "    r.imported_at\n"
         "FROM bras_raw r\n"
     )
@@ -554,6 +608,30 @@ def _delete_existing_bras_records(arquivo_label: str | None, truncate: bool) -> 
     db.session.commit()
 
 
+def _delete_existing_simpro_records(arquivo_label: str | None, truncate: bool) -> None:
+    if truncate:
+        db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'SIMPRO'"))
+        db.session.execute(text('TRUNCATE TABLE simpro_item_norm'))
+        db.session.execute(text('TRUNCATE TABLE simpro_fixed_stage'))
+        db.session.commit()
+        return
+
+    if not arquivo_label:
+        return
+
+    params = {'arquivo': arquivo_label}
+    db.session.execute(
+        text(
+            "DELETE FROM insumos_index "
+            "WHERE origem = 'SIMPRO' AND item_id IN (SELECT id FROM simpro_item_norm WHERE arquivo = :arquivo)"
+        ),
+        params,
+    )
+    db.session.execute(text('DELETE FROM simpro_item_norm WHERE arquivo = :arquivo'), params)
+    db.session.execute(text('DELETE FROM simpro_fixed_stage WHERE arquivo = :arquivo'), params)
+    db.session.commit()
+
+
 def _bras_load_data_delimited(
     *,
     file_path: Path,
@@ -584,8 +662,7 @@ def _bras_load_data_delimited(
     set_lines.append("linha_num = (@row := @row + 1)")
     set_clause = ',\n        '.join(set_lines)
 
-    sql = (
-        "SET @row := 0;\n"
+    load_stmt = (
         f"LOAD DATA LOCAL INFILE {file_literal}\n"
         "INTO TABLE bras_raw\n"
         f"CHARACTER SET {charset}\n"
@@ -598,7 +675,8 @@ def _bras_load_data_delimited(
     )
 
     with db.engine.begin() as conn:
-        result = conn.exec_driver_sql(sql)
+        conn.exec_driver_sql('SET @row := 0')
+        result = conn.exec_driver_sql(load_stmt)
         return result.rowcount or 0
 
 
@@ -638,6 +716,158 @@ def _bras_csv_fallback(
     raise click.ClickException('Não foi possível decodificar o arquivo com as codificações testadas.')
 
 
+def _stage_simpro_fixed(
+    *,
+    file_path: Path,
+    map_config: dict,
+    encoding: str | None,
+    arquivo_label: str,
+) -> int:
+    encodings = _build_encoding_list(encoding)
+    inserted = 0
+    for enc in encodings:
+        try:
+            rows: list[dict] = []
+            with file_path.open('r', encoding=enc, newline='') as handle:
+                for idx, raw_line in enumerate(handle, start=1):
+                    line = raw_line.rstrip('\r\n')
+                    rows.append({
+                        'arquivo': arquivo_label,
+                        'linha_num': idx,
+                        'linha': line,
+                    })
+            if rows:
+                db.session.bulk_insert_mappings(SimproFixedStage, rows)
+                db.session.commit()
+                inserted = len(rows)
+                break
+        except UnicodeDecodeError:
+            db.session.rollback()
+            continue
+    if not inserted:
+        raise click.ClickException('Não foi possível decodificar o arquivo de largura fixa do SIMPRO.')
+    return inserted
+
+
+def _parse_fixed_date(value: str | None, fmt: str | None) -> date | None:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    fmt = (fmt or 'DDMMYYYY').upper()
+    python_fmt = fmt.replace('YYYY', '%Y').replace('YY', '%y').replace('MM', '%m').replace('DD', '%d')
+    try:
+        return datetime.strptime(value, python_fmt).date()
+    except ValueError:
+        return None
+
+
+def _sanitize_numeric(value: str) -> str:
+    return ''.join(ch for ch in value if ch.isdigit() or ch in ',.-')
+
+
+def _auto_scale_decimal(value: Decimal | None, *, max_integer_digits: int = 8, min_fraction_digits: int = 2) -> Decimal | None:
+    if value is None:
+        return None
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
+
+    sign = -1 if value < 0 else 1
+    magnitude = value.copy_abs()
+    if not magnitude:
+        return value.quantize(Decimal('0.01'))
+
+    digits_tuple = magnitude.normalize().as_tuple()
+    digits_len = len(digits_tuple.digits)
+    exponent = digits_tuple.exponent
+    integer_digits = digits_len + exponent
+    if integer_digits < 0:
+        integer_digits = 0
+
+    scale_power = max(integer_digits - max_integer_digits, 0)
+    if scale_power > 0:
+        magnitude = magnitude / (Decimal(10) ** scale_power)
+
+    while magnitude >= Decimal('1000'):
+        magnitude = magnitude / Decimal('10')
+
+    quantize_pattern = '0.' + ('0' * max(min_fraction_digits, 4))
+    return (magnitude * sign).quantize(Decimal(quantize_pattern))
+
+
+def _materialize_simpro_items(
+    *,
+    arquivo_label: str,
+    map_config: dict,
+    versao: str,
+    uf_default: str | None,
+) -> int:
+    columns_cfg = map_config.get('columns') or []
+    if not columns_cfg:
+        raise click.ClickException('Mapa SIMPRO precisa definir "columns".')
+
+    decimal_divisor = Decimal(str(map_config.get('decimal_divisor') or '1'))
+    rows = (
+        SimproFixedStage.query
+        .filter_by(arquivo=arquivo_label)
+        .order_by(SimproFixedStage.linha_num.asc())
+        .all()
+    )
+
+    parsed_rows: list[dict] = []
+    for stage in rows:
+        line = stage.linha or ''
+        record: dict[str, object | None] = {
+            'id': stage.id,
+            'arquivo': stage.arquivo,
+            'linha_num': stage.linha_num,
+            'versao': versao,
+            'uf_referencia': uf_default,
+            'imported_at': stage.imported_at,
+        }
+        for cfg in columns_cfg:
+            name = (cfg.get('name') or '').strip()
+            if not name:
+                continue
+            start = max(int(cfg.get('start', 1)) - 1, 0)
+            length = max(int(cfg.get('length', 0)), 0)
+            raw_value = line[start:start + length]
+            if cfg.get('strip') and isinstance(cfg['strip'], (list, tuple)):
+                for ch in cfg['strip']:
+                    raw_value = raw_value.replace(str(ch), '')
+            value = raw_value.strip()
+            if not value:
+                record[name] = None
+                continue
+
+            value_type = (cfg.get('type') or '').lower()
+            if value_type == 'decimal':
+                coerced = _coerce_decimal(_sanitize_numeric(value))
+                if coerced is None:
+                    record[name] = None
+                else:
+                    divisor = Decimal(str(cfg.get('divide_by') or decimal_divisor)) or Decimal('1')
+                    scaled = Decimal(coerced) / divisor
+                    record[name] = _auto_scale_decimal(scaled)
+            elif value_type == 'date':
+                record[name] = _parse_fixed_date(value, cfg.get('date_fmt'))
+            elif value_type == 'int':
+                digits = ''.join(ch for ch in value if ch.isdigit() or ch == '-')
+                try:
+                    record[name] = int(digits) if digits else None
+                except ValueError:
+                    record[name] = None
+            else:
+                record[name] = value
+        parsed_rows.append(record)
+
+    if not parsed_rows:
+        return 0
+
+    db.session.bulk_insert_mappings(SimproItemNormalized, parsed_rows)
+    db.session.commit()
+    return len(parsed_rows)
 def _stage_bras_delimited(
     *,
     file_path: Path,
@@ -787,12 +1017,19 @@ def _materialize_bras_items(arquivo_label: str | None) -> int:
     return result.rowcount or 0
 
 
-def _sync_bras_insumo_index(arquivo_label: str | None) -> None:
-    params: dict[str, str] = {}
+def _sync_bras_insumo_index(
+    arquivo_label: str | None,
+    *,
+    uf_default: str | None = None,
+    aliquota_default: Decimal | None = None,
+) -> None:
+    params: dict[str, object] = {}
     where_clause = ''
     if arquivo_label:
         params['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
+    params['uf_default'] = uf_default
+    params['aliquota_default'] = aliquota_default
 
     upsert_sql = text(
         """
@@ -804,18 +1041,74 @@ def _sync_bras_insumo_index(arquivo_label: str | None) -> None:
         SELECT
             'BRAS' AS origem,
             n.id AS item_id,
-            NULL AS tuss,
-            NULL AS tiss,
+            n.produto_codigo AS tuss,
+            n.apresentacao_codigo AS tiss,
             TRIM(CONCAT_WS(' • ', NULLIF(n.produto_nome, ''), NULLIF(n.apresentacao_descricao, ''))) AS descricao,
-            n.preco_pmc_unit AS preco,
-            n.aliquota_ou_ipi AS aliquota,
+            COALESCE(n.preco_pmc_unit, n.preco_pmc_pacote, n.preco_pfb_unit, n.preco_pfb_pacote) AS preco,
+            COALESCE(n.aliquota_ou_ipi, :aliquota_default) AS aliquota,
             n.laboratorio_nome AS fabricante,
             n.registro_anvisa AS anvisa,
             COALESCE(n.edicao, n.arquivo) AS versao_tabela,
             NULL AS data_atualizacao,
-            NULL AS uf_referencia,
+            COALESCE(:uf_default, NULL) AS uf_referencia,
             NOW() AS updated_at
         FROM bras_item_n n
+        {where_clause}
+        ON DUPLICATE KEY UPDATE
+            tuss = VALUES(tuss),
+            tiss = VALUES(tiss),
+            descricao = VALUES(descricao),
+            preco = VALUES(preco),
+            aliquota = VALUES(aliquota),
+            fabricante = VALUES(fabricante),
+            anvisa = VALUES(anvisa),
+            versao_tabela = VALUES(versao_tabela),
+            data_atualizacao = VALUES(data_atualizacao),
+            uf_referencia = VALUES(uf_referencia),
+            updated_at = VALUES(updated_at)
+        """.replace('{where_clause}', where_clause)
+    )
+
+    db.session.execute(upsert_sql, params)
+    db.session.commit()
+
+
+def _sync_simpro_insumo_index(
+    arquivo_label: str | None,
+    *,
+    uf_default: str | None = None,
+    aliquota_default: Decimal | None = None,
+) -> None:
+    params: dict[str, object] = {}
+    where_clause = ''
+    if arquivo_label:
+        params['arquivo'] = arquivo_label
+        where_clause = 'WHERE arquivo = :arquivo'
+    params['uf_default'] = uf_default
+    params['aliquota_default'] = aliquota_default
+
+    upsert_sql = text(
+        """
+        INSERT INTO insumos_index (
+            origem, item_id, tuss, tiss, descricao, preco, aliquota,
+            fabricante, anvisa, versao_tabela, data_atualizacao,
+            uf_referencia, updated_at
+        )
+        SELECT
+            'SIMPRO' AS origem,
+            n.id AS item_id,
+            n.codigo AS tuss,
+            n.codigo_alt AS tiss,
+            n.descricao AS descricao,
+            COALESCE(n.preco2, n.preco1, n.preco3, n.preco4) AS preco,
+            :aliquota_default AS aliquota,
+            n.fabricante AS fabricante,
+            n.anvisa AS anvisa,
+            COALESCE(n.versao, n.arquivo) AS versao_tabela,
+            n.data_ref AS data_atualizacao,
+            COALESCE(n.uf_referencia, :uf_default) AS uf_referencia,
+            NOW() AS updated_at
+        FROM simpro_item_norm n
         {where_clause}
         ON DUPLICATE KEY UPDATE
             tuss = VALUES(tuss),
@@ -849,9 +1142,13 @@ def _import_bras(
     encoding: str | None,
     map_config: dict,
     truncate: bool,
+    uf_default: str | None = None,
+    aliquota_default: Decimal | None = None,
 ) -> dict:
     del data_ref
     arquivo_label = map_config.get('arquivo') or versao or file_path.name
+    if uf_default and not map_config.get('arquivo'):
+        arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
 
     _delete_existing_bras_records(arquivo_label, truncate)
 
@@ -877,7 +1174,58 @@ def _import_bras(
         )
 
     materialized = _materialize_bras_items(arquivo_label if not truncate else None)
-    _sync_bras_insumo_index(arquivo_label if not truncate else None)
+    _sync_bras_insumo_index(
+        arquivo_label if not truncate else None,
+        uf_default=uf_default,
+        aliquota_default=aliquota_default,
+    )
+
+    return {
+        'arquivo': arquivo_label,
+        'linhas_raw': inserted,
+        'linhas_materializadas': materialized,
+    }
+
+
+def _import_simpro(
+    *,
+    file_path: Path,
+    versao: str,
+    fmt: str,
+    map_config: dict,
+    encoding: str | None,
+    truncate: bool,
+    uf_default: str | None,
+    aliquota_default: Decimal | None,
+) -> dict:
+    if fmt != 'fixed':
+        raise click.ClickException('Importação SIMPRO suporta apenas formato de largura fixa no momento.')
+
+    arquivo_label = map_config.get('arquivo') or versao or file_path.name
+    if uf_default and not map_config.get('arquivo'):
+        arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
+
+    _delete_existing_simpro_records(arquivo_label, truncate)
+
+    inserted = _stage_simpro_fixed(
+        file_path=file_path,
+        map_config=map_config,
+        encoding=encoding,
+        arquivo_label=arquivo_label,
+    )
+
+    materialized = _materialize_simpro_items(
+        arquivo_label=arquivo_label,
+        map_config=map_config,
+        versao=versao,
+        uf_default=uf_default,
+    )
+
+    _sync_simpro_insumo_index(
+        arquivo_label if not truncate else None,
+        uf_default=uf_default,
+        aliquota_default=aliquota_default,
+    )
 
     return {
         'arquivo': arquivo_label,
@@ -1029,8 +1377,225 @@ def _decimal_to_string(value: Decimal | None, precision: int = 4) -> str | None:
         as_str = as_str.rstrip('0').rstrip('.')
     return as_str
 
+def _ensure_teto_preview_dir() -> Path:
+    directory = TETO_PREVIEW_DIR
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return directory
 
-def _serialize_insumo_index(item: 'InsumoIndex') -> dict:
+
+def _format_brl(value: Decimal | None) -> str:
+    if value is None:
+        return ''
+    try:
+        quantized = Decimal(value).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return ''
+    formatted = format(quantized, ',.2f')
+    return 'R$ ' + formatted.replace(',', 'X').replace('.', ',').replace('X', '.')
+
+
+def _store_teto_preview(payload: dict) -> str:
+    directory = _ensure_teto_preview_dir()
+    token = uuid4().hex
+    rows = []
+    for row in payload.get('rows', []):
+        value = row.get('valor_total')
+        if value is not None and not isinstance(value, str):
+            try:
+                value = format(Decimal(value), 'f')
+            except (InvalidOperation, ValueError):
+                value = None
+        rows.append({
+            'codigo': row.get('codigo'),
+            'descricao': row.get('descricao'),
+            'valor_total': value,
+            'row_number': row.get('row_number'),
+        })
+    data = {
+        'rows': rows,
+        'meta': payload.get('meta', {}),
+        'errors': payload.get('errors', []),
+    }
+    file_path = directory / f'{token}.json'
+    file_path.write_text(json.dumps(data, ensure_ascii=False))
+    return token
+
+
+def _load_teto_preview(token: str) -> dict | None:
+    if not token:
+        return None
+    file_path = _ensure_teto_preview_dir() / f'{token}.json'
+    if not file_path.exists():
+        return None
+    try:
+        raw = json.loads(file_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return None
+    rows: list[dict] = []
+    for row in raw.get('rows', []):
+        valor = row.get('valor_total')
+        try:
+            valor_decimal = Decimal(str(valor)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if valor is not None else None
+        except (InvalidOperation, ValueError):
+            valor_decimal = None
+        rows.append({
+            'codigo': row.get('codigo'),
+            'descricao': row.get('descricao'),
+            'valor_total': valor_decimal,
+            'row_number': row.get('row_number'),
+        })
+    return {
+        'rows': rows,
+        'meta': raw.get('meta', {}),
+        'errors': raw.get('errors', []),
+        'token': token,
+    }
+
+
+def _discard_teto_preview(token: str) -> None:
+    if not token:
+        return
+    file_path = _ensure_teto_preview_dir() / f'{token}.json'
+    try:
+        file_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _read_teto_rows_from_csv(file_path: Path) -> list[tuple[int, dict[str, object]]]:
+    encodings = DEFAULT_IMPORT_ENCODINGS + ['utf-8']
+    for enc in encodings:
+        try:
+            with file_path.open('r', encoding=enc, newline='') as handle:
+                first_line = handle.readline()
+                if not first_line:
+                    return []
+                delimiter = ';' if first_line.count(';') >= first_line.count(',') else ','
+                handle.seek(0)
+                reader = csv.reader(handle, delimiter=delimiter)
+                try:
+                    header = next(reader)
+                except StopIteration:
+                    return []
+                headers_norm = [_norm_header(h) for h in header]
+                rows: list[tuple[int, dict[str, object]]] = []
+                for row_idx, raw_row in enumerate(reader, start=2):
+                    values: dict[str, object] = {}
+                    for col_idx, key in enumerate(headers_norm):
+                        if not key:
+                            continue
+                        value = raw_row[col_idx] if col_idx < len(raw_row) else ''
+                        if isinstance(value, str):
+                            value = value.strip()
+                        values[key] = value
+                    rows.append((row_idx, values))
+                return rows
+        except UnicodeDecodeError:
+            continue
+    raise click.ClickException('Não foi possível decodificar o arquivo CSV (UTF-8/Latin-1).')
+
+
+def _read_teto_rows_from_xlsx(file_path: Path) -> list[tuple[int, dict[str, object]]]:
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise click.ClickException('Dependência openpyxl não disponível para ler arquivos XLSX.') from exc
+    wb = load_workbook(file_path, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(cell).strip() if cell is not None else '' for cell in rows[0]]
+    headers_norm = [_norm_header(h) for h in headers]
+    parsed: list[tuple[int, dict[str, object]]] = []
+    for idx, line in enumerate(rows[1:], start=2):
+        values: dict[str, object] = {}
+        for col_idx, key in enumerate(headers_norm):
+            if not key:
+                continue
+            value = line[col_idx] if col_idx < len(line) else None
+            if isinstance(value, str):
+                value = value.strip()
+            values[key] = value
+        parsed.append((idx, values))
+    return parsed
+
+
+def _parse_teto_import_file(file_path: Path) -> dict:
+    ext = file_path.suffix.lower()
+    if ext in {'.csv', '.txt'}:
+        raw_rows = _read_teto_rows_from_csv(file_path)
+    elif ext in {'.xlsx'}:
+        raw_rows = _read_teto_rows_from_xlsx(file_path)
+    else:
+        raise click.ClickException('Formato não suportado. Envie um arquivo CSV ou XLSX.')
+
+    records: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+    errors: list[str] = []
+    total_input = 0
+    duplicate_count = 0
+
+    for row_number, row in raw_rows:
+        total_input += 1
+        codigo_raw = row.get('codigo') or row.get('codigoprocedimento')
+        codigo = str(codigo_raw or '').strip().upper()
+        if not codigo:
+            errors.append(f"Linha {row_number}: campo 'codigo' é obrigatório.")
+            continue
+
+        descricao_raw = row.get('descricao') or row.get('procedimento')
+        descricao = str(descricao_raw or '').strip()
+        if not descricao:
+            errors.append(f"Linha {row_number} ({codigo}): campo 'descricao' é obrigatório.")
+            continue
+
+        valor_raw = row.get('valor_total') or row.get('valortotal') or row.get('valor')
+        valor_str = _coerce_decimal(valor_raw if valor_raw is not None else '')
+        if valor_str is None:
+            errors.append(f"Linha {row_number} ({codigo}): valor_total inválido.")
+            continue
+        try:
+            valor_decimal = Decimal(valor_str)
+        except (InvalidOperation, ValueError):
+            errors.append(f"Linha {row_number} ({codigo}): valor_total inválido.")
+            continue
+        if valor_decimal <= Decimal('0'):
+            errors.append(f"Linha {row_number} ({codigo}): valor_total deve ser maior que zero.")
+            continue
+        valor_decimal = valor_decimal.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+        record = {
+            'codigo': codigo,
+            'descricao': descricao,
+            'valor_total': valor_decimal,
+            'row_number': row_number,
+        }
+        if codigo in records:
+            duplicate_count += 1
+            try:
+                order.remove(codigo)
+            except ValueError:
+                pass
+        order.append(codigo)
+        records[codigo] = record
+
+    final_rows = [records[cod] for cod in order]
+    return {
+        'rows': final_rows,
+        'errors': errors,
+        'total_input': total_input,
+        'valid_count': len(final_rows),
+        'duplicate_count': duplicate_count,
+    }
+
+
+
+
+def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = None, preco_pfb: Decimal | None = None) -> dict:
     return {
         'origem': item.origem,
         'item_id': item.item_id,
@@ -1038,6 +1603,8 @@ def _serialize_insumo_index(item: 'InsumoIndex') -> dict:
         'tiss': item.tiss,
         'descricao': item.descricao,
         'preco': _decimal_to_string(item.preco),
+        'preco_pmc': _decimal_to_string(preco_pmc if preco_pmc is not None else item.preco),
+        'preco_pfb': _decimal_to_string(preco_pfb if preco_pfb is not None else item.preco),
         'aliquota': _decimal_to_string(item.aliquota),
         'fabricante': item.fabricante,
         'anvisa': item.anvisa,
@@ -1048,7 +1615,15 @@ def _serialize_insumo_index(item: 'InsumoIndex') -> dict:
     }
 
 
-def _serialize_insumo_detail(origem: str, item: BrasItemNormalized | SimproItem) -> dict:
+def _serialize_insumo_detail(
+    origem: str,
+    item: BrasItemNormalized | SimproItemNormalized | SimproItem,
+    index_entry: InsumoIndex | None = None,
+) -> dict:
+    index_aliquota = _decimal_to_string(index_entry.aliquota) if index_entry else None
+    index_uf = index_entry.uf_referencia if index_entry else None
+    index_data = index_entry.data_atualizacao.isoformat() if isinstance(getattr(index_entry, 'data_atualizacao', None), date) else None
+    index_created = index_entry.updated_at.isoformat() if isinstance(getattr(index_entry, 'updated_at', None), datetime) else None
     if isinstance(item, BrasItemNormalized):
         descricao = item.produto_nome or ''
         if item.apresentacao_descricao:
@@ -1056,18 +1631,20 @@ def _serialize_insumo_detail(origem: str, item: BrasItemNormalized | SimproItem)
         return {
             'origem': 'BRAS',
             'item_id': item.id,
-            'tuss': None,
-            'tiss': None,
+            'tuss': item.produto_codigo,
+            'tiss': item.apresentacao_codigo,
             'anvisa': item.registro_anvisa,
             'descricao': descricao,
             'preco': _decimal_to_string(item.preco_pmc_unit) or _decimal_to_string(item.preco_pmc_pacote),
-            'aliquota': _decimal_to_string(item.aliquota_ou_ipi),
+            'preco_pmc': _decimal_to_string(item.preco_pmc_unit) or _decimal_to_string(item.preco_pmc_pacote),
+            'preco_pfb': _decimal_to_string(item.preco_pfb_unit) or _decimal_to_string(item.preco_pfb_pacote),
+            'aliquota': _decimal_to_string(item.aliquota_ou_ipi) or index_aliquota,
             'fabricante': item.laboratorio_nome,
             'versao_tabela': item.edicao or item.arquivo,
-            'data_atualizacao': None,
-            'updated_at': item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None,
+            'data_atualizacao': index_data,
+            'updated_at': (item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else index_created),
             'created_at': None,
-            'uf_referencia': None,
+            'uf_referencia': index_uf,
             'arquivo': item.arquivo,
             'linha_num': item.linha_num,
             'preco_pmc_pacote': _decimal_to_string(item.preco_pmc_pacote),
@@ -1076,21 +1653,68 @@ def _serialize_insumo_detail(origem: str, item: BrasItemNormalized | SimproItem)
             'quantidade_embalagem': item.quantidade_embalagem,
         }
 
+    if isinstance(item, SimproItemNormalized):
+        preco_candidates = [item.preco2, item.preco1, item.preco3, item.preco4]
+        preco_effective = next((p for p in preco_candidates if p is not None), None)
+        return {
+            'origem': 'SIMPRO',
+            'item_id': item.id,
+            'tuss': item.codigo,
+            'tiss': item.codigo_alt,
+            'anvisa': item.anvisa,
+            'descricao': item.descricao,
+            'preco': _decimal_to_string(preco_effective),
+            'preco_pmc': None,
+            'preco_pfb': _decimal_to_string(preco_effective),
+            'aliquota': index_aliquota,
+            'fabricante': item.fabricante,
+            'versao_tabela': item.versao or item.arquivo,
+            'data_atualizacao': item.data_ref.isoformat() if isinstance(item.data_ref, date) else index_data,
+            'updated_at': item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else index_created,
+            'created_at': None,
+            'uf_referencia': item.uf_referencia or index_uf,
+            'situacao': item.situacao,
+            'validade_anvisa': item.validade_anvisa.isoformat() if isinstance(item.validade_anvisa, date) else None,
+            'ean': item.ean,
+        }
+
+    if isinstance(item, SimproItem):  # fallback legacy
+        return {
+            'origem': origem,
+            'item_id': item.id,
+            'tuss': item.tuss,
+            'tiss': item.tiss,
+            'anvisa': item.anvisa,
+            'descricao': item.descricao,
+            'preco': _decimal_to_string(item.preco),
+            'preco_pmc': _decimal_to_string(item.preco),
+            'preco_pfb': _decimal_to_string(item.preco),
+            'aliquota': _decimal_to_string(item.aliquota),
+            'fabricante': item.fabricante,
+            'versao_tabela': item.versao_tabela,
+            'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
+            'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
+            'created_at': item.created_at.isoformat() if isinstance(item.created_at, datetime) else None,
+            'uf_referencia': item.uf_referencia,
+        }
+
     return {
         'origem': origem,
         'item_id': item.id,
-        'tuss': item.tuss,
-        'tiss': item.tiss,
-        'anvisa': item.anvisa,
-        'descricao': item.descricao,
-        'preco': _decimal_to_string(item.preco),
-        'aliquota': _decimal_to_string(item.aliquota),
-        'fabricante': item.fabricante,
-        'versao_tabela': item.versao_tabela,
-        'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
-        'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
-        'created_at': item.created_at.isoformat() if isinstance(item.created_at, datetime) else None,
-        'uf_referencia': item.uf_referencia,
+        'tuss': None,
+        'tiss': None,
+        'anvisa': None,
+        'descricao': '',
+        'preco': None,
+        'preco_pmc': None,
+        'preco_pfb': None,
+        'aliquota': None,
+        'fabricante': None,
+        'versao_tabela': None,
+        'data_atualizacao': None,
+        'updated_at': None,
+        'created_at': None,
+        'uf_referencia': None,
     }
 
 
@@ -1165,10 +1789,12 @@ def _insumo_summary(model_cls) -> dict:
     last_updated = db.session.query(func.max(updated_column)).scalar() if updated_column is not None else None
 
     data_column = getattr(model_cls, 'data_atualizacao', None)
+    if data_column is None:
+        data_column = getattr(model_cls, 'data_ref', None)
     last_data = db.session.query(func.max(data_column)).scalar() if data_column is not None else None
 
     version_column = None
-    for candidate in ('versao_tabela', 'edicao', 'arquivo'):
+    for candidate in ('versao_tabela', 'versao', 'edicao', 'arquivo'):
         version_column = getattr(model_cls, candidate, None)
         if version_column is not None:
             break
@@ -1193,7 +1819,7 @@ def _insumo_summary(model_cls) -> dict:
 
 def _insumo_distinct_versions(model_cls) -> list[str]:
     version_column = None
-    for candidate in ('versao_tabela', 'edicao', 'arquivo'):
+    for candidate in ('versao_tabela', 'versao', 'edicao', 'arquivo'):
         version_column = getattr(model_cls, candidate, None)
         if version_column is not None:
             break
@@ -1211,12 +1837,12 @@ def _insumo_distinct_versions(model_cls) -> list[str]:
     return [row[0] for row in rows if row[0]]
 
 
-def _get_teto_map(codigos: list[str]) -> dict[str, 'CBHPMTeto']:
-    unique_codes = {str(c).strip() for c in codigos if str(c).strip()}
+def _get_teto_map(codigos: list[str]) -> dict[str, 'CbhpmTeto']:
+    unique_codes = {str(c or '').strip().upper() for c in codigos if str(c or '').strip()}
     if not unique_codes:
         return {}
-    rows = CBHPMTeto.query.filter(CBHPMTeto.codigo.in_(unique_codes)).all()
-    return {row.codigo: row for row in rows}
+    rows = CbhpmTeto.query.filter(CbhpmTeto.codigo.in_(unique_codes)).all()
+    return {row.codigo.upper(): row for row in rows}
 
 
 def _load_data_local_infile(engine, table_name: str, columns: list[str], file_path: Path, delimiter: str,
@@ -1401,6 +2027,7 @@ def _handle_fixed_import(*, model_cls, file_path: Path, versao: str, data_ref: d
 
     rows = []
     encoding = map_config.get('encoding', 'utf-8-sig')
+    multiplier = Decimal(str(map_config.get('decimal_divisor', '100')))
     with file_path.open('r', encoding=encoding) as fh:
         for raw_line in fh:
             record: dict[str, object | None] = {}
@@ -1411,11 +2038,23 @@ def _handle_fixed_import(*, model_cls, file_path: Path, versao: str, data_ref: d
                 start = int(cfg.get('start', 1)) - 1
                 length = int(cfg.get('length', 0))
                 value = raw_line[start:start + length].strip()
+                divides_by = cfg.get('divide_by')
+                if divides_by:
+                    try:
+                        divisor = Decimal(str(divides_by))
+                    except Exception:
+                        divisor = multiplier
+                else:
+                    divisor = multiplier if name in DECIMAL_FIELDS or cfg.get('type') == 'decimal' else Decimal('1')
+
                 if not value:
                     record[name] = None
                 elif name in DECIMAL_FIELDS or cfg.get('type') == 'decimal':
                     coerced = _coerce_decimal(value)
-                    record[name] = Decimal(coerced) if coerced is not None else None
+                    if coerced is None:
+                        record[name] = None
+                    else:
+                        record[name] = (Decimal(coerced) / divisor) if divisor else Decimal(coerced)
                 elif name in DATE_FIELDS or cfg.get('type') == 'date':
                     record[name] = _coerce_date(value)
                 else:
@@ -1540,7 +2179,13 @@ def bras_import(file_path: Path, versao: str, data_str: str | None, fmt: str, de
                 encoding: str | None, uf_referencia: str | None, aliquota: str | None,
                 lines_terminated: str) -> None:
     """Importa arquivo da Brasíndice (pipeline staging + materialização)."""
-    del uf_referencia, aliquota  # metadados não utilizados na nova estrutura
+    uf_value = (uf_referencia or '').strip().upper() or None
+    aliquota_value: Decimal | None = None
+    if aliquota:
+        aliquota_str = _coerce_decimal(aliquota)
+        if aliquota_str is None:
+            raise click.ClickException('Valor de alíquota inválido.')
+        aliquota_value = Decimal(aliquota_str)
 
     file_path = file_path.resolve()
     if not file_path.exists():
@@ -1585,6 +2230,8 @@ def bras_import(file_path: Path, versao: str, data_str: str | None, fmt: str, de
         encoding=encoding,
         map_config=map_config,
         truncate=truncate,
+        uf_default=uf_value,
+        aliquota_default=aliquota_value,
     )
 
     click.echo(f"Brasíndice importado: arquivo={result['arquivo']} linhas_raw={result['linhas_raw']} materializadas={result['linhas_materializadas']}")
@@ -1599,28 +2246,49 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
     """Importa arquivo do SIMPRO."""
     del lines_terminated
     uf_value = (uf_referencia or '').strip().upper() or None
-    aliquota_value = None
+    aliquota_value: Decimal | None = None
     if aliquota:
         aliquota_str = _coerce_decimal(aliquota)
         if aliquota_str is None:
             raise click.ClickException('Valor de alíquota inválido.')
         aliquota_value = Decimal(aliquota_str)
-    _run_insumo_import(
-        resource='SIMPRO',
-        model_cls=SimproItem,
-        table_name='simpro_item',
+
+    if fmt != 'fixed':
+        raise click.ClickException('Importação SIMPRO suporta apenas arquivos de largura fixa.')
+
+    file_path = file_path.resolve()
+    if not file_path.exists():
+        raise click.ClickException(f'Arquivo não encontrado: {file_path}')
+
+    map_config: dict = {}
+    if map_path:
+        try:
+            map_config = json.loads(map_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f'Não foi possível ler o arquivo de mapeamento: {exc}') from exc
+        if not isinstance(map_config, dict):
+            raise click.ClickException('Arquivo de mapeamento deve conter um objeto JSON na raiz.')
+    if not map_config:
+        raise click.ClickException('Informe um mapa JSON contendo as posições do arquivo SIMPRO.')
+
+    encoding_cfg = map_config.get('encoding')
+    if isinstance(encoding_cfg, str) and encoding_cfg.strip():
+        encoding = encoding_cfg.strip()
+
+    result = _import_simpro(
         file_path=file_path,
         versao=versao,
-        data_str=data_str,
         fmt=fmt,
-        delimiter=delimiter,
-        quotechar=quotechar,
-        map_path=map_path,
-        no_header=no_header,
-        truncate=truncate,
+        map_config=map_config,
         encoding=encoding,
-        uf_referencia=uf_value,
-        aliquota=aliquota_value,
+        truncate=truncate,
+        uf_default=uf_value,
+        aliquota_default=aliquota_value,
+    )
+
+    click.echo(
+        f"Importação SIMPRO concluída: arquivo={result['arquivo']} linhas_raw={result['linhas_raw']} "
+        f"materializadas={result['linhas_materializadas']}"
     )
 
 
@@ -1942,23 +2610,33 @@ def _compute_simulacao_cbhpm(data):
     def apply_via_entrada(breakdown: dict | None, code_key: str | None):
         if not breakdown:
             return breakdown
-        normalized = str(code_key or '').strip() or '__default__'
+        normalized = str(code_key or '').strip().upper() or '__default__'
         pct = via_pct_map.get(normalized, via_pct_map.get('__default__', Decimal('100')))
         applied_via_map[normalized] = pct
         factor = (pct / Decimal('100')) if pct is not None else Decimal('1')
         breakdown['via_entrada_pct'] = pct
         breakdown['via_entrada_factor'] = factor
-        total_porte = _as_decimal(breakdown.get('total_porte'))
-        if total_porte is not None:
-            reduced_porte = (total_porte * factor).quantize(quantize_money, rounding=ROUND_HALF_UP)
-            breakdown['total_porte'] = reduced_porte
-            breakdown['total'] = _sum_decimals([
-                reduced_porte,
-                breakdown.get('total_filme'),
-                breakdown.get('total_uco'),
-                breakdown.get('total_porte_an'),
-                breakdown.get('total_auxiliares'),
-            ])
+
+        total_porte_original = _as_decimal(breakdown.get('total_porte'))
+        total_filme = _as_decimal(breakdown.get('total_filme'))
+        total_uco = _as_decimal(breakdown.get('total_uco'))
+        total_an = _as_decimal(breakdown.get('total_porte_an'))
+        total_aux = _as_decimal(breakdown.get('total_auxiliares'))
+        total_original = _sum_decimals([total_porte_original, total_filme, total_uco, total_an, total_aux])
+        breakdown['total_original'] = total_original
+
+        reduced_porte = total_porte_original
+        if total_porte_original is not None:
+            try:
+                reduced_porte = (total_porte_original * factor).quantize(quantize_money, rounding=ROUND_HALF_UP)
+            except (InvalidOperation, ValueError):
+                reduced_porte = total_porte_original
+        breakdown['total_porte'] = reduced_porte
+
+        total_reduzido = _sum_decimals([reduced_porte, total_filme, total_uco, total_an, total_aux])
+        breakdown['total_reduzido'] = total_reduzido
+        breakdown['total_final'] = total_reduzido
+        breakdown['total'] = total_reduzido
         return breakdown
 
     codigo = (data.get('codigo') or '').strip()
@@ -2146,6 +2824,11 @@ def _compute_simulacao_cbhpm(data):
                 item_out = {k: _stringify_for_output(v) for k, v in br.items()}
                 if br.get('applied_rules'):
                     item_out['applied_rules'] = _stringify_for_output(br['applied_rules'])
+                if br.get('total_original') is not None:
+                    item_out['total_original'] = _stringify_for_output(br.get('total_original'))
+                if br.get('total_final') is not None:
+                    item_out['total_final'] = _stringify_for_output(br.get('total_final'))
+                item_out['percentual_via'] = _stringify_for_output(br.get('via_entrada_pct')) if br.get('via_entrada_pct') is not None else item_out.get('percentual_via')
                 item_out.update({'codigo': cod, 'descricao': base_i.procedimento, 'origem': 'cbhpm'})
                 cbhpm_results.append({
                     'payload': item_out,
@@ -2156,6 +2839,9 @@ def _compute_simulacao_cbhpm(data):
                         'total_porte_an': to_decimal(br.get('total_porte_an')),
                         'total_auxiliares': to_decimal(br.get('total_auxiliares')),
                         'total': to_decimal(br.get('total')),
+                        'total_original': to_decimal(br.get('total_original')),
+                        'total_final': to_decimal(br.get('total_final')),
+                        'via_pct': to_decimal(br.get('via_entrada_pct')),
                     }
                 })
 
@@ -2206,16 +2892,16 @@ def _compute_simulacao_cbhpm(data):
             teto_map = _get_teto_map(codes_to_check)
             for entry in cbhpm_results:
                 payload_entry = entry['payload']
-                codigo_item = payload_entry.get('codigo')
+                codigo_item = (payload_entry.get('codigo') or '').strip().upper()
                 if not codigo_item:
                     continue
                 teto_row = teto_map.get(codigo_item)
                 if not teto_row:
                     continue
                 teto_val = _as_decimal(teto_row.valor_total)
-                calc_total = entry['totals'].get('total')
+                calc_total = entry['totals'].get('total_final') or entry['totals'].get('total')
                 if calc_total is None:
-                    calc_total = _as_decimal(payload_entry.get('total'))
+                    calc_total = _as_decimal(payload_entry.get('total_final') or payload_entry.get('total'))
                 excedido = False
                 excedente = None
                 if teto_val is not None and calc_total is not None:
@@ -2223,23 +2909,18 @@ def _compute_simulacao_cbhpm(data):
                     if diff > Decimal('0'):
                         excedido = True
                         excedente = diff
-                payload_entry['teto_valor_total'] = str(teto_val) if teto_val is not None else None
+                payload_entry['teto_valor_total'] = _stringify_for_output(teto_val) if teto_val is not None else None
                 payload_entry['teto_descricao'] = teto_row.descricao
-                payload_entry['teto_versao'] = teto_row.versao_ref
-                payload_entry['teto_excedente'] = str(excedente) if excedente is not None else None
+                payload_entry['teto_excedente'] = _stringify_for_output(excedente) if excedente is not None else None
                 payload_entry['teto_excedido'] = excedido
-                payload_entry['teto_status'] = 'EXCEDIDO' if excedido else 'DENTRO'
+                payload_entry['teto_status'] = 'ULTRAPASSA' if excedido else 'OK'
                 if excedido:
-                    total_fmt = str(calc_total)
-                    teto_fmt = str(teto_val)
-                    excedente_fmt = str(excedente)
                     teto_alerts.append({
-                        'codigo': codigo_item,
+                        'codigo': payload_entry.get('codigo'),
                         'descricao': payload_entry.get('descricao'),
-                        'total_calculado': total_fmt,
-                        'teto_valor_total': teto_fmt,
-                        'excedente': excedente_fmt,
-                        'versao_ref': teto_row.versao_ref,
+                        'total_calculado': _stringify_for_output(calc_total),
+                        'teto_valor_total': _stringify_for_output(teto_val),
+                        'excedente': _stringify_for_output(excedente),
                         'descricao_teto': teto_row.descricao,
                     })
 
@@ -2260,6 +2941,9 @@ def _compute_simulacao_cbhpm(data):
                 'total_porte_an': '0',
                 'total_auxiliares': '0',
                 'total': str(val),
+                'total_original': str(val),
+                'total_final': str(val),
+                'percentual_aplicado': '100',
                 'origem': 'dtp',
                 'tabela_origem': meta.get('tabela_nome'),
                 'uf_origem': meta.get('uf'),
@@ -2272,6 +2956,8 @@ def _compute_simulacao_cbhpm(data):
         sum_an = sum(to_decimal(item.get('total_porte_an')) for item in itens)
         sum_aux = sum(to_decimal(item.get('total_auxiliares')) for item in itens)
         sum_total = sum(to_decimal(item.get('total')) for item in itens)
+        sum_total_original = sum(to_decimal(item.get('total_original')) for item in itens)
+        sum_total_final = sum(to_decimal(item.get('total_final') or item.get('total')) for item in itens)
 
         via_out_map = {
             key: str(value)
@@ -2286,7 +2972,9 @@ def _compute_simulacao_cbhpm(data):
             'total_uco': str(sum_uco),
             'total_porte_an': str(sum_an),
             'total_auxiliares': str(sum_aux),
-            'total': str(sum_total),
+            'total': str(sum_total_final if sum_total_final is not None else sum_total),
+            'total_original': str(sum_total_original),
+            'total_final': str(sum_total_final if sum_total_final is not None else sum_total),
             'porte_tabela_usada': (porte_tab_name or _resolve_porte_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_hint, None)),
             'porte_an_tabela_usada': (porte_an_tab_name or _resolve_porte_an_tabela_nome(t_ref.id_operadora, t_ref.uf, porte_an_hint, None)),
             'uco_valor': str(t_ref.uco_valor) if getattr(t_ref, 'uco_valor', None) is not None else None,
@@ -2296,7 +2984,7 @@ def _compute_simulacao_cbhpm(data):
             'via_entrada_pcts': via_out_map,
             'cbhpm_rules_info': rules_meta,
             'teto_alertas': teto_alerts,
-            'teto_status': 'EXCEDIDO' if teto_alerts else 'DENTRO',
+            'teto_status': 'ULTRAPASSA' if teto_alerts else 'OK',
         }
         return payload_agregado, 200
 
@@ -2327,10 +3015,10 @@ def _compute_simulacao_cbhpm(data):
     })
 
     if codigo:
-        teto_row = _get_teto_map([codigo]).get(codigo)
+        teto_row = _get_teto_map([codigo]).get(codigo.strip().upper())
         if teto_row:
             teto_val = _as_decimal(teto_row.valor_total)
-            calc_total = _as_decimal(resp.get('total'))
+            calc_total = _as_decimal(resp.get('total_final') or resp.get('total'))
             excedido = False
             excedente = None
             if teto_val is not None and calc_total is not None:
@@ -2338,24 +3026,22 @@ def _compute_simulacao_cbhpm(data):
                 if diff > Decimal('0'):
                     excedido = True
                     excedente = diff
-            resp['teto_valor_total'] = str(teto_val) if teto_val is not None else None
+            resp['teto_valor_total'] = _stringify_for_output(teto_val) if teto_val is not None else None
             resp['teto_descricao'] = teto_row.descricao
-            resp['teto_versao'] = teto_row.versao_ref
-            resp['teto_excedente'] = str(excedente) if excedente is not None else None
+            resp['teto_excedente'] = _stringify_for_output(excedente) if excedente is not None else None
             resp['teto_excedido'] = excedido
-            resp['teto_status'] = 'EXCEDIDO' if excedido else 'DENTRO'
+            resp['teto_status'] = 'ULTRAPASSA' if excedido else 'OK'
             resp['teto_alertas'] = [{
                 'codigo': codigo,
                 'descricao': resp.get('descricao'),
-                'total_calculado': str(calc_total) if calc_total is not None else None,
-                'teto_valor_total': str(teto_val) if teto_val is not None else None,
-                'excedente': str(excedente) if excedente is not None else None,
-                'versao_ref': teto_row.versao_ref,
+                'total_calculado': _stringify_for_output(calc_total) if calc_total is not None else None,
+                'teto_valor_total': _stringify_for_output(teto_val) if teto_val is not None else None,
+                'excedente': _stringify_for_output(excedente) if excedente is not None else None,
                 'descricao_teto': teto_row.descricao,
             }] if excedido else []
         else:
             resp['teto_alertas'] = []
-            resp['teto_status'] = 'DENTRO'
+            resp['teto_status'] = 'OK'
     return resp, 200
 
 
@@ -3062,6 +3748,159 @@ def gerenciar_tabelas():
     cbhpm_tabelas = Tabela.query.filter_by(tipo_tabela='cbhpm').order_by(Tabela.nome).all()
     return render_template('gerenciar-tabelas.html', tabelas=tabelas, operadoras=operadoras, UFS=BR_UFS, cbhpm_tabelas=cbhpm_tabelas)
 
+
+@app.route('/admin/tetos')
+@admin_required
+def admin_tetos():
+    per_page = 25
+    try:
+        page = int(request.args.get('page', 1) or 1)
+    except (TypeError, ValueError):
+        page = 1
+    page = max(page, 1)
+    search = (request.args.get('q') or '').strip()
+    query = CbhpmTeto.query
+    if search:
+        like = f"%{search}%"
+        query = query.filter(or_(CbhpmTeto.codigo.ilike(like), CbhpmTeto.descricao.ilike(like)))
+    total = query.count()
+    tetos = (
+        query.order_by(CbhpmTeto.codigo.asc())
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+    pages = max((total + per_page - 1) // per_page, 1) if total else 1
+
+    preview_token = (request.args.get('preview_token') or '').strip()
+    preview_payload = None
+    if preview_token:
+        preview_payload = _load_teto_preview(preview_token)
+        if not preview_payload:
+            flash('Pré-visualização expirada ou inválida. Envie o arquivo novamente.', 'warning')
+            return redirect(url_for('admin_tetos'))
+
+    return render_template(
+        'admin_tetos.html',
+        tetos=tetos,
+        total=total,
+        page=page,
+        per_page=per_page,
+        pages=pages,
+        q=search,
+        preview=preview_payload,
+        format_brl=_format_brl,
+    )
+
+
+@app.route('/admin/tetos/import', methods=['POST'])
+@admin_required
+def admin_tetos_import():
+    confirm_token = (request.form.get('token') or '').strip()
+    if confirm_token:
+        preview_payload = _load_teto_preview(confirm_token)
+        if not preview_payload or not preview_payload.get('rows'):
+            _discard_teto_preview(confirm_token)
+            flash('Pré-visualização expirada ou vazia. Envie o arquivo novamente.', 'warning')
+            return redirect(url_for('admin_tetos'))
+        rows = [row for row in preview_payload['rows'] if row.get('codigo') and row.get('valor_total') is not None]
+        codes = [row['codigo'] for row in rows]
+        existing: set[str] = set()
+        if codes:
+            existing = {c for (c,) in db.session.query(CbhpmTeto.codigo).filter(CbhpmTeto.codigo.in_(codes)).all()}
+        if rows:
+            insert_rows = [
+                {
+                    'codigo': row['codigo'],
+                    'descricao': row['descricao'],
+                    'valor_total': row['valor_total'],
+                }
+                for row in rows
+            ]
+            stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
+            upsert_stmt = stmt.on_duplicate_key_update(
+                descricao=stmt.inserted.descricao,
+                valor_total=stmt.inserted.valor_total,
+                updated_at=text('CURRENT_TIMESTAMP'),
+            )
+            db.session.execute(upsert_stmt)
+            db.session.commit()
+        inserted = len([code for code in codes if code not in existing])
+        updated = len(codes) - inserted
+        error_count = len(preview_payload.get('errors', []))
+        app.logger.info(
+            'Importação CBHPM teto concluída: total=%s, inseridos=%s, atualizados=%s, erros=%s',
+            len(codes), inserted, updated, error_count
+        )
+        flash(f'Importação concluída: {len(codes)} registro(s), {inserted} inserido(s), {updated} atualizado(s).', 'success')
+        _discard_teto_preview(confirm_token)
+        return redirect(url_for('admin_tetos'))
+
+    upload = request.files.get('arquivo')
+    if not upload or not upload.filename:
+        flash('Selecione um arquivo CSV ou XLSX para importar.', 'danger')
+        return redirect(url_for('admin_tetos'))
+
+    suffix = Path(upload.filename).suffix or '.csv'
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        upload.save(tmp)
+        temp_path = Path(tmp.name)
+    try:
+        parsed = _parse_teto_import_file(temp_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+    if not parsed['rows']:
+        if parsed['errors']:
+            for message in parsed['errors'][:10]:
+                flash(message, 'warning')
+        flash('Nenhum registro válido encontrado no arquivo.', 'warning')
+        return redirect(url_for('admin_tetos'))
+
+    meta = {
+        'filename': upload.filename,
+        'total_input': parsed['total_input'],
+        'valid_count': parsed['valid_count'],
+        'duplicate_count': parsed['duplicate_count'],
+        'error_count': len(parsed['errors']),
+        'generated_at': datetime.utcnow().isoformat(),
+    }
+    token = _store_teto_preview({'rows': parsed['rows'], 'meta': meta, 'errors': parsed['errors']})
+    if parsed['errors']:
+        flash(f"Pré-visualização gerada com {parsed['valid_count']} registro(s) válido(s) e {len(parsed['errors'])} aviso(s).", 'warning')
+    else:
+        flash(f"{parsed['valid_count']} registro(s) prontos para importação.", 'success')
+    return redirect(url_for('admin_tetos', preview_token=token))
+
+
+@app.route('/admin/tetos/template.csv')
+@admin_required
+def admin_tetos_template_download():
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    writer.writerow(['codigo', 'descricao', 'valor_total'])
+    writer.writerow(['12345', 'Procedimento exemplo', '1234,56'])
+    response = make_response(output.getvalue())
+    response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+    response.headers['Content-Disposition'] = 'attachment; filename=teto_template.csv'
+    return response
+
+
+@app.route('/admin/tetos/<codigo>/delete', methods=['POST'])
+@admin_required
+def admin_tetos_delete(codigo: str):
+    codigo_norm = (codigo or '').strip().upper()
+    if not codigo_norm:
+        flash('Código inválido.', 'danger')
+        return redirect(url_for('admin_tetos'))
+    row = CbhpmTeto.query.get(codigo_norm)
+    if not row:
+        flash('Registro não encontrado.', 'warning')
+        return redirect(url_for('admin_tetos'))
+    db.session.delete(row)
+    db.session.commit()
+    flash(f'Teto {codigo_norm} removido com sucesso.', 'success')
+    return redirect(url_for('admin_tetos'))
 
 
 @app.route('/cbhpm/regras')
@@ -4386,8 +5225,42 @@ def insumos_search():
         .all()
     )
 
+    bras_map: dict[int, BrasItemNormalized] = {}
+    bras_ids = [item.item_id for item in items if item.origem == 'BRAS']
+    if bras_ids:
+        bras_rows = BrasItemNormalized.query.filter(BrasItemNormalized.id.in_(bras_ids)).all()
+        bras_map = {row.id: row for row in bras_rows}
+
+    simpro_map: dict[int, SimproItemNormalized] = {}
+    simpro_ids = [item.item_id for item in items if item.origem == 'SIMPRO']
+    if simpro_ids:
+        simpro_rows = SimproItemNormalized.query.filter(SimproItemNormalized.id.in_(simpro_ids)).all()
+        simpro_map = {row.id: row for row in simpro_rows}
+
+    serialized: list[dict] = []
+    for item in items:
+        if item.origem == 'BRAS':
+            bras = bras_map.get(item.item_id)
+            if bras:
+                preco_pmc = bras.preco_pmc_unit or bras.preco_pmc_pacote
+                preco_pfb = bras.preco_pfb_unit or bras.preco_pfb_pacote
+            else:
+                preco_pmc = preco_pfb = None
+            serialized.append(_serialize_insumo_index(item, preco_pmc=preco_pmc, preco_pfb=preco_pfb))
+        elif item.origem == 'SIMPRO':
+            simpro = simpro_map.get(item.item_id)
+            if simpro:
+                preco_pmc = None
+                preco_pfb = simpro.preco2 or simpro.preco1 or simpro.preco3 or simpro.preco4
+            else:
+                preco_pmc = None
+                preco_pfb = None
+            serialized.append(_serialize_insumo_index(item, preco_pmc=preco_pmc, preco_pfb=preco_pfb))
+        else:
+            serialized.append(_serialize_insumo_index(item))
+
     payload = {
-        'items': [_serialize_insumo_index(item) for item in items],
+        'items': serialized,
         'pagination': {
             'page': page,
             'per_page': per_page,
@@ -4405,21 +5278,22 @@ def insumo_detail(origem: str, item_id: int):
     if origem not in {'BRAS', 'SIMPRO'}:
         abort(404)
 
-    model = BrasItemNormalized if origem == 'BRAS' else SimproItem
+    model = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
     item = model.query.get(item_id)
     if not item:
         abort(404)
 
-    return jsonify(_serialize_insumo_detail(origem, item))
+    index_entry = InsumoIndex.query.filter_by(origem=origem, item_id=item_id).first()
+    return jsonify(_serialize_insumo_detail(origem, item, index_entry=index_entry))
 
 
 @app.route('/insumos')
 @login_required
 def insumos_dashboard():
     bras_summary = _insumo_summary(BrasItemNormalized)
-    simpro_summary = _insumo_summary(SimproItem)
+    simpro_summary = _insumo_summary(SimproItemNormalized)
     bras_versions = _insumo_distinct_versions(BrasItemNormalized)
-    simpro_versions = _insumo_distinct_versions(SimproItem)
+    simpro_versions = _insumo_distinct_versions(SimproItemNormalized)
     versions = sorted(set(bras_versions + simpro_versions))
 
     return render_template(
@@ -4430,6 +5304,7 @@ def insumos_dashboard():
         simpro_versions=simpro_versions,
         versions=versions,
         is_admin=(session.get('perfil') == 'adm'),
+        UFS=BR_UFS,
     )
 
 
@@ -4450,9 +5325,21 @@ def insumos_export_xlsx():
     header_fmt = workbook.add_format({'bold': True, 'bg_color': '#0EA5E9', 'font_color': '#ffffff'})
     money_fmt = workbook.add_format({'num_format': '#,##0.0000'})
 
-    headers = ['Origem', 'TUSS', 'TISS', 'ANVISA', 'Descrição', 'Preço', 'Alíquota', 'Fabricante', 'UF', 'Versão', 'Data Atualização', 'Atualizado em']
+    headers = ['Origem', 'TUSS', 'TISS', 'ANVISA', 'Descrição', 'PMC', 'PFB', 'Alíquota', 'Fabricante', 'UF', 'Versão', 'Data Atualização', 'Atualizado em']
     for col, title in enumerate(headers):
         worksheet.write(0, col, title, header_fmt)
+
+    bras_map: dict[int, BrasItemNormalized] = {}
+    bras_ids = [item.item_id for item in rows if item.origem == 'BRAS']
+    if bras_ids:
+        bras_rows = BrasItemNormalized.query.filter(BrasItemNormalized.id.in_(bras_ids)).all()
+        bras_map = {row.id: row for row in bras_rows}
+
+    simpro_map: dict[int, SimproItemNormalized] = {}
+    simpro_ids = [item.item_id for item in rows if item.origem == 'SIMPRO']
+    if simpro_ids:
+        simpro_rows = SimproItemNormalized.query.filter(SimproItemNormalized.id.in_(simpro_ids)).all()
+        simpro_map = {row.id: row for row in simpro_rows}
 
     for row_idx, item in enumerate(rows, start=1):
         worksheet.write(row_idx, 0, item.origem)
@@ -4460,19 +5347,38 @@ def insumos_export_xlsx():
         worksheet.write(row_idx, 2, item.tiss or '')
         worksheet.write(row_idx, 3, item.anvisa or '')
         worksheet.write(row_idx, 4, item.descricao or '')
-        if item.preco is not None:
-            worksheet.write_number(row_idx, 5, float(item.preco), money_fmt)
+        preco_pmc = item.preco
+        preco_pfb = item.preco
+        if item.origem == 'BRAS':
+            bras = bras_map.get(item.item_id)
+            if bras:
+                preco_pmc = bras.preco_pmc_unit or bras.preco_pmc_pacote
+                preco_pfb = bras.preco_pfb_unit or bras.preco_pfb_pacote
+        elif item.origem == 'SIMPRO':
+            simpro = simpro_map.get(item.item_id)
+            if simpro:
+                preco_pmc = None
+                preco_pfb = simpro.preco2 or simpro.preco1 or simpro.preco3 or simpro.preco4
+            else:
+                preco_pmc = None
+                preco_pfb = None
+        if preco_pmc is not None:
+            worksheet.write_number(row_idx, 5, float(preco_pmc), money_fmt)
         else:
             worksheet.write_blank(row_idx, 5, None)
-        if item.aliquota is not None:
-            worksheet.write_number(row_idx, 6, float(item.aliquota), money_fmt)
+        if preco_pfb is not None:
+            worksheet.write_number(row_idx, 6, float(preco_pfb), money_fmt)
         else:
             worksheet.write_blank(row_idx, 6, None)
-        worksheet.write(row_idx, 7, item.fabricante or '')
-        worksheet.write(row_idx, 8, item.uf_referencia or '')
-        worksheet.write(row_idx, 9, item.versao_tabela or '')
-        worksheet.write(row_idx, 10, item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else '')
-        worksheet.write(row_idx, 11, item.updated_at.isoformat(sep=' ') if isinstance(item.updated_at, datetime) else '')
+        if item.aliquota is not None:
+            worksheet.write_number(row_idx, 7, float(item.aliquota), money_fmt)
+        else:
+            worksheet.write_blank(row_idx, 7, None)
+        worksheet.write(row_idx, 8, item.fabricante or '')
+        worksheet.write(row_idx, 9, item.uf_referencia or '')
+        worksheet.write(row_idx, 10, item.versao_tabela or '')
+        worksheet.write(row_idx, 11, item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else '')
+        worksheet.write(row_idx, 12, item.updated_at.isoformat(sep=' ') if isinstance(item.updated_at, datetime) else '')
 
     worksheet.autofilter(0, 0, max(len(rows), 1), len(headers) - 1)
     worksheet.freeze_panes(1, 0)
@@ -4492,15 +5398,20 @@ def insumos_export_xlsx():
 @app.route('/insumos/import', methods=['POST'])
 @admin_required
 def insumos_import():
+    return_to = (request.form.get('return_to') or '').strip()
+    redirect_endpoint = 'gerenciar_tabelas' if return_to == 'gerenciar_tabelas' else 'insumos_dashboard'
+    def _go_back():
+        return redirect(url_for(redirect_endpoint))
+
     origem = (request.form.get('origem') or '').upper()
     if origem not in {'BRAS', 'SIMPRO'}:
         flash('Origem inválida para importação.', 'danger')
-        return redirect(url_for('insumos_dashboard'))
+        return _go_back()
 
     upload = request.files.get('arquivo')
     if not upload or not upload.filename:
         flash('Selecione um arquivo TXT/CSV para importar.', 'danger')
-        return redirect(url_for('insumos_dashboard'))
+        return _go_back()
 
     fmt = (request.form.get('format') or 'delimited').lower()
     delimiter = request.form.get('delimiter') or ';'
@@ -4510,19 +5421,32 @@ def insumos_import():
     no_header = request.form.get('no_header') == 'on'
     truncate = request.form.get('truncate') == 'on'
     encoding = (request.form.get('encoding') or '').strip() or None
-    uf_referencia = (request.form.get('uf') or request.form.get('uf_referencia') or '').strip().upper() or None
+    uf_values = [uf.strip().upper() for uf in request.form.getlist('uf') if uf and uf.strip()]
+    if not uf_values:
+        fallback_uf = (request.form.get('uf') or request.form.get('uf_referencia') or '').strip().upper()
+        if fallback_uf:
+            uf_values = [fallback_uf]
+    seen_ufs: set[str] = set()
+    uf_values = [uf for uf in uf_values if not (uf in seen_ufs or seen_ufs.add(uf))]
+    if not uf_values:
+        flash('Selecione pelo menos uma UF para importar.', 'danger')
+        return _go_back()
+    invalid_ufs = [uf for uf in uf_values if uf not in BR_UFS]
+    if invalid_ufs:
+        flash(f"UF inválida informada: {', '.join(invalid_ufs)}", 'danger')
+        return _go_back()
     aliquota_input = (request.form.get('aliquota') or '').strip() or None
     aliquota_value: Decimal | None = None
     if aliquota_input:
         aliquota_str = _coerce_decimal(aliquota_input)
         if aliquota_str is None:
             flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
-            return redirect(url_for('insumos_dashboard'))
+            return _go_back()
         aliquota_value = Decimal(aliquota_str)
 
     if not versao:
         flash('Informe a versão de referência da tabela.', 'danger')
-        return redirect(url_for('insumos_dashboard'))
+        return _go_back()
 
     map_upload = request.files.get('map_config')
     map_temp_path: Path | None = None
@@ -4544,15 +5468,15 @@ def insumos_import():
                 map_config = json.loads(map_temp_path.read_text(encoding='utf-8'))
             except json.JSONDecodeError as exc:
                 flash(f'Erro ao ler o mapa: {exc}', 'danger')
-                return redirect(url_for('insumos_dashboard'))
+                return _go_back()
             if not isinstance(map_config, dict):
                 flash('Arquivo de mapeamento deve conter um objeto JSON.', 'danger')
-                return redirect(url_for('insumos_dashboard'))
+                return _go_back()
 
         if origem == 'BRAS':
             if fmt == 'fixed' and not map_config.get('columns'):
                 flash('Envie um arquivo de mapeamento contendo "columns" para largura fixa.', 'danger')
-                return redirect(url_for('insumos_dashboard'))
+                return _go_back()
 
             line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
             lines_terminated = line_cfg or (request.form.get('lines_terminated') or '\n')
@@ -4573,51 +5497,81 @@ def insumos_import():
             if quotechar is not None and not str(quotechar).strip():
                 quotechar = None
 
-            result = _import_bras(
-                file_path=file_temp_path,
-                versao=versao,
-                data_ref=data_ref,
-                fmt=fmt,
-                delimiter=_normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter,
-                quotechar=quotechar,
-                line_terminator=lines_terminated or '\n',
-                skip_header=skip_header,
-                encoding=encoding,
-                map_config=map_config,
-                truncate=truncate,
-            )
-            flash(
-                f"Importação BRAS concluída ({result['linhas_raw']} linhas brutas, "
-                f"{result['linhas_materializadas']} materializadas).",
-                'success'
-            )
+            import_results: list[dict[str, object]] = []
+            for idx, uf in enumerate(uf_values):
+                result = _import_bras(
+                    file_path=file_temp_path,
+                    versao=versao,
+                    data_ref=data_ref,
+                    fmt=fmt,
+                    delimiter=_normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter,
+                    quotechar=quotechar,
+                    line_terminator=lines_terminated or '\n',
+                    skip_header=skip_header,
+                    encoding=encoding,
+                    map_config=map_config,
+                    truncate=truncate if idx == 0 else False,
+                    uf_default=uf,
+                    aliquota_default=aliquota_value,
+                )
+                result['uf'] = uf
+                import_results.append(result)
+            if import_results:
+                if len(import_results) == 1:
+                    res = import_results[0]
+                    flash(
+                        f"Importação BRAS concluída (UF {res['uf']} -> {res['arquivo']} | "
+                        f"{res['linhas_raw']} linhas brutas, {res['linhas_materializadas']} materializadas).",
+                        'success'
+                    )
+                else:
+                    resumo = '; '.join(
+                        f"{res['uf']} -> {res['arquivo']} ({res['linhas_raw']} brutas / {res['linhas_materializadas']} materializadas)"
+                        for res in import_results
+                    )
+                    flash(
+                        f"Importação BRAS concluída para {len(import_results)} UFs: {resumo}.",
+                        'success'
+                    )
         else:
-            if fmt == 'fixed' and not map_temp_path:
+            if fmt != 'fixed':
+                flash('Importação SIMPRO suporta apenas arquivos de largura fixa.', 'danger')
+                return _go_back()
+            if not map_config:
                 flash('Envie um arquivo de mapeamento para importação de largura fixa.', 'danger')
-                return redirect(url_for('insumos_dashboard'))
+                return _go_back()
 
-            model_cls = SimproItem
-            table_name = 'simpro_item'
-
-            _run_insumo_import(
-                resource='SIMPRO',
-                model_cls=model_cls,
-                table_name=table_name,
-                file_path=file_temp_path,
-                versao=versao,
-                data_str=data_ref,
-                fmt=fmt,
-                delimiter=delimiter,
-                quotechar=quotechar,
-                map_path=map_temp_path,
-                no_header=no_header,
-                truncate=truncate,
-                encoding=encoding,
-                uf_referencia=uf_referencia,
-                aliquota=aliquota_value,
-            )
-
-            flash('Importação SIMPRO concluída com sucesso.', 'success')
+            import_results: list[dict[str, object]] = []
+            for idx, uf in enumerate(uf_values):
+                result = _import_simpro(
+                    file_path=file_temp_path,
+                    versao=versao,
+                    fmt=fmt,
+                    map_config=map_config,
+                    encoding=encoding,
+                    truncate=truncate if idx == 0 else False,
+                    uf_default=uf,
+                    aliquota_default=aliquota_value,
+                )
+                result['uf'] = uf
+                import_results.append(result)
+            if import_results:
+                if len(import_results) == 1:
+                    res = import_results[0]
+                    flash(
+                        f"Importação SIMPRO concluída (UF {res['uf']} -> {res['arquivo']} | "
+                        f"{res['linhas_raw']} linhas brutas, {res['linhas_materializadas']} materializadas).",
+                        'success'
+                    )
+                else:
+                    resumo = '; '.join(
+                        f"{res['uf']} -> {res['arquivo']} ({res['linhas_raw']} brutas / {res['linhas_materializadas']} materializadas)"
+                        for res in import_results
+                    )
+                    flash(
+                        f"Importação SIMPRO concluída para {len(import_results)} UFs: {resumo}.",
+                        'success'
+                    )
     except click.ClickException as exc:
         flash(str(exc), 'danger')
     except Exception as exc:  # noqa: BLE001
@@ -4628,4 +5582,4 @@ def insumos_import():
         if map_temp_path and map_temp_path.exists():
             map_temp_path.unlink(missing_ok=True)
 
-    return redirect(url_for('insumos_dashboard'))
+    return _go_back()

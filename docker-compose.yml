@@ -1,15 +1,21 @@
 version: '3.9'
 
 services:
+  # =======================
+  # DEV: MySQL local
+  # =======================
   db:
+    profiles: ["dev"]
     image: mysql:8.0
-    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-operadora_saude}
-    # Mapeie para 3307 no host para evitar conflito com MySQL local
     ports:
-      - "3307:3306"
+      - "3307:3306"  # evita conflito com MySQL local
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
@@ -18,7 +24,11 @@ services:
     volumes:
       - db_data:/var/lib/mysql
 
+  # =======================
+  # DEV: sua app apontando para o db local
+  # =======================
   web:
+    profiles: ["dev"]
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@db/${MYSQL_DATABASE:-operadora_saude}}
@@ -28,15 +38,39 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
-    # For live reload during development, uncomment the following lines and run Flask directly
     # volumes:
     #   - .:/app
     # command: ["flask", "run", "--host=0.0.0.0", "--port=8000"]
 
   adminer:
+    profiles: ["dev"]
     image: adminer:latest
     depends_on:
       - db
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    ports:
+      - "8080:8080"
+
+  # =======================
+  # PROD: sua app apontando para DB externo (192.168.40.84)
+  # =======================
+  web_prod:
+    profiles: ["prod"]
+    build: .
+    environment:
+      # Defina no .env de produção. Fallback abaixo é apenas exemplo.
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://appuser:SENHA@192.168.40.84:3306/operadora_saude}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+    ports:
+      - "8000:8000"
+    # Sem depends_on, pois usa banco externo
+
+  adminer_prod:
+    profiles: ["prod"]
+    image: adminer:latest
+    environment:
+      ADMINER_DEFAULT_SERVER: ${ADMINER_DEFAULT_SERVER:-192.168.40.84}
     ports:
       - "8080:8080"
 

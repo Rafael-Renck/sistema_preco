@@ -1,0 +1,152 @@
+{% extends 'base.html' %}
+{% block title %}Tetos CBHPM{% endblock %}
+{% block page_title %}Tabela de Teto de Valores{% endblock %}
+{% block content %}
+<div class="row g-4">
+  <div class="col-xl-8">
+    <div class="card p-3">
+      <form class="row g-2 align-items-end" method="get" action="{{ url_for('admin_tetos') }}">
+        <div class="col-md-6">
+          <label class="form-label">Buscar</label>
+          <input class="form-control" name="q" value="{{ q }}" placeholder="Código ou descrição">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Página</label>
+          <input class="form-control" type="number" name="page" min="1" value="{{ page }}">
+        </div>
+        <div class="col-md-4 d-flex gap-2 align-items-end">
+          <button class="btn btn-primary" type="submit">Filtrar</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('admin_tetos') }}">Limpar</a>
+        </div>
+      </form>
+
+      <div class="table-responsive mt-3">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Código</th>
+              <th>Descrição</th>
+              <th class="text-end">Teto</th>
+              <th class="text-end">Atualizado em</th>
+              <th class="text-end">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in tetos %}
+            <tr>
+              <td class="fw-semibold">{{ item.codigo }}</td>
+              <td>{{ item.descricao }}</td>
+              <td class="text-end">{{ format_brl(item.valor_total) or 'R$ 0,00' }}</td>
+              <td class="text-end">{{ item.updated_at.strftime('%d/%m/%Y %H:%M') if item.updated_at else '—' }}</td>
+              <td class="text-end">
+                <form method="post" action="{{ url_for('admin_tetos_delete', codigo=item.codigo) }}" onsubmit="return confirm('Remover teto {{ item.codigo }}?');">
+                  <button class="btn btn-sm btn-outline-danger" type="submit">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-center text-secondary py-4">Nenhum teto cadastrado.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if pages > 1 %}
+      <nav class="mt-3">
+        <ul class="pagination pagination-sm mb-0">
+          <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('admin_tetos', q=q, page=page-1 if page>1 else 1, preview_token=preview.token if preview else None) }}">&laquo;</a>
+          </li>
+          {% for p in range(1, pages + 1) %}
+          <li class="page-item {% if p == page %}active{% endif %}">
+            <a class="page-link" href="{{ url_for('admin_tetos', q=q, page=p, preview_token=preview.token if preview else None) }}">{{ p }}</a>
+          </li>
+          {% endfor %}
+          <li class="page-item {% if page >= pages %}disabled{% endif %}">
+            <a class="page-link" href="{{ url_for('admin_tetos', q=q, page=page+1 if page<pages else pages, preview_token=preview.token if preview else None) }}">&raquo;</a>
+          </li>
+        </ul>
+      </nav>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="col-xl-4">
+    <div class="card p-3 mb-3">
+      <h6 class="mb-3">Importar / Atualizar</h6>
+      <form method="post" action="{{ url_for('admin_tetos_import') }}" enctype="multipart/form-data" class="row g-2">
+        <div class="col-12">
+          <label class="form-label">Arquivo (.csv/.xlsx)</label>
+          <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit">Pré-visualizar</button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('admin_tetos_template_download') }}">Baixar template</a>
+        </div>
+      </form>
+      <p class="small text-muted mt-2 mb-0">
+        Informe as colunas <code>codigo</code>, <code>descricao</code> e <code>valor_total</code>. Valores aceitam vírgula ou ponto e duplicados consideram a última ocorrência.
+      </p>
+    </div>
+
+    {% if preview %}
+    <div class="card p-3">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Pré-visualização</h6>
+        <span class="badge text-bg-info">Token: {{ preview.token }}</span>
+      </div>
+      <ul class="list-unstyled small mb-3">
+        <li><strong>Arquivo:</strong> {{ preview.meta.filename or '—' }}</li>
+        <li><strong>Total lido:</strong> {{ preview.meta.total_input }}</li>
+        <li><strong>Válidos:</strong> {{ preview.meta.valid_count }}{% if preview.meta.duplicate_count %} ({{ preview.meta.duplicate_count }} duplicado(s) substituído(s)){% endif %}</li>
+        {% if preview.meta.error_count %}<li class="text-warning"><strong>Com erros:</strong> {{ preview.meta.error_count }}</li>{% endif %}
+      </ul>
+      <div class="table-responsive mb-3">
+        <table class="table table-sm table-striped mb-0">
+          <thead>
+            <tr>
+              <th>Lin.</th>
+              <th>Código</th>
+              <th>Descrição</th>
+              <th class="text-end">Valor</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in preview.rows[:20] %}
+            <tr>
+              <td class="text-muted">{{ row.row_number }}</td>
+              <td class="fw-semibold">{{ row.codigo }}</td>
+              <td>{{ row.descricao }}</td>
+              <td class="text-end">{{ format_brl(row.valor_total) or 'R$ 0,00' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-center text-secondary">Nenhuma linha válida.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if preview.errors %}
+      <div class="alert alert-warning small">
+        <strong>Erros encontrados:</strong>
+        <ul class="mb-0">
+          {% for msg in preview.errors[:10] %}
+          <li>{{ msg }}</li>
+          {% endfor %}
+          {% if preview.errors|length > 10 %}
+          <li>… {{ preview.errors|length - 10 }} restante(s).</li>
+          {% endif %}
+        </ul>
+      </div>
+      {% endif %}
+      <form method="post" action="{{ url_for('admin_tetos_import') }}" class="d-grid gap-2">
+        <input type="hidden" name="token" value="{{ preview.token }}">
+        <button class="btn btn-success" type="submit" {% if not preview.rows %}disabled{% endif %}>Importar / Atualizar</button>
+        <a class="btn btn-outline-secondary" href="{{ url_for('admin_tetos') }}">Descartar</a>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
