@@ -15,9 +15,40 @@
 
 <div class="row g-3">
   <div class="col-12">
+    <div class="card p-3" id="import-jobs-panel">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h6 class="mb-0">Importações em andamento</h6>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshJobsBtn">
+          <i class="bi bi-arrow-clockwise"></i> Atualizar
+        </button>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-clean align-middle mb-0" id="jobsTable">
+          <thead>
+            <tr>
+              <th style="width:120px;">Protocolo</th>
+              <th style="width:90px;">Origem</th>
+              <th style="width:120px;">Versão</th>
+              <th style="width:180px;">UFs</th>
+              <th style="width:110px;">Status</th>
+              <th style="width:130px;">Duração</th>
+              <th>Mensagem</th>
+              <th style="width:180px;">Atualizado em</th>
+            </tr>
+          </thead>
+          <tbody id="jobsTableBody">
+            <tr><td colspan="8" class="text-center text-muted py-3">Nenhuma importação agendada.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="small text-muted mt-2" id="jobsSummary">—</div>
+    </div>
+  </div>
+
+  <div class="col-12">
     <div class="card p-3" id="imp-bras">
       <h6 class="mb-3">Importar: Brasíndice</h6>
-      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3">
+      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3" data-fill-label data-import-form>
         <input type="hidden" name="origem" value="BRAS">
         <input type="hidden" name="return_to" value="gerenciar_tabelas">
         <div class="col-md-4">
@@ -28,20 +59,29 @@
           <label class="form-label">Versão</label>
           <input class="form-control" name="versao" placeholder="ex.: 2025-09" required>
         </div>
+        <div class="col-md-3">
+          <label class="form-label">Identificador (opcional)</label>
+          <input class="form-control" name="arquivo_label" placeholder="ex.: tabela_pf">
+          <div class="form-text">Use para diferenciar arquivos da mesma versão/alíquota.</div>
+        </div>
         <div class="col-md-2">
           <label class="form-label">Data ref.</label>
           <input class="form-control" type="date" name="data_atualizacao">
         </div>
         <div class="col-md-3">
-          <label class="form-label">UFs</label>
-          <select class="form-select" name="uf" multiple required size="6">
+          <label class="form-label">UFs (opcional)</label>
+          <select class="form-select" name="ufs" multiple size="6">
             {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
           </select>
-          <div class="form-text">Selecione uma ou mais UFs aplicáveis</div>
+          <div class="form-text">Selecione uma ou mais UFs atendidas por este arquivo (sem duplicar a importação).</div>
         </div>
         <div class="col-md-3">
           <label class="form-label">Alíquota (%)</label>
           <input class="form-control" name="aliquota" placeholder="ex.: 18,5">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Sequência</label>
+          <input class="form-control" name="sequencia" type="number" min="1" max="9" value="1">
         </div>
         <div class="col-md-3">
           <label class="form-label">Formato</label>
@@ -87,6 +127,12 @@
           <button class="btn btn-primary" type="submit">Importar Brasíndice</button>
           <a class="btn btn-outline-secondary" href="{{ url_for('insumos_dashboard') }}" target="_blank">Abrir consulta</a>
         </div>
+        <div class="col-12">
+          <div class="progress d-none" style="height:6px;" data-progress>
+            <div class="progress-bar" role="progressbar" style="width:0%;"></div>
+          </div>
+          <div class="small mt-2 import-message text-muted"></div>
+        </div>
       </form>
     </div>
   </div>
@@ -94,7 +140,7 @@
   <div class="col-12">
     <div class="card p-3" id="imp-simpro">
       <h6 class="mb-3">Importar: SIMPRO</h6>
-      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3">
+      <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3" data-fill-label data-import-form>
         <input type="hidden" name="origem" value="SIMPRO">
         <input type="hidden" name="return_to" value="gerenciar_tabelas">
         <div class="col-md-4">
@@ -105,20 +151,29 @@
           <label class="form-label">Versão</label>
           <input class="form-control" name="versao" placeholder="ex.: 2025-09" required>
         </div>
+        <div class="col-md-3">
+          <label class="form-label">Identificador (opcional)</label>
+          <input class="form-control" name="arquivo_label" placeholder="ex.: tabela_pf">
+          <div class="form-text">Use para diferenciar arquivos da mesma versão/alíquota.</div>
+        </div>
         <div class="col-md-2">
           <label class="form-label">Data ref.</label>
           <input class="form-control" type="date" name="data_atualizacao">
         </div>
         <div class="col-md-3">
-          <label class="form-label">UFs</label>
-          <select class="form-select" name="uf" multiple required size="6">
+          <label class="form-label">UFs (opcional)</label>
+          <select class="form-select" name="ufs" multiple size="6">
             {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
           </select>
-          <div class="form-text">Selecione uma ou mais UFs aplicáveis</div>
+          <div class="form-text">Selecione uma ou mais UFs atendidas por este arquivo (sem duplicar a importação).</div>
         </div>
         <div class="col-md-3">
           <label class="form-label">Alíquota (%)</label>
           <input class="form-control" name="aliquota" placeholder="ex.: 18,5">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Sequência</label>
+          <input class="form-control" name="sequencia" type="number" min="1" max="9" value="1">
         </div>
         <div class="col-md-3">
           <label class="form-label">Formato</label>
@@ -163,6 +218,12 @@
         <div class="col-12 d-flex gap-2">
           <button class="btn btn-success" type="submit">Importar SIMPRO</button>
           <a class="btn btn-outline-secondary" href="{{ url_for('insumos_dashboard') }}" target="_blank">Abrir consulta</a>
+        </div>
+        <div class="col-12">
+          <div class="progress d-none" style="height:6px;" data-progress>
+            <div class="progress-bar" role="progressbar" style="width:0%;"></div>
+          </div>
+          <div class="small mt-2 import-message text-muted"></div>
         </div>
       </form>
     </div>
@@ -381,6 +442,266 @@
         </table>
       </div>
     </div>
-  </div>
 </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function(){
+  const tableBody = document.getElementById('jobsTableBody');
+  const summary = document.getElementById('jobsSummary');
+  const refreshBtn = document.getElementById('refreshJobsBtn');
+  if(!tableBody || !summary) { return; }
+
+  let refreshTimer = null;
+
+  function escapeHtml(str){
+    const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"};
+    return (str || '').replace(/[&<>"']/g, ch => map[ch] || ch);
+  }
+
+  function formatDate(value){
+    if(!value) { return '—'; }
+    const date = new Date(value.replace(' ', 'T'));
+    if(Number.isNaN(date.getTime())) { return escapeHtml(value); }
+    return date.toLocaleString('pt-BR');
+  }
+
+  function renderStatus(status){
+    const map = {
+      'PENDING': {label: 'Pendente', cls: 'bg-secondary'},
+      'RUNNING': {label: 'Processando', cls: 'bg-info'},
+      'SUCCESS': {label: 'Concluído', cls: 'bg-success'},
+      'FAILED': {label: 'Falhou', cls: 'bg-danger'},
+    };
+    const meta = map[status] || {label: status || '—', cls: 'bg-secondary'};
+    return `<span class="badge ${meta.cls}">${meta.label}</span>`;
+  }
+
+  async function loadJobs(){
+    try{
+      const response = await fetch('{{ url_for('insumos_import_jobs_list') }}');
+      if(!response.ok){ throw new Error('Falha ao consultar importações.'); }
+      const payload = await response.json();
+      const items = payload.items || [];
+      if(!items.length){
+        tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">Nenhuma importação agendada.</td></tr>';
+        summary.textContent = 'Nenhuma importação recente.';
+        return;
+      }
+      const rows = items.map(item => {
+        const protocolo = escapeHtml((item.id || '').slice(0, 8));
+        const origem = escapeHtml(item.origem || '—');
+        const versao = escapeHtml(item.versao || '—');
+        const ufs = (item.uf_list || []).join(', ') || '—';
+        const statusHtml = renderStatus(item.status);
+        const mensagem = escapeHtml(item.message || '—');
+        const totalTime = item.metrics?.timings?.total;
+        const totalLabel = totalTime ? `${Number(totalTime).toFixed(2)}s` : '—';
+        const updatedAt = item.finished_at || item.started_at || item.created_at;
+        return `
+          <tr>
+            <td class="text-muted">${protocolo}</td>
+            <td>${origem}</td>
+            <td>${versao}</td>
+            <td>${escapeHtml(ufs)}</td>
+            <td>${statusHtml}</td>
+            <td>${escapeHtml(totalLabel)}</td>
+            <td>${mensagem}</td>
+            <td>${formatDate(updatedAt)}</td>
+          </tr>`;
+      }).join('');
+      tableBody.innerHTML = rows;
+      summary.textContent = `Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
+    } catch(err){
+      tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-danger py-3">Erro ao carregar importações.</td></tr>';
+      summary.textContent = err.message;
+    }
+  }
+
+  function scheduleRefresh(){
+    if(refreshTimer){
+      clearInterval(refreshTimer);
+    }
+    refreshTimer = setInterval(loadJobs, 15000);
+  }
+
+  async function validateFilePreview(file, form){
+    const errors = [];
+    try{
+      const preview = await file.slice(0, 65536).text();
+      const lines = preview.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      if(!lines.length){
+        errors.push('Arquivo vazio ou não foi possível ler o cabeçalho.');
+        return errors;
+      }
+      const formatSelect = form.querySelector('select[name="format"]');
+      const formatValue = formatSelect ? (formatSelect.value || '').toLowerCase() : '';
+      const delimiterInput = form.querySelector('input[name="delimiter"]');
+      const delimiterValue = delimiterInput ? (delimiterInput.value || ';') : ';';
+      if(formatValue === 'delimited'){
+        const header = lines[0];
+        const columns = header.split(delimiterValue);
+        if(columns.length <= 3){
+          errors.push('Cabeçalho parece inválido para o delimitador informado.');
+        }
+      }
+    } catch(err){
+      errors.push('Falha ao analisar o arquivo: ' + (err && err.message ? err.message : err));
+    }
+    return errors;
+  }
+
+  function setupImportForms(){
+    const forms = document.querySelectorAll('form[data-import-form]');
+    forms.forEach(form => {
+      const fileInput = form.querySelector('input[type="file"][name="arquivo"]');
+      const submitBtn = form.querySelector('button[type="submit"]');
+      const progressWrap = form.querySelector('[data-progress]');
+      const progressBar = progressWrap ? progressWrap.querySelector('.progress-bar') : null;
+      const messageBox = form.querySelector('.import-message');
+
+      function resetFeedback(){
+        if(progressWrap){
+          progressWrap.classList.add('d-none');
+        }
+        if(progressBar){
+          progressBar.style.width = '0%';
+        }
+        if(messageBox){
+          messageBox.textContent = '';
+          messageBox.classList.remove('text-danger', 'text-success', 'text-warning');
+          messageBox.classList.add('text-muted');
+        }
+      }
+
+      function setMessage(type, text){
+        if(!messageBox){ return; }
+        messageBox.textContent = text;
+        messageBox.classList.remove('text-muted', 'text-danger', 'text-success', 'text-warning');
+        if(type === 'error'){
+          messageBox.classList.add('text-danger');
+        } else if(type === 'success'){
+          messageBox.classList.add('text-success');
+        } else if(type === 'warning'){
+          messageBox.classList.add('text-warning');
+        } else {
+          messageBox.classList.add('text-muted');
+        }
+      }
+
+      form.addEventListener('submit', async function(evt){
+        evt.preventDefault();
+        resetFeedback();
+
+        if(!fileInput || !fileInput.files || !fileInput.files.length){
+          setMessage('error', 'Selecione um arquivo para importar.');
+          return;
+        }
+
+        const file = fileInput.files[0];
+        if(file.size > 150 * 1024 * 1024){
+          setMessage('warning', 'Arquivo muito grande; o envio pode levar alguns minutos.');
+        }
+
+        if(submitBtn){ submitBtn.disabled = true; }
+
+        const validationErrors = await validateFilePreview(file, form);
+        if(validationErrors.length){
+          if(submitBtn){ submitBtn.disabled = false; }
+          setMessage('error', validationErrors.join(' '));
+          return;
+        }
+
+        const formData = new FormData(form);
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', form.action);
+        xhr.responseType = 'text';
+
+        if(progressWrap){
+          progressWrap.classList.remove('d-none');
+        }
+
+        xhr.upload.addEventListener('progress', function(event){
+          if(progressBar && event.lengthComputable){
+            const percent = Math.round((event.loaded / event.total) * 100);
+            progressBar.style.width = percent + '%';
+          }
+        });
+
+        xhr.addEventListener('readystatechange', function(){
+          if(xhr.readyState !== XMLHttpRequest.DONE){
+            return;
+          }
+          if(submitBtn){ submitBtn.disabled = false; }
+
+          if(xhr.status >= 200 && xhr.status < 400){
+            setMessage('success', 'Importação enviada. Processando...');
+            loadJobs();
+            setTimeout(() => {
+              window.location.href = xhr.responseURL || window.location.href;
+            }, 800);
+          } else {
+            const reason = (xhr.responseText || xhr.statusText || 'Falha no envio.').trim();
+            setMessage('error', reason);
+          }
+        });
+
+        try{
+          xhr.send(formData);
+        } catch(err){
+          if(submitBtn){ submitBtn.disabled = false; }
+          setMessage('error', 'Erro ao enviar o arquivo: ' + (err && err.message ? err.message : err));
+        }
+      });
+    });
+  }
+
+  refreshBtn?.addEventListener('click', function(){
+    loadJobs();
+  });
+
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden){
+      if(refreshTimer){
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+    } else {
+      loadJobs();
+      scheduleRefresh();
+    }
+  });
+
+  loadJobs();
+  scheduleRefresh();
+  setupImportForms();
+
+  document.querySelectorAll('form[data-fill-label]').forEach(form => {
+    const fileInput = form.querySelector('input[type="file"][name="arquivo"]');
+    const labelInput = form.querySelector('input[name="arquivo_label"]');
+    if(!fileInput || !labelInput){ return; }
+
+    function slugify(name){
+      return name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 60);
+    }
+
+    fileInput.addEventListener('change', function(){
+      if(labelInput.value){ return; }
+      const full = this.value.split('\\').pop().split('/').pop();
+      const base = full.includes('.') ? full.substring(0, full.lastIndexOf('.')) : full;
+      const suggestion = slugify(base);
+      if(suggestion){
+        labelInput.value = suggestion;
+      }
+    });
+  });
+})();
+</script>
 {% endblock %}

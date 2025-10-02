@@ -3,6 +3,7 @@ import time
 import csv
 import math
 import re
+import threading
 from pathlib import Path
 
 import click
@@ -18,6 +19,7 @@ from flask import (
     g,
     abort,
     flash,
+    has_request_context,
 )
 import json
 from flask_sqlalchemy import SQLAlchemy
@@ -31,11 +33,15 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import unicodedata
 import html
 import hashlib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import uuid4
+from dataclasses import dataclass
+from enum import Enum
+from typing import Optional, Sequence
 from flask import make_response
 import io
 import tempfile
+import shutil
 import xlsxwriter
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -60,6 +66,12 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+engine_options = dict(app.config.get('SQLALCHEMY_ENGINE_OPTIONS') or {})
+connect_args = dict(engine_options.get('connect_args') or {})
+connect_args.setdefault('local_infile', 1)
+engine_options['connect_args'] = connect_args
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
+
 # Inicializa o SQLAlchemy para interagir com o banco de dados
 db = SQLAlchemy(app)
 
@@ -82,6 +94,15 @@ def admin_required(f):
             return redirect(url_for('consulta_comparar'))
         return f(*args, **kwargs)
     return wrapper
+
+
+def _safe_flash(message: str, category: str = 'info') -> None:
+    """Flash a message when in a request context, otherwise log it."""
+    if has_request_context():
+        flash(message, category)
+        return
+    log_fn = app.logger.warning if category in {'danger', 'warning'} else app.logger.info
+    log_fn('flash[%s]: %s', category, message)
 
 
 
@@ -244,6 +265,130 @@ class CbhpmTeto(db.Model):
         db.Index('idx_cbhpm_teto_descricao', 'descricao'),
     )
 
+
+class LoteStatus(Enum):
+    PENDENTE = 'PENDENTE'
+    VALIDADO = 'VALIDADO'
+    REPROVADO = 'REPROVADO'
+    PUBLICADO = 'PUBLICADO'
+
+
+class UfAliquota(db.Model):
+    __tablename__ = 'uf_aliquota'
+
+    uf = db.Column(db.String(2), primary_key=True)
+    valid_from = db.Column(db.Date, primary_key=True)
+    aliquota_bp = db.Column(db.Integer, nullable=False)
+    valid_to = db.Column(db.Date, nullable=True)
+    is_current = db.Column(db.Boolean, nullable=False, server_default=text('1'), default=True)
+    created_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
+
+    __table_args__ = (
+        db.CheckConstraint('aliquota_bp >= 0', name='ck_uf_aliquota_non_negative'),
+        db.Index('idx_uf_aliquota_current', 'uf', 'is_current'),
+    )
+
+
+class Lote(db.Model):
+    __tablename__ = 'lote'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    fornecedor = db.Column(db.String(50), nullable=False)
+    aliquota_bp = db.Column(db.Integer, nullable=False)
+    periodo = db.Column(db.String(6), nullable=False)
+    sequencia = db.Column(db.SmallInteger, nullable=False)
+    arquivo_label = db.Column(db.String(255), nullable=False)
+    hash_arquivo = db.Column(db.String(128), nullable=True)
+    total_itens = db.Column(db.Integer, nullable=True)
+    status = db.Column(db.Enum(LoteStatus, name='lote_status'), nullable=False, default=LoteStatus.PENDENTE, server_default=LoteStatus.PENDENTE.value)
+    validado_em = db.Column(db.TIMESTAMP, nullable=True)
+    publicado_em = db.Column(db.TIMESTAMP, nullable=True)
+    created_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
+
+    __table_args__ = (
+        db.UniqueConstraint('fornecedor', 'aliquota_bp', 'periodo', 'sequencia', name='uq_lote_identidade'),
+        db.Index('idx_lote_status', 'status'),
+        db.Index('idx_lote_arquivo_label', 'arquivo_label'),
+    )
+
+
+class Publicacao(db.Model):
+    __tablename__ = 'publicacao'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    fornecedor = db.Column(db.String(50), nullable=False)
+    aliquota_bp = db.Column(db.Integer, nullable=False)
+    periodo = db.Column(db.String(6), nullable=False)
+    sequencia = db.Column(db.SmallInteger, nullable=False)
+    lote_id = db.Column(db.BigInteger, db.ForeignKey('lote.id', ondelete='CASCADE'), nullable=False)
+    publicado_em = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    etag_versao = db.Column(db.String(128), nullable=False)
+    criado_em = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+
+    lote = db.relationship('Lote', backref=db.backref('publicacoes', lazy='dynamic'))
+
+    __table_args__ = (
+        db.UniqueConstraint('fornecedor', 'aliquota_bp', 'periodo', 'sequencia', name='uq_publicacao_identidade'),
+        db.Index('idx_publicacao_fornecedor', 'fornecedor'),
+    )
+
+
+class LinhaHash(db.Model):
+    __tablename__ = 'linha_hash'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    lote_id = db.Column(db.BigInteger, db.ForeignKey('lote.id', ondelete='CASCADE'), nullable=False)
+    item_chave = db.Column(db.String(255), nullable=False)
+    hash_linha = db.Column(db.String(128), nullable=False)
+    payload_snapshot = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = db.Column(db.TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), server_onupdate=text('CURRENT_TIMESTAMP'))
+
+    lote = db.relationship('Lote', backref=db.backref('linhas', lazy='dynamic', cascade='all, delete-orphan'))
+
+    __table_args__ = (
+        db.UniqueConstraint('lote_id', 'item_chave', name='uq_linha_hash_item'),
+        db.Index('idx_linha_hash_lote', 'lote_id'),
+    )
+
+
+class ImportJobStatus(Enum):
+    PENDING = 'PENDING'
+    RUNNING = 'RUNNING'
+    SUCCESS = 'SUCCESS'
+    FAILED = 'FAILED'
+
+
+class ImportJob(db.Model):
+    __tablename__ = 'insumo_import_jobs'
+
+    id = db.Column(db.String(36), primary_key=True)
+    origem = db.Column(db.Enum('BRAS', 'SIMPRO', name='insumo_import_job_origem'), nullable=False)
+    original_filename = db.Column(db.String(255), nullable=False)
+    data_path = db.Column(db.String(512), nullable=False)
+    status = db.Column(
+        db.Enum('PENDING', 'RUNNING', 'SUCCESS', 'FAILED', name='insumo_import_job_status'),
+        nullable=False,
+        default=ImportJobStatus.PENDING.value,
+        server_default=ImportJobStatus.PENDING.value,
+    )
+    message = db.Column(db.String(500), nullable=True)
+    total_linhas = db.Column(db.Integer, nullable=True)
+    linhas_materializadas = db.Column(db.Integer, nullable=True)
+    versao = db.Column(db.String(50), nullable=True)
+    aliquota = db.Column(db.Numeric(12, 4), nullable=True)
+    uf_list = db.Column(db.String(255), nullable=True)
+    params = db.Column(db.JSON, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    started_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        db.Index('idx_import_jobs_created_at', 'created_at'),
+        db.Index('idx_import_jobs_status', 'status'),
+    )
 
 class BrasRaw(db.Model):
     __tablename__ = 'bras_raw'
@@ -417,6 +562,60 @@ class SimproItemNormalized(db.Model):
     )
 
 
+class CatalogoBrasindice(db.Model):
+    __tablename__ = 'mv_catalogo_vigente_brasindice'
+    __table_args__ = {'extend_existing': True}
+
+    uf = db.Column(db.String(2), primary_key=True)
+    aliquota_bp = db.Column(db.Integer, nullable=False)
+    periodo = db.Column(db.String(6), nullable=True)
+    sequencia = db.Column(db.SmallInteger, nullable=True)
+    etag_versao = db.Column(db.String(128), nullable=True)
+    item_id = db.Column(db.BigInteger, primary_key=True)
+    produto_codigo = db.Column(db.String(50), nullable=True)
+    apresentacao_codigo = db.Column(db.String(50), nullable=True)
+    produto_nome = db.Column(db.String(255), nullable=True)
+    apresentacao_descricao = db.Column(db.String(255), nullable=True)
+    ean = db.Column(db.String(20), nullable=True)
+    registro_anvisa = db.Column(db.String(50), nullable=True)
+    preco_pmc_unit = db.Column(db.Numeric(15, 4))
+    preco_pfb_unit = db.Column(db.Numeric(15, 4))
+    preco_pmc_pacote = db.Column(db.Numeric(15, 4))
+    preco_pfb_pacote = db.Column(db.Numeric(15, 4))
+    laboratorio_nome = db.Column(db.String(255), nullable=True)
+    edicao = db.Column(db.String(50), nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True)
+    etag_catalogo = db.Column(db.String(255), nullable=True)
+
+
+class CatalogoSimpro(db.Model):
+    __tablename__ = 'mv_catalogo_vigente_simpro'
+    __table_args__ = {'extend_existing': True}
+
+    uf = db.Column(db.String(2), primary_key=True)
+    aliquota_bp = db.Column(db.Integer, nullable=False)
+    periodo = db.Column(db.String(6), nullable=True)
+    sequencia = db.Column(db.SmallInteger, nullable=True)
+    etag_versao = db.Column(db.String(128), nullable=True)
+    item_id = db.Column(db.BigInteger, primary_key=True)
+    codigo = db.Column(db.String(20), nullable=True)
+    codigo_alt = db.Column(db.String(20), nullable=True)
+    descricao = db.Column(db.String(255), nullable=True)
+    data_ref = db.Column(db.Date, nullable=True)
+    preco1 = db.Column(db.Numeric(15, 4))
+    preco2 = db.Column(db.Numeric(15, 4))
+    preco3 = db.Column(db.Numeric(15, 4))
+    preco4 = db.Column(db.Numeric(15, 4))
+    qtd_unidade = db.Column(db.Integer, nullable=True)
+    fabricante = db.Column(db.String(80), nullable=True)
+    anvisa = db.Column(db.String(20), nullable=True)
+    validade_anvisa = db.Column(db.Date, nullable=True)
+    ean = db.Column(db.String(32), nullable=True)
+    situacao = db.Column(db.String(40), nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True)
+    etag_catalogo = db.Column(db.String(255), nullable=True)
+
+
 class InsumoIndex(db.Model):
     __tablename__ = 'insumos_index'
 
@@ -450,6 +649,9 @@ DECIMAL_FIELDS = {'preco', 'aliquota'}
 DATE_FIELDS = {'data_atualizacao'}
 DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
 TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
+INSUMO_IMPORT_ASYNC_DIR = Path(tempfile.gettempdir()) / 'insumo_async_imports'
+INSUMO_IMPORT_ASYNC_DIR.mkdir(parents=True, exist_ok=True)
+
 BRAS_RAW_DEFAULT_COLUMNS = [
     'col01', 'col02', 'col03', 'col04', 'col05', 'col06', 'col07', 'col08', 'col09', 'col10',
     'col11', 'col12', 'col13', 'col14', 'col15', 'col16', 'col17', 'col18', 'col19', 'col20',
@@ -722,7 +924,7 @@ def _stage_simpro_fixed(
     map_config: dict,
     encoding: str | None,
     arquivo_label: str,
-) -> int:
+) -> tuple[int, str]:
     encodings = _build_encoding_list(encoding)
     inserted = 0
     for enc in encodings:
@@ -746,7 +948,7 @@ def _stage_simpro_fixed(
             continue
     if not inserted:
         raise click.ClickException('Não foi possível decodificar o arquivo de largura fixa do SIMPRO.')
-    return inserted
+    return inserted, 'python_fixed'
 
 
 def _parse_fixed_date(value: str | None, fmt: str | None) -> date | None:
@@ -878,9 +1080,10 @@ def _stage_bras_delimited(
     encoding: str | None,
     arquivo_label: str,
     use_load_data: bool,
-) -> int:
+) -> tuple[int, str]:
     encodings = _build_encoding_list(encoding)
     inserted = 0
+    strategy = 'load_data'
     if use_load_data:
         try:
             inserted = _bras_load_data_delimited(
@@ -896,6 +1099,7 @@ def _stage_bras_delimited(
             db.session.rollback()
             app.logger.warning('LOAD DATA falhou (%s); usando fallback Python.', exc)
             inserted = 0
+            strategy = 'python'
 
     if not inserted:
         inserted = _bras_csv_fallback(
@@ -906,7 +1110,8 @@ def _stage_bras_delimited(
             encodings=encodings,
             arquivo_label=arquivo_label,
         )
-    return inserted
+        strategy = 'python'
+    return inserted, strategy
 
 
 def _stage_bras_fixed(
@@ -916,7 +1121,7 @@ def _stage_bras_fixed(
     encoding: str | None,
     line_terminator: str,
     arquivo_label: str,
-) -> int:
+) -> tuple[int, str]:
     columns_cfg = map_config.get('columns') or []
     if not columns_cfg:
         raise click.ClickException('Arquivo de mapeamento precisa definir "columns".')
@@ -953,7 +1158,7 @@ def _stage_bras_fixed(
             continue
     if not inserted:
         raise click.ClickException('Não foi possível decodificar o arquivo de largura fixa.')
-    return inserted
+    return inserted, 'python_fixed'
 
 
 def _ensure_bras_item_view_exists() -> None:
@@ -1144,17 +1349,20 @@ def _import_bras(
     truncate: bool,
     uf_default: str | None = None,
     aliquota_default: Decimal | None = None,
+    arquivo_label_override: str | None = None,
 ) -> dict:
     del data_ref
-    arquivo_label = map_config.get('arquivo') or versao or file_path.name
-    if uf_default and not map_config.get('arquivo'):
+    arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
+    arquivo_label = arquivo_label_base
+    if uf_default:
         arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
 
     _delete_existing_bras_records(arquivo_label, truncate)
 
     inserted = 0
+    stage_strategy = 'unknown'
     if fmt == 'delimited':
-        inserted = _stage_bras_delimited(
+        inserted, stage_strategy = _stage_bras_delimited(
             file_path=file_path,
             delimiter=delimiter,
             quotechar=quotechar,
@@ -1165,7 +1373,7 @@ def _import_bras(
             use_load_data=not map_config.get('disable_load_data', False),
         )
     else:
-        inserted = _stage_bras_fixed(
+        inserted, stage_strategy = _stage_bras_fixed(
             file_path=file_path,
             map_config=map_config,
             encoding=encoding,
@@ -1184,6 +1392,7 @@ def _import_bras(
         'arquivo': arquivo_label,
         'linhas_raw': inserted,
         'linhas_materializadas': materialized,
+        'load_strategy': stage_strategy,
     }
 
 
@@ -1197,17 +1406,19 @@ def _import_simpro(
     truncate: bool,
     uf_default: str | None,
     aliquota_default: Decimal | None,
+    arquivo_label_override: str | None = None,
 ) -> dict:
     if fmt != 'fixed':
         raise click.ClickException('Importação SIMPRO suporta apenas formato de largura fixa no momento.')
 
-    arquivo_label = map_config.get('arquivo') or versao or file_path.name
-    if uf_default and not map_config.get('arquivo'):
+    arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
+    arquivo_label = arquivo_label_base
+    if uf_default:
         arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
 
     _delete_existing_simpro_records(arquivo_label, truncate)
 
-    inserted = _stage_simpro_fixed(
+    inserted, stage_strategy = _stage_simpro_fixed(
         file_path=file_path,
         map_config=map_config,
         encoding=encoding,
@@ -1231,6 +1442,7 @@ def _import_simpro(
         'arquivo': arquivo_label,
         'linhas_raw': inserted,
         'linhas_materializadas': materialized,
+        'load_strategy': stage_strategy,
     }
 
 
@@ -1594,6 +1806,652 @@ def _parse_teto_import_file(file_path: Path) -> dict:
 
 
 
+@dataclass(frozen=True)
+class SupplierConfig:
+    fornecedor_key: str
+    origem: str
+    model: type
+    hash_fields: Sequence[str]
+    item_key_fields: Sequence[str]
+
+
+_SUPPLIER_CONFIGS: dict[str, SupplierConfig] = {
+    'BRASINDICE': SupplierConfig(
+        fornecedor_key='BRASINDICE',
+        origem='BRAS',
+        model=BrasItemNormalized,
+        hash_fields=(
+            'produto_codigo', 'apresentacao_codigo', 'ean', 'registro_anvisa',
+            'preco_pmc_unit', 'preco_pfb_unit', 'preco_pmc_pacote', 'preco_pfb_pacote',
+            'laboratorio_nome', 'edicao'
+        ),
+        item_key_fields=('produto_codigo', 'apresentacao_codigo', 'ean'),
+    ),
+    'SIMPRO': SupplierConfig(
+        fornecedor_key='SIMPRO',
+        origem='SIMPRO',
+        model=SimproItemNormalized,
+        hash_fields=(
+            'codigo', 'codigo_alt', 'descricao', 'data_ref', 'tipo_reg',
+            'preco1', 'preco2', 'preco3', 'preco4', 'fabricante', 'anvisa',
+            'validade_anvisa', 'ean', 'situacao'
+        ),
+        item_key_fields=('codigo', 'ean'),
+    ),
+}
+
+
+class AliquotaIngestionError(RuntimeError):
+    """Erro de negócio durante ingestão/publicação de lotes por alíquota."""
+
+
+def _normalize_fornecedor(value: str) -> str:
+    if not value:
+        raise AliquotaIngestionError('Fornecedor é obrigatório.')
+    normalized = ''.join(
+        c for c in unicodedata.normalize('NFKD', value.upper()) if not unicodedata.combining(c)
+    )
+    return normalized.strip()
+
+
+def _resolve_supplier_config(fornecedor: str, origem: str | None = None) -> SupplierConfig:
+    key = _normalize_fornecedor(fornecedor)
+    config = _SUPPLIER_CONFIGS.get(key)
+    if not config:
+        raise AliquotaIngestionError(f'Fornecedor "{fornecedor}" não suportado.')
+    if origem and config.origem != origem.upper():
+        raise AliquotaIngestionError(
+            f'Origem {origem} não corresponde ao fornecedor {fornecedor} (esperado {config.origem}).'
+        )
+    return config
+
+
+def _normalize_periodo(periodo: str) -> str:
+    if not periodo:
+        raise AliquotaIngestionError('Período é obrigatório.')
+    periodo = str(periodo).strip()
+    if len(periodo) != 6 or not periodo.isdigit():
+        raise AliquotaIngestionError('Período deve estar no formato YYYYMM.')
+    return periodo
+
+
+def _normalize_sequencia(sequencia: int | str) -> int:
+    try:
+        seq = int(sequencia)
+    except (TypeError, ValueError) as exc:
+        raise AliquotaIngestionError('Sequência deve ser 1 ou 2.') from exc
+    if seq not in {1, 2}:
+        raise AliquotaIngestionError('Sequência deve ser 1 ou 2.')
+    return seq
+
+
+def _normalize_aliquota_bp(value: int | str | Decimal) -> int:
+    if value is None:
+        raise AliquotaIngestionError('Informe a alíquota em basis points ou percentual.')
+    if isinstance(value, int):
+        if value < 0:
+            raise AliquotaIngestionError('Alíquota não pode ser negativa.')
+        return value
+    if isinstance(value, Decimal):
+        if value < 0:
+            raise AliquotaIngestionError('Alíquota não pode ser negativa.')
+        return int((value * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+    s = str(value).strip().replace('%', '').replace(' ', '')
+    if not s:
+        raise AliquotaIngestionError('Informe a alíquota.')
+    s = s.replace(',', '.')
+    try:
+        decimal_value = Decimal(s)
+    except InvalidOperation as exc:
+        raise AliquotaIngestionError('Alíquota inválida.') from exc
+    if decimal_value < 0:
+        raise AliquotaIngestionError('Alíquota não pode ser negativa.')
+    return int((decimal_value * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def _compute_file_hash(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open('rb') as handle:
+        for chunk in iter(lambda: handle.read(65536), b''):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _json_default(value):
+    if isinstance(value, Decimal):
+        return format(value, 'f')
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _serialize_row(row, fields: Sequence[str]) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for field in fields:
+        payload[field] = _json_default(getattr(row, field, None))
+    return payload
+
+
+def _build_item_key(row, fields: Sequence[str]) -> str:
+    parts: list[str] = []
+    for field in fields:
+        value = getattr(row, field, None)
+        if value in (None, ''):
+            continue
+        if isinstance(value, Decimal):
+            parts.append(format(value, 'f'))
+        else:
+            parts.append(str(value).strip())
+    if not parts:
+        parts.append(str(getattr(row, 'id', '')))
+    return '|'.join(parts)
+
+
+def ingestir_arquivo(
+    fornecedor: str,
+    origem: str,
+    aliquota_bp: int | str | Decimal,
+    periodo: str,
+    sequencia: int | str,
+    arquivo_label: str,
+    *,
+    arquivo_path: Path | None = None,
+    arquivo_bytes: bytes | None = None,
+    commit: bool = True,
+    session=None,
+) -> Lote:
+    session = session or db.session
+    config = _resolve_supplier_config(fornecedor, origem)
+    periodo_norm = _normalize_periodo(periodo)
+    sequencia_norm = _normalize_sequencia(sequencia)
+    aliquota_bp_norm = _normalize_aliquota_bp(aliquota_bp)
+
+    if not arquivo_label:
+        raise AliquotaIngestionError('arquivo_label é obrigatório para correlacionar os itens normalizados.')
+
+    rows = session.query(config.model).filter(config.model.arquivo == arquivo_label).all()
+    if not rows:
+        raise AliquotaIngestionError(f'Nenhum item carregado encontrado para arquivo "{arquivo_label}".')
+
+    if arquivo_bytes is not None:
+        hash_arquivo = hashlib.sha256(arquivo_bytes).hexdigest()
+    elif arquivo_path is not None:
+        hash_arquivo = _compute_file_hash(arquivo_path)
+    else:
+        hash_arquivo = None
+
+    aggregator = hashlib.sha256()
+    line_entries: list[tuple[str, str, str]] = []
+    for row in rows:
+        payload = _serialize_row(row, config.hash_fields)
+        payload['linha_num'] = getattr(row, 'linha_num', None)
+        payload['arquivo'] = getattr(row, 'arquivo', None)
+        item_key = _build_item_key(row, config.item_key_fields)
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=_json_default)
+        line_hash = hashlib.sha256(payload_json.encode('utf-8')).hexdigest()
+        aggregator.update(item_key.encode('utf-8'))
+        aggregator.update(line_hash.encode('utf-8'))
+        line_entries.append((item_key, line_hash, payload_json))
+
+    if hash_arquivo is None:
+        hash_arquivo = aggregator.hexdigest()
+
+    fornecedor_norm = _normalize_fornecedor(fornecedor)
+    lote = (
+        session.query(Lote)
+        .filter_by(
+            fornecedor=fornecedor_norm,
+            aliquota_bp=aliquota_bp_norm,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+        )
+        .one_or_none()
+    )
+    if lote is None:
+        lote = Lote(
+            fornecedor=fornecedor_norm,
+            aliquota_bp=aliquota_bp_norm,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+            arquivo_label=arquivo_label,
+            status=LoteStatus.PENDENTE,
+        )
+        session.add(lote)
+        session.flush()
+    else:
+        lote.arquivo_label = arquivo_label
+
+    lote.hash_arquivo = hash_arquivo
+    lote.total_itens = len(line_entries)
+    lote.status = LoteStatus.VALIDADO
+    lote.validado_em = datetime.utcnow()
+
+    _upsert_linha_hashes(lote, line_entries, session=session)
+
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+    app.logger.info(
+        'Lote %s/%s período %s sequência %s validado (%s itens)',
+        fornecedor_norm,
+        aliquota_bp_norm,
+        periodo_norm,
+        sequencia_norm,
+        len(line_entries),
+    )
+    return lote
+
+
+def _upsert_linha_hashes(lote: Lote, entries: Sequence[tuple[str, str, str]], *, session=None) -> None:
+    session = session or db.session
+    if lote.id is None:
+        session.flush()
+    existing = {
+        row.item_chave: row for row in session.query(LinhaHash).filter_by(lote_id=lote.id).all()
+    }
+    new_keys = set()
+    for item_key, line_hash, payload_json in entries:
+        new_keys.add(item_key)
+        row = existing.get(item_key)
+        if row:
+            if row.hash_linha != line_hash or row.payload_snapshot != payload_json:
+                row.hash_linha = line_hash
+                row.payload_snapshot = payload_json
+        else:
+            session.add(
+                LinhaHash(
+                    lote_id=lote.id,
+                    item_chave=item_key,
+                    hash_linha=line_hash,
+                    payload_snapshot=payload_json,
+                )
+            )
+    for key, row in existing.items():
+        if key not in new_keys:
+            session.delete(row)
+
+
+def publicar_lote(
+    fornecedor: str,
+    aliquota_bp: int | str | Decimal,
+    periodo: str,
+    sequencia: int | str,
+    *,
+    session=None,
+    commit: bool = True,
+) -> Publicacao:
+    session = session or db.session
+    fornecedor_norm = _normalize_fornecedor(fornecedor)
+    aliquota_bp_norm = _normalize_aliquota_bp(aliquota_bp)
+    periodo_norm = _normalize_periodo(periodo)
+    sequencia_norm = _normalize_sequencia(sequencia)
+
+    lote = (
+        session.query(Lote)
+        .filter_by(
+            fornecedor=fornecedor_norm,
+            aliquota_bp=aliquota_bp_norm,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+        )
+        .one_or_none()
+    )
+    if not lote:
+        raise AliquotaIngestionError('Lote não encontrado para publicação.')
+    if lote.status not in {LoteStatus.VALIDADO, LoteStatus.PUBLICADO}:
+        raise AliquotaIngestionError(f'Lote em status {lote.status.value} não pode ser publicado.')
+
+    if lote.status == LoteStatus.PUBLICADO:
+        existing = (
+            session.query(Publicacao)
+            .filter_by(
+                fornecedor=fornecedor_norm,
+                aliquota_bp=aliquota_bp_norm,
+                periodo=periodo_norm,
+                sequencia=sequencia_norm,
+            )
+            .order_by(Publicacao.publicado_em.desc())
+            .first()
+        )
+        if existing:
+            return existing
+
+    lote.status = LoteStatus.PUBLICADO
+    lote.publicado_em = datetime.utcnow()
+
+    etag = f"{fornecedor_norm}:{periodo_norm}:{sequencia_norm}"
+    publication = Publicacao(
+        fornecedor=fornecedor_norm,
+        aliquota_bp=aliquota_bp_norm,
+        periodo=periodo_norm,
+        sequencia=sequencia_norm,
+        lote_id=lote.id,
+        etag_versao=etag,
+    )
+    session.add(publication)
+
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+    _refresh_materialized_catalogs(fornecedor_norm)
+    return publication
+
+
+def _refresh_materialized_catalogs(fornecedor: str) -> None:
+    bind = db.session.get_bind()
+    dialect = getattr(bind, 'dialect', None) if bind is not None else None
+    dialect_name = getattr(dialect, 'name', '').lower() if dialect is not None else ''
+
+    view_map = {
+        'BRASINDICE': ['mv_catalogo_vigente_brasindice'],
+        'SIMPRO': ['mv_catalogo_vigente_simpro'],
+    }
+    targets = view_map.get(fornecedor, [])
+    if not targets:
+        return
+
+    if dialect_name != 'postgresql':
+        app.logger.debug(
+            'Ignorando refresh de materialized view para %s (dialeto=%s).',
+            fornecedor,
+            dialect_name or 'desconhecido',
+        )
+        return
+
+    for view_name in targets:
+        try:
+            db.session.execute(text(f'REFRESH MATERIALIZED VIEW IF EXISTS {view_name}'))
+            db.session.commit()
+            app.logger.info('Materialized view %s atualizada.', view_name)
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            app.logger.warning('Falha ao atualizar view %s (%s).', view_name, exc)
+
+
+def _normalize_periodo_from_label(label: str | None) -> str | None:
+    if not label:
+        return None
+    digits = ''.join(ch for ch in str(label) if ch.isdigit())
+    if len(digits) >= 6:
+        return digits[:6]
+    return None
+
+
+def _assign_uf_aliquota(ufs: Sequence[str], aliquota_bp: int) -> None:
+    if not ufs:
+        return
+    now_ts = datetime.utcnow()
+    today = date.today()
+    for uf in ufs:
+        record = (UfAliquota.query
+                  .filter_by(uf=uf)
+                  .order_by(UfAliquota.valid_from.desc())
+                  .first())
+        if record:
+            record.aliquota_bp = aliquota_bp
+            record.is_current = True
+            record.updated_at = now_ts
+        else:
+            db.session.add(UfAliquota(
+                uf=uf,
+                valid_from=today,
+                valid_to=None,
+                aliquota_bp=aliquota_bp,
+                is_current=True,
+                created_at=now_ts,
+                updated_at=now_ts,
+            ))
+    db.session.commit()
+
+
+def _post_catalog_ingest(*, origem: str, arquivo_label: str, versao: str, sequencia_input: str | None, aliquota_value: Decimal | None, uf_values: Sequence[str]) -> None:
+    if aliquota_value is None:
+        return
+    fornecedor = 'BRASINDICE' if origem == 'BRAS' else 'SIMPRO'
+    try:
+        aliquota_bp = _normalize_aliquota_bp(aliquota_value)
+    except AliquotaIngestionError as exc:
+        _safe_flash(f'Falha ao validar alíquota: {exc}', 'warning')
+        return
+
+    periodo_norm = _normalize_periodo_from_label(versao)
+    if not periodo_norm:
+        periodo_norm = datetime.utcnow().strftime('%Y%m')
+
+    try:
+        sequencia_norm = _normalize_sequencia(sequencia_input or 1)
+    except AliquotaIngestionError as exc:
+        _safe_flash(f'Sequência inválida: {exc}', 'warning')
+        sequencia_norm = 1
+
+    try:
+        lote = ingestir_arquivo(
+            fornecedor=fornecedor,
+            origem=origem,
+            aliquota_bp=aliquota_bp,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+            arquivo_label=arquivo_label,
+        )
+        publicar_lote(
+            fornecedor=fornecedor,
+            aliquota_bp=aliquota_bp,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+        )
+        if uf_values:
+            _assign_uf_aliquota(uf_values, aliquota_bp)
+        app.logger.info('Lote %s consolidado para %s/%s (seq %s)', lote.id, fornecedor, periodo_norm, sequencia_norm)
+    except AliquotaIngestionError as exc:
+        _safe_flash(f'Falha ao consolidar o catálogo por alíquota: {exc}', 'warning')
+    except Exception as exc:  # noqa: BLE001
+        app.logger.exception('Falha ao consolidar catálogo por alíquota', exc_info=exc)
+        _safe_flash('Falha ao consolidar catálogo por alíquota. Verifique os logs.', 'warning')
+
+
+def _catalogo_filter_bras(query, filters: dict):
+    if filters.get('uf_referencia'):
+        query = query.filter(CatalogoBrasindice.uf == filters['uf_referencia'])
+    if filters.get('tuss'):
+        query = query.filter(CatalogoBrasindice.produto_codigo == filters['tuss'])
+    if filters.get('tiss'):
+        query = query.filter(CatalogoBrasindice.apresentacao_codigo == filters['tiss'])
+    if filters.get('anvisa'):
+        query = query.filter(CatalogoBrasindice.registro_anvisa == filters['anvisa'])
+    if filters.get('fabricante'):
+        fabricante = filters['fabricante'].lower()
+        query = query.filter(func.lower(CatalogoBrasindice.laboratorio_nome).like(f"%{{fabricante}}%"))
+    if filters.get('versao_tabela'):
+        query = query.filter(CatalogoBrasindice.periodo == filters['versao_tabela'])
+    if filters.get('aliquota') is not None:
+        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        query = query.filter(CatalogoBrasindice.aliquota_bp == target_bp)
+    tokens = filters.get('tokens') or []
+    for token in tokens:
+        pattern = f"%{{token}}%"
+        query = query.filter(
+            or_(
+                func.lower(func.coalesce(CatalogoBrasindice.produto_nome, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoBrasindice.apresentacao_descricao, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoBrasindice.ean, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoBrasindice.registro_anvisa, '')).like(pattern),
+            )
+        )
+    return query
+
+
+def _catalogo_filter_simpro(query, filters: dict):
+    if filters.get('uf_referencia'):
+        query = query.filter(CatalogoSimpro.uf == filters['uf_referencia'])
+    if filters.get('tuss'):
+        query = query.filter(CatalogoSimpro.codigo == filters['tuss'])
+    if filters.get('tiss'):
+        query = query.filter(CatalogoSimpro.codigo_alt == filters['tiss'])
+    if filters.get('anvisa'):
+        query = query.filter(CatalogoSimpro.anvisa == filters['anvisa'])
+    if filters.get('fabricante'):
+        fabricante = filters['fabricante'].lower()
+        query = query.filter(func.lower(CatalogoSimpro.fabricante).like(f"%{{fabricante}}%"))
+    if filters.get('versao_tabela'):
+        query = query.filter(CatalogoSimpro.periodo == filters['versao_tabela'])
+    if filters.get('aliquota') is not None:
+        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        query = query.filter(CatalogoSimpro.aliquota_bp == target_bp)
+    tokens = filters.get('tokens') or []
+    for token in tokens:
+        pattern = f"%{{token}}%"
+        query = query.filter(
+            or_(
+                func.lower(func.coalesce(CatalogoSimpro.descricao, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoSimpro.codigo, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoSimpro.ean, '')).like(pattern),
+            )
+        )
+    return query
+
+
+def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
+    descricao = ' • '.join([part for part in [row.produto_nome, row.apresentacao_descricao] if part])
+    preco_pmc = row.preco_pmc_unit or row.preco_pmc_pacote
+    preco_pfb = row.preco_pfb_unit or row.preco_pfb_pacote
+    base_preco = preco_pmc or preco_pfb
+    aliquota_decimal = (Decimal(row.aliquota_bp) / Decimal('100')) if row.aliquota_bp is not None else None
+    return {
+        'origem': 'BRAS',
+        'item_id': row.item_id,
+        'tuss': row.produto_codigo,
+        'tiss': row.apresentacao_codigo,
+        'descricao': descricao or None,
+        'preco': _decimal_to_string(base_preco),
+        'preco_pmc': _decimal_to_string(preco_pmc),
+        'preco_pfb': _decimal_to_string(preco_pfb),
+        'aliquota': _decimal_to_string(aliquota_decimal),
+        'fabricante': row.laboratorio_nome,
+        'anvisa': row.registro_anvisa,
+        'versao_tabela': row.periodo or row.etag_versao,
+        'data_atualizacao': None,
+        'updated_at': row.imported_at.isoformat() if isinstance(row.imported_at, datetime) else None,
+        'uf_referencia': row.uf,
+    }
+
+
+def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
+    preco_fav = row.preco2 or row.preco1 or row.preco3 or row.preco4
+    aliquota_decimal = (Decimal(row.aliquota_bp) / Decimal('100')) if row.aliquota_bp is not None else None
+    return {
+        'origem': 'SIMPRO',
+        'item_id': row.item_id,
+        'tuss': row.codigo,
+        'tiss': row.codigo_alt,
+        'descricao': row.descricao,
+        'preco': _decimal_to_string(preco_fav),
+        'preco_pmc': None,
+        'preco_pfb': _decimal_to_string(preco_fav),
+        'aliquota': _decimal_to_string(aliquota_decimal),
+        'fabricante': row.fabricante,
+        'anvisa': row.anvisa,
+        'versao_tabela': row.periodo or row.etag_versao,
+        'data_atualizacao': row.data_ref.isoformat() if isinstance(row.data_ref, date) else None,
+        'updated_at': row.imported_at.isoformat() if isinstance(row.imported_at, datetime) else None,
+        'uf_referencia': row.uf,
+    }
+
+
+def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
+    include_bras = filters.get('origem') in (None, 'BRAS')
+    include_simpro = filters.get('origem') in (None, 'SIMPRO')
+
+    queries = []
+    totals: dict[str, int] = {}
+
+    if include_bras:
+        bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
+        bras_query = bras_query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
+        totals['BRAS'] = bras_query.count()
+        queries.append(('BRAS', bras_query))
+    else:
+        totals['BRAS'] = 0
+
+    if include_simpro:
+        simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
+        simpro_query = simpro_query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
+        totals['SIMPRO'] = simpro_query.count()
+        queries.append(('SIMPRO', simpro_query))
+    else:
+        totals['SIMPRO'] = 0
+
+    total = sum(totals.values())
+    start = max(page - 1, 0) * per_page
+    remaining = per_page
+    consumed = 0
+    serialized: list[dict] = []
+
+    for origin, query in queries:
+        origin_total = totals[origin]
+        if origin_total <= 0:
+            consumed += origin_total
+            continue
+        if start >= consumed + origin_total:
+            consumed += origin_total
+            continue
+        local_offset = max(0, start - consumed)
+        fetch_count = min(remaining, origin_total - local_offset)
+        if fetch_count > 0:
+            rows = query.offset(local_offset).limit(fetch_count).all()
+            if origin == 'BRAS':
+                serialized.extend(_serialize_catalogo_bras(row) for row in rows)
+            else:
+                serialized.extend(_serialize_catalogo_simpro(row) for row in rows)
+            remaining -= fetch_count
+        consumed += origin_total
+        if remaining <= 0:
+            break
+
+    payload = {
+        'items': serialized,
+        'pagination': {
+            'page': page,
+            'per_page': per_page,
+            'total': total,
+            'pages': math.ceil(total / per_page) if per_page else 0,
+        }
+    }
+    return payload
+
+
+def _catalogo_fetch_all(filters: dict, limit: int | None = None) -> list[dict]:
+    include_bras = filters.get('origem') in (None, 'BRAS')
+    include_simpro = filters.get('origem') in (None, 'SIMPRO')
+    items: list[dict] = []
+    remaining = limit
+
+    if include_bras and (remaining is None or remaining > 0):
+        query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
+        query = query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
+        if remaining is not None and remaining > 0:
+            query = query.limit(remaining)
+        bras_rows = query.all()
+        items.extend(_serialize_catalogo_bras(row) for row in bras_rows)
+        if remaining is not None:
+            remaining = max(remaining - len(bras_rows), 0)
+
+    if include_simpro and (remaining is None or remaining > 0):
+        query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
+        query = query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
+        if remaining is not None and remaining > 0:
+            query = query.limit(remaining)
+        simpro_rows = query.all()
+        items.extend(_serialize_catalogo_simpro(row) for row in simpro_rows)
+        if remaining is not None:
+            remaining = max(remaining - len(simpro_rows), 0)
+
+    return items[:limit] if limit is not None else items
+
+
 
 def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = None, preco_pfb: Decimal | None = None) -> dict:
     return {
@@ -1619,11 +2477,49 @@ def _serialize_insumo_detail(
     origem: str,
     item: BrasItemNormalized | SimproItemNormalized | SimproItem,
     index_entry: InsumoIndex | None = None,
+    *,
+    catalog_entry: CatalogoBrasindice | CatalogoSimpro | None = None,
 ) -> dict:
     index_aliquota = _decimal_to_string(index_entry.aliquota) if index_entry else None
     index_uf = index_entry.uf_referencia if index_entry else None
     index_data = index_entry.data_atualizacao.isoformat() if isinstance(getattr(index_entry, 'data_atualizacao', None), date) else None
     index_created = index_entry.updated_at.isoformat() if isinstance(getattr(index_entry, 'updated_at', None), datetime) else None
+
+    catalog_aliquota: str | None = None
+    catalog_uf: str | None = None
+    catalog_periodo: str | None = None
+    catalog_data_ref: str | None = None
+    catalog_updated: str | None = None
+    catalog_preco_pmc: Decimal | None = None
+    catalog_preco_pfb: Decimal | None = None
+
+    if catalog_entry is not None:
+        aliquota_bp = getattr(catalog_entry, 'aliquota_bp', None)
+        if aliquota_bp is not None:
+            catalog_aliquota = _decimal_to_string(Decimal(aliquota_bp) / Decimal('100'))
+        catalog_uf = getattr(catalog_entry, 'uf', None)
+        catalog_periodo = getattr(catalog_entry, 'periodo', None) or getattr(catalog_entry, 'etag_versao', None)
+        imported_at = getattr(catalog_entry, 'imported_at', None)
+        if isinstance(imported_at, datetime):
+            catalog_updated = imported_at.isoformat()
+        data_ref = getattr(catalog_entry, 'data_ref', None)
+        if isinstance(data_ref, date):
+            catalog_data_ref = data_ref.isoformat()
+
+        if isinstance(catalog_entry, CatalogoBrasindice):
+            catalog_preco_pmc = catalog_entry.preco_pmc_unit or catalog_entry.preco_pmc_pacote
+            catalog_preco_pfb = catalog_entry.preco_pfb_unit or catalog_entry.preco_pfb_pacote
+        elif isinstance(catalog_entry, CatalogoSimpro):
+            catalog_preco_pfb = (
+                catalog_entry.preco2
+                or catalog_entry.preco1
+                or catalog_entry.preco3
+                or catalog_entry.preco4
+            )
+
+    def _first_defined(*values):
+        return next((value for value in values if value not in (None, '')), None)
+
     if isinstance(item, BrasItemNormalized):
         descricao = item.produto_nome or ''
         if item.apresentacao_descricao:
@@ -1635,16 +2531,16 @@ def _serialize_insumo_detail(
             'tiss': item.apresentacao_codigo,
             'anvisa': item.registro_anvisa,
             'descricao': descricao,
-            'preco': _decimal_to_string(item.preco_pmc_unit) or _decimal_to_string(item.preco_pmc_pacote),
-            'preco_pmc': _decimal_to_string(item.preco_pmc_unit) or _decimal_to_string(item.preco_pmc_pacote),
-            'preco_pfb': _decimal_to_string(item.preco_pfb_unit) or _decimal_to_string(item.preco_pfb_pacote),
-            'aliquota': _decimal_to_string(item.aliquota_ou_ipi) or index_aliquota,
+            'preco': _decimal_to_string(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pmc': _decimal_to_string(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pfb': _decimal_to_string(_first_defined(catalog_preco_pfb, item.preco_pfb_unit, item.preco_pfb_pacote)),
+            'aliquota': _first_defined(catalog_aliquota, _decimal_to_string(item.aliquota_ou_ipi), index_aliquota),
             'fabricante': item.laboratorio_nome,
-            'versao_tabela': item.edicao or item.arquivo,
-            'data_atualizacao': index_data,
-            'updated_at': (item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else index_created),
+            'versao_tabela': _first_defined(catalog_periodo, item.edicao, item.arquivo),
+            'data_atualizacao': _first_defined(catalog_data_ref, index_data),
+            'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
             'created_at': None,
-            'uf_referencia': index_uf,
+            'uf_referencia': _first_defined(catalog_uf, index_uf),
             'arquivo': item.arquivo,
             'linha_num': item.linha_num,
             'preco_pmc_pacote': _decimal_to_string(item.preco_pmc_pacote),
@@ -1663,16 +2559,16 @@ def _serialize_insumo_detail(
             'tiss': item.codigo_alt,
             'anvisa': item.anvisa,
             'descricao': item.descricao,
-            'preco': _decimal_to_string(preco_effective),
+            'preco': _decimal_to_string(_first_defined(catalog_preco_pfb, preco_effective)),
             'preco_pmc': None,
-            'preco_pfb': _decimal_to_string(preco_effective),
-            'aliquota': index_aliquota,
+            'preco_pfb': _decimal_to_string(_first_defined(catalog_preco_pfb, preco_effective)),
+            'aliquota': _first_defined(catalog_aliquota, index_aliquota),
             'fabricante': item.fabricante,
-            'versao_tabela': item.versao or item.arquivo,
-            'data_atualizacao': item.data_ref.isoformat() if isinstance(item.data_ref, date) else index_data,
-            'updated_at': item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else index_created,
+            'versao_tabela': _first_defined(catalog_periodo, item.versao, item.arquivo),
+            'data_atualizacao': _first_defined(catalog_data_ref, item.data_ref.isoformat() if isinstance(item.data_ref, date) else None, index_data),
+            'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
             'created_at': None,
-            'uf_referencia': item.uf_referencia or index_uf,
+            'uf_referencia': _first_defined(catalog_uf, item.uf_referencia, index_uf),
             'situacao': item.situacao,
             'validade_anvisa': item.validade_anvisa.isoformat() if isinstance(item.validade_anvisa, date) else None,
             'ean': item.ean,
@@ -1725,7 +2621,7 @@ def _extract_insumo_filters(args) -> dict:
     aliquota_filter = _coerce_decimal(aliquota_raw) if aliquota_raw else None
     aliquota_value = Decimal(aliquota_filter) if aliquota_filter is not None else None
     filters = {
-        'origem': origem if origem in {'BRAS', 'SIMPRO'} else None,
+        'origem': origem or None,
         'tuss': (args.get('tuss') or '').strip() or None,
         'tiss': (args.get('tiss') or '').strip() or None,
         'anvisa': (args.get('anvisa') or '').strip() or None,
@@ -2290,6 +3186,56 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
         f"Importação SIMPRO concluída: arquivo={result['arquivo']} linhas_raw={result['linhas_raw']} "
         f"materializadas={result['linhas_materializadas']}"
     )
+
+
+@app.cli.command('aliquota:ingest')
+@click.option('--fornecedor', required=True)
+@click.option('--origem', type=click.Choice(['BRAS', 'SIMPRO']), required=True)
+@click.option('--aliquota', 'aliquota_bp', required=True, help='Alíquota em basis points ou percentual (ex.: 1700 ou 17.0).')
+@click.option('--periodo', required=True, help='Formato YYYYMM')
+@click.option('--sequencia', required=True, type=int)
+@click.option('--arquivo-label', required=True, help='Rótulo utilizado nas tabelas normalizadas (campo arquivo).')
+@click.option('--arquivo', 'arquivo_path', type=click.Path(exists=True), default=None, help='Arquivo bruto para cálculo de hash (opcional).')
+def cli_aliquota_ingest(fornecedor, origem, aliquota_bp, periodo, sequencia, arquivo_label, arquivo_path):
+    lote = ingestir_arquivo(
+        fornecedor=fornecedor,
+        origem=origem,
+        aliquota_bp=aliquota_bp,
+        periodo=periodo,
+        sequencia=sequencia,
+        arquivo_label=arquivo_label,
+        arquivo_path=Path(arquivo_path) if arquivo_path else None,
+    )
+    click.echo(
+        f"Lote {lote.id} validado: fornecedor={lote.fornecedor}, período={lote.periodo}, sequência={lote.sequencia}, itens={lote.total_itens}"
+    )
+
+
+@app.cli.command('aliquota:publicar')
+@click.option('--fornecedor', required=True)
+@click.option('--aliquota', 'aliquota_bp', required=True)
+@click.option('--periodo', required=True)
+@click.option('--sequencia', required=True, type=int)
+def cli_aliquota_publicar(fornecedor, aliquota_bp, periodo, sequencia):
+    publicacao = publicar_lote(
+        fornecedor=fornecedor,
+        aliquota_bp=aliquota_bp,
+        periodo=periodo,
+        sequencia=sequencia,
+    )
+    click.echo(
+        f"Lote {publicacao.lote_id} publicado em {publicacao.publicado_em:%Y-%m-%d %H:%M:%S} (etag={publicacao.etag_versao})."
+    )
+
+
+@app.cli.command('insumos-import-worker')
+@click.option('--poll-interval', default=5, type=int, show_default=True, help='Tempo em segundos entre cada verificação de jobs pendentes.')
+@click.option('--run-once', is_flag=True, help='Processa apenas um job e encerra.')
+def cli_insumos_import_worker(poll_interval: int, run_once: bool) -> None:
+    """Worker simples para processar importações de insumos."""
+
+    poll_interval = max(1, poll_interval)
+    _run_import_worker_loop(poll_interval=poll_interval, run_once=run_once)
 
 
 class CBHPMRuleSet(db.Model):
@@ -5214,60 +6160,7 @@ def insumos_search():
     per_page = _parse_positive_int(request.args.get('per_page'), 50, maximum=500)
 
     filters = _extract_insumo_filters(request.args)
-    query = _apply_insumo_filters(InsumoIndex.query, filters)
-    query = query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
-
-    total = query.count()
-    items = (
-        query
-        .offset((page - 1) * per_page)
-        .limit(per_page)
-        .all()
-    )
-
-    bras_map: dict[int, BrasItemNormalized] = {}
-    bras_ids = [item.item_id for item in items if item.origem == 'BRAS']
-    if bras_ids:
-        bras_rows = BrasItemNormalized.query.filter(BrasItemNormalized.id.in_(bras_ids)).all()
-        bras_map = {row.id: row for row in bras_rows}
-
-    simpro_map: dict[int, SimproItemNormalized] = {}
-    simpro_ids = [item.item_id for item in items if item.origem == 'SIMPRO']
-    if simpro_ids:
-        simpro_rows = SimproItemNormalized.query.filter(SimproItemNormalized.id.in_(simpro_ids)).all()
-        simpro_map = {row.id: row for row in simpro_rows}
-
-    serialized: list[dict] = []
-    for item in items:
-        if item.origem == 'BRAS':
-            bras = bras_map.get(item.item_id)
-            if bras:
-                preco_pmc = bras.preco_pmc_unit or bras.preco_pmc_pacote
-                preco_pfb = bras.preco_pfb_unit or bras.preco_pfb_pacote
-            else:
-                preco_pmc = preco_pfb = None
-            serialized.append(_serialize_insumo_index(item, preco_pmc=preco_pmc, preco_pfb=preco_pfb))
-        elif item.origem == 'SIMPRO':
-            simpro = simpro_map.get(item.item_id)
-            if simpro:
-                preco_pmc = None
-                preco_pfb = simpro.preco2 or simpro.preco1 or simpro.preco3 or simpro.preco4
-            else:
-                preco_pmc = None
-                preco_pfb = None
-            serialized.append(_serialize_insumo_index(item, preco_pmc=preco_pmc, preco_pfb=preco_pfb))
-        else:
-            serialized.append(_serialize_insumo_index(item))
-
-    payload = {
-        'items': serialized,
-        'pagination': {
-            'page': page,
-            'per_page': per_page,
-            'total': total,
-            'pages': math.ceil(total / per_page) if total else 0,
-        }
-    }
+    payload = _catalogo_search(filters, page, per_page)
     return jsonify(payload)
 
 
@@ -5283,8 +6176,25 @@ def insumo_detail(origem: str, item_id: int):
     if not item:
         abort(404)
 
-    index_entry = InsumoIndex.query.filter_by(origem=origem, item_id=item_id).first()
-    return jsonify(_serialize_insumo_detail(origem, item, index_entry=index_entry))
+    uf_param = (request.args.get('uf') or request.args.get('uf_referencia') or '').strip().upper()
+
+    if origem == 'BRAS':
+        base_query = CatalogoBrasindice.query.filter(CatalogoBrasindice.item_id == item_id)
+        catalog_entry = base_query.filter(CatalogoBrasindice.uf == uf_param).first() if uf_param else None
+        if catalog_entry is None:
+            catalog_entry = base_query.order_by(CatalogoBrasindice.uf.asc()).first()
+    else:
+        base_query = CatalogoSimpro.query.filter(CatalogoSimpro.item_id == item_id)
+        catalog_entry = base_query.filter(CatalogoSimpro.uf == uf_param).first() if uf_param else None
+        if catalog_entry is None:
+            catalog_entry = base_query.order_by(CatalogoSimpro.uf.asc()).first()
+
+    index_query = InsumoIndex.query.filter_by(origem=origem, item_id=item_id)
+    index_entry = index_query.filter(InsumoIndex.uf_referencia == uf_param).first() if uf_param else None
+    if index_entry is None:
+        index_entry = index_query.first()
+
+    return jsonify(_serialize_insumo_detail(origem, item, index_entry=index_entry, catalog_entry=catalog_entry))
 
 
 @app.route('/insumos')
@@ -5308,15 +6218,417 @@ def insumos_dashboard():
     )
 
 
+def _set_job_metrics(job: ImportJob, metrics: dict | None) -> None:
+    params = dict(job.params or {})
+    if metrics:
+        params['_metrics'] = metrics
+    else:
+        params.pop('_metrics', None)
+    job.params = params
+
+
+def _serialize_import_job(job: ImportJob) -> dict:
+    def _fmt_dt(value):
+        return value.isoformat(sep=' ') if isinstance(value, datetime) else None
+
+    uf_values = [uf.strip() for uf in (job.uf_list or '').split(',') if uf and uf.strip()]
+    raw_metrics = {}
+    if isinstance(job.params, dict):
+        raw_metrics = job.params.get('_metrics') or {}
+    return {
+        'id': job.id,
+        'origem': job.origem,
+        'arquivo': job.original_filename,
+        'status': job.status,
+        'message': job.message,
+        'versao': job.versao,
+        'aliquota': _decimal_to_string(job.aliquota) if job.aliquota is not None else None,
+        'uf_list': uf_values,
+        'total_linhas': job.total_linhas,
+        'linhas_materializadas': job.linhas_materializadas,
+        'created_at': _fmt_dt(job.created_at),
+        'started_at': _fmt_dt(job.started_at),
+        'finished_at': _fmt_dt(job.finished_at),
+        'metrics': raw_metrics,
+    }
+
+
+def _run_import_job(job_id: str) -> None:
+    with app.app_context():
+        job: ImportJob | None = ImportJob.query.get(job_id)
+        if job is None:
+            app.logger.warning('Import job %s não encontrado.', job_id)
+            return
+
+        job.status = ImportJobStatus.RUNNING.value
+        job.started_at = datetime.utcnow()
+        job.message = 'Processando arquivo de importação...'
+        db.session.commit()
+
+        params = job.params or {}
+        file_path = Path(job.data_path)
+        if not file_path.exists():
+            job.status = ImportJobStatus.FAILED.value
+            job.message = 'Arquivo da importação não encontrado no servidor.'
+            job.finished_at = datetime.utcnow()
+            db.session.commit()
+            return
+
+        origem = job.origem
+        uf_values = params.get('uf_values') or []
+        uf_default = params.get('uf_default')
+        versao = params.get('versao') or ''
+        data_ref = params.get('data_ref') or None
+        fmt = params.get('fmt') or 'delimited'
+        delimiter = params.get('delimiter')
+        quotechar = params.get('quotechar')
+        lines_terminated = params.get('lines_terminated') or '\n'
+        skip_header = bool(params.get('skip_header'))
+        encoding = params.get('encoding') or None
+        truncate = bool(params.get('truncate'))
+        map_config = params.get('map_config') or {}
+        sequencia_input = params.get('sequencia_input')
+        aliquota_raw = params.get('aliquota')
+        arquivo_label_override = params.get('arquivo_label')
+        aliquota_decimal: Decimal | None = None
+        if aliquota_raw not in (None, ''):
+            try:
+                aliquota_decimal = Decimal(str(aliquota_raw))
+            except (InvalidOperation, ValueError) as exc:
+                app.logger.warning('Alíquota inválida para job %s (%s).', job_id, exc)
+
+        metrics: dict[str, object] = {
+            'timings': {},
+            'context': {
+                'origem': origem,
+                'versao': versao,
+                'uf_values': uf_values,
+            },
+        }
+        if arquivo_label_override:
+            metrics['context']['arquivo_label'] = arquivo_label_override
+        overall_start = time.perf_counter()
+
+        try:
+            if origem == 'BRAS':
+                stage_start = time.perf_counter()
+                result = _import_bras(
+                    file_path=file_path,
+                    versao=versao,
+                    data_ref=data_ref,
+                    fmt=fmt,
+                    delimiter=delimiter,
+                    quotechar=quotechar,
+                    line_terminator=lines_terminated,
+                    skip_header=skip_header,
+                    encoding=encoding,
+                    map_config=map_config,
+                    truncate=truncate,
+                    uf_default=uf_default,
+                    aliquota_default=aliquota_decimal,
+                    arquivo_label_override=arquivo_label_override,
+                )
+                metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
+            else:
+                stage_start = time.perf_counter()
+                result = _import_simpro(
+                    file_path=file_path,
+                    versao=versao,
+                    fmt=fmt,
+                    map_config=map_config,
+                    encoding=encoding,
+                    truncate=truncate,
+                    uf_default=uf_default,
+                    aliquota_default=aliquota_decimal,
+                    arquivo_label_override=arquivo_label_override,
+                )
+                metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
+
+            job.status = ImportJobStatus.SUCCESS.value
+            job.message = (
+                f"Importação concluída (arquivo {result['arquivo']} | {result['linhas_raw']} linhas brutas, "
+                f"{result['linhas_materializadas']} materializadas)."
+            )
+            job.total_linhas = result.get('linhas_raw')
+            job.linhas_materializadas = result.get('linhas_materializadas')
+            job.finished_at = datetime.utcnow()
+            job.versao = versao
+            job.uf_list = ', '.join(uf_values)
+            if aliquota_decimal is not None:
+                job.aliquota = aliquota_decimal
+            metrics['rows'] = {
+                'linhas_raw': result.get('linhas_raw'),
+                'linhas_materializadas': result.get('linhas_materializadas'),
+            }
+            if result.get('load_strategy'):
+                metrics['load_strategy'] = result.get('load_strategy')
+            _set_job_metrics(job, metrics)
+            db.session.commit()
+
+            try:
+                post_start = time.perf_counter()
+                _post_catalog_ingest(
+                    origem=origem,
+                    arquivo_label=result['arquivo'],
+                    versao=versao,
+                    sequencia_input=sequencia_input,
+                    aliquota_value=aliquota_decimal,
+                    uf_values=uf_values,
+                )
+                metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
+                job = ImportJob.query.get(job_id)
+                if job:
+                    job.message = (job.message or '') + ' Consolidação posterior falhou.'
+                    _set_job_metrics(job, metrics)
+                    db.session.commit()
+        except Exception as exc:  # noqa: BLE001
+            metrics['timings']['total'] = round(time.perf_counter() - overall_start, 4)
+            metrics['error'] = str(exc)
+            db.session.rollback()
+            job = ImportJob.query.get(job_id)
+            if job:
+                job.status = ImportJobStatus.FAILED.value
+                job.message = str(exc)
+                job.finished_at = datetime.utcnow()
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+            app.logger.exception('Falha ao executar job de importação %s', job_id, exc_info=exc)
+        else:
+            metrics['timings']['total'] = round(time.perf_counter() - overall_start, 4)
+            job = ImportJob.query.get(job_id)
+            if job:
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+            app.logger.info(
+                'Import job %s concluído em %.2fs (linhas=%s, estratégia=%s).',
+                job_id,
+                metrics['timings'].get('total', 0.0),
+                metrics.get('rows'),
+                metrics.get('load_strategy'),
+            )
+        finally:
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning('Não foi possível remover arquivo temporário %s (%s)', file_path, exc)
+            try:
+                shutil.rmtree(file_path.parent, ignore_errors=True)
+            except Exception as exc:  # noqa: BLE001
+                app.logger.debug('Falha ao limpar diretório temporário %s (%s)', file_path.parent, exc)
+            db.session.remove()
+
+
+def _run_import_worker_loop(*, poll_interval: int, run_once: bool = False) -> None:
+    poll_interval = max(1, poll_interval)
+    while True:
+        try:
+            job = (
+                db.session.query(ImportJob)
+                .filter(ImportJob.status == ImportJobStatus.PENDING.value)
+                .order_by(ImportJob.created_at.asc())
+                .with_for_update(skip_locked=True)
+                .first()
+            )
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            app.logger.exception('Falha ao consultar jobs pendentes', exc_info=exc)
+            if run_once:
+                db.session.remove()
+                break
+            db.session.remove()
+            time.sleep(poll_interval)
+            continue
+
+        if not job:
+            db.session.commit()
+            if run_once:
+                db.session.remove()
+                break
+            db.session.remove()
+            time.sleep(poll_interval)
+            continue
+
+        job_id = job.id
+        db.session.commit()
+        _run_import_job(job_id)
+        db.session.remove()
+
+        if run_once:
+            break
+
+    db.session.remove()
+
+
+def _spawn_async_import(job_id: str) -> None:
+    disable_env = (os.getenv('INSUMO_IMPORT_BACKGROUND_DISABLE') or '').strip().lower()
+    if disable_env in {'1', 'true', 'yes', 'on'}:
+        return
+
+    def _runner():
+        try:
+            _run_import_job(job_id)
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception('Falha no processamento assíncrono do job %s', job_id, exc_info=exc)
+
+    thread = threading.Thread(target=_runner, name=f'ImportJob-{job_id[:8]}', daemon=True)
+    thread.start()
+
+
+
+@app.route('/insumos/aliquotas', methods=['GET', 'POST'])
+@admin_required
+def insumos_aliquotas():
+    highlight_uf = (request.args.get('highlight') or '').strip().upper()
+    today = date.today()
+
+    if request.method == 'POST':
+        target_uf = (request.form.get('target_uf') or '').strip().upper()
+        if target_uf not in BR_UFS:
+            flash('Selecione uma UF válida para atualizar.', 'danger')
+            return redirect(url_for('insumos_aliquotas'))
+
+        aliquota_raw = (request.form.get(f'aliquota_{target_uf}') or '').strip()
+        aliquota_str = _coerce_decimal(aliquota_raw) if aliquota_raw else None
+        if aliquota_str is None:
+            flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
+            return redirect(url_for('insumos_aliquotas', highlight=target_uf))
+
+        aliquota_decimal = Decimal(aliquota_str)
+        if aliquota_decimal < 0:
+            flash('Alíquota não pode ser negativa.', 'danger')
+            return redirect(url_for('insumos_aliquotas', highlight=target_uf))
+
+        valid_from_raw = (request.form.get(f'valid_from_{target_uf}') or '').strip()
+        valid_from_value = _coerce_date(valid_from_raw)
+        if valid_from_value is None:
+            valid_from_value = today
+
+        basis_points = int((aliquota_decimal * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        now_ts = datetime.utcnow()
+
+        try:
+            current_record = (
+                UfAliquota.query
+                .filter_by(uf=target_uf)
+                .order_by(UfAliquota.valid_from.desc())
+                .first()
+            )
+
+            if current_record and current_record.is_current and valid_from_value <= current_record.valid_from:
+                current_record.aliquota_bp = basis_points
+                current_record.valid_from = valid_from_value
+                current_record.valid_to = None
+                current_record.is_current = True
+                current_record.updated_at = now_ts
+            else:
+                if current_record and current_record.is_current:
+                    current_record.is_current = False
+                    current_record.valid_to = valid_from_value - timedelta(days=1)
+                    current_record.updated_at = now_ts
+
+                new_record = UfAliquota(
+                    uf=target_uf,
+                    valid_from=valid_from_value,
+                    valid_to=None,
+                    aliquota_bp=basis_points,
+                    is_current=True,
+                    created_at=now_ts,
+                    updated_at=now_ts,
+                )
+                db.session.add(new_record)
+
+            db.session.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            app.logger.exception('Falha ao ajustar alíquota para %s', target_uf, exc_info=exc)
+            flash('Falha ao ajustar a alíquota. Verifique os logs.', 'danger')
+            return redirect(url_for('insumos_aliquotas', highlight=target_uf))
+
+        refresh_failures: list[str] = []
+        for fornecedor in ('BRASINDICE', 'SIMPRO'):
+            try:
+                _refresh_materialized_catalogs(fornecedor)
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning('Falha ao atualizar view %s após ajuste %s (%s)', fornecedor, target_uf, exc)
+                refresh_failures.append(fornecedor)
+
+        if refresh_failures:
+            flash(
+                'Alíquota atualizada, mas não foi possível atualizar as views: '
+                + ', '.join(sorted(refresh_failures)),
+                'warning'
+            )
+        else:
+            flash(
+                f'Alíquota de {target_uf} atualizada para {aliquota_decimal}% '
+                f'a partir de {valid_from_value.strftime("%d/%m/%Y")}.',
+                'success'
+            )
+
+        return redirect(url_for('insumos_aliquotas', highlight=target_uf))
+
+    entries: list[dict[str, object]] = []
+    today_iso = today.isoformat()
+    for uf in BR_UFS:
+        record = (
+            UfAliquota.query
+            .filter_by(uf=uf)
+            .order_by(UfAliquota.valid_from.desc())
+            .first()
+        )
+        percent_display = None
+        if record and record.aliquota_bp is not None:
+            percent_display = _decimal_to_string(Decimal(record.aliquota_bp) / Decimal('100'))
+        entries.append({
+            'uf': uf,
+            'record': record,
+            'percent_display': percent_display,
+            'form_value': percent_display or '',
+            'default_valid_from': today_iso,
+        })
+
+    history = (
+        UfAliquota.query
+        .order_by(UfAliquota.updated_at.desc())
+        .limit(25)
+        .all()
+    )
+
+    history_rows: list[dict[str, object]] = []
+    for row in history:
+        percent_display = None
+        if row.aliquota_bp is not None:
+            percent_display = _decimal_to_string(Decimal(row.aliquota_bp) / Decimal('100'))
+        history_rows.append({
+            'uf': row.uf,
+            'percent_display': percent_display,
+            'valid_from': row.valid_from,
+            'valid_to': row.valid_to,
+            'is_current': row.is_current,
+            'updated_at': row.updated_at,
+        })
+
+    return render_template(
+        'insumos_aliquotas.html',
+        entries=entries,
+        history_rows=history_rows,
+        highlight_uf=highlight_uf,
+    )
+
+
 @app.route('/insumos/export/xlsx')
 @login_required
 def insumos_export_xlsx():
     filters = _extract_insumo_filters(request.args)
-    query = _apply_insumo_filters(InsumoIndex.query, filters)
-    query = query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
-
     limit = _parse_positive_int(request.args.get('limit'), 5000, maximum=20000)
-    rows = query.limit(limit).all()
+    items = _catalogo_fetch_all(filters, limit)
+    items.sort(key=lambda entry: (
+        (entry.get('descricao') or '').lower(),
+        entry.get('origem') or '',
+        entry.get('item_id') or 0,
+    ))
 
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
@@ -5329,58 +6641,47 @@ def insumos_export_xlsx():
     for col, title in enumerate(headers):
         worksheet.write(0, col, title, header_fmt)
 
-    bras_map: dict[int, BrasItemNormalized] = {}
-    bras_ids = [item.item_id for item in rows if item.origem == 'BRAS']
-    if bras_ids:
-        bras_rows = BrasItemNormalized.query.filter(BrasItemNormalized.id.in_(bras_ids)).all()
-        bras_map = {row.id: row for row in bras_rows}
+    def _to_float(value):
+        if value in (None, ''):
+            return None
+        try:
+            return float(Decimal(str(value)))
+        except (InvalidOperation, ValueError):
+            return None
 
-    simpro_map: dict[int, SimproItemNormalized] = {}
-    simpro_ids = [item.item_id for item in rows if item.origem == 'SIMPRO']
-    if simpro_ids:
-        simpro_rows = SimproItemNormalized.query.filter(SimproItemNormalized.id.in_(simpro_ids)).all()
-        simpro_map = {row.id: row for row in simpro_rows}
+    for row_idx, item in enumerate(items, start=1):
+        worksheet.write(row_idx, 0, item.get('origem') or '')
+        worksheet.write(row_idx, 1, item.get('tuss') or '')
+        worksheet.write(row_idx, 2, item.get('tiss') or '')
+        worksheet.write(row_idx, 3, item.get('anvisa') or '')
+        worksheet.write(row_idx, 4, item.get('descricao') or '')
 
-    for row_idx, item in enumerate(rows, start=1):
-        worksheet.write(row_idx, 0, item.origem)
-        worksheet.write(row_idx, 1, item.tuss or '')
-        worksheet.write(row_idx, 2, item.tiss or '')
-        worksheet.write(row_idx, 3, item.anvisa or '')
-        worksheet.write(row_idx, 4, item.descricao or '')
-        preco_pmc = item.preco
-        preco_pfb = item.preco
-        if item.origem == 'BRAS':
-            bras = bras_map.get(item.item_id)
-            if bras:
-                preco_pmc = bras.preco_pmc_unit or bras.preco_pmc_pacote
-                preco_pfb = bras.preco_pfb_unit or bras.preco_pfb_pacote
-        elif item.origem == 'SIMPRO':
-            simpro = simpro_map.get(item.item_id)
-            if simpro:
-                preco_pmc = None
-                preco_pfb = simpro.preco2 or simpro.preco1 or simpro.preco3 or simpro.preco4
-            else:
-                preco_pmc = None
-                preco_pfb = None
+        preco_pmc = _to_float(item.get('preco_pmc'))
+        preco_pfb = _to_float(item.get('preco_pfb'))
+        aliquota = _to_float(item.get('aliquota'))
+
         if preco_pmc is not None:
-            worksheet.write_number(row_idx, 5, float(preco_pmc), money_fmt)
+            worksheet.write_number(row_idx, 5, preco_pmc, money_fmt)
         else:
             worksheet.write_blank(row_idx, 5, None)
+
         if preco_pfb is not None:
-            worksheet.write_number(row_idx, 6, float(preco_pfb), money_fmt)
+            worksheet.write_number(row_idx, 6, preco_pfb, money_fmt)
         else:
             worksheet.write_blank(row_idx, 6, None)
-        if item.aliquota is not None:
-            worksheet.write_number(row_idx, 7, float(item.aliquota), money_fmt)
+
+        if aliquota is not None:
+            worksheet.write_number(row_idx, 7, aliquota, money_fmt)
         else:
             worksheet.write_blank(row_idx, 7, None)
-        worksheet.write(row_idx, 8, item.fabricante or '')
-        worksheet.write(row_idx, 9, item.uf_referencia or '')
-        worksheet.write(row_idx, 10, item.versao_tabela or '')
-        worksheet.write(row_idx, 11, item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else '')
-        worksheet.write(row_idx, 12, item.updated_at.isoformat(sep=' ') if isinstance(item.updated_at, datetime) else '')
 
-    worksheet.autofilter(0, 0, max(len(rows), 1), len(headers) - 1)
+        worksheet.write(row_idx, 8, item.get('fabricante') or '')
+        worksheet.write(row_idx, 9, item.get('uf_referencia') or '')
+        worksheet.write(row_idx, 10, item.get('versao_tabela') or '')
+        worksheet.write(row_idx, 11, item.get('data_atualizacao') or '')
+        worksheet.write(row_idx, 12, item.get('updated_at') or '')
+
+    worksheet.autofilter(0, 0, max(len(items), 1), len(headers) - 1)
     worksheet.freeze_panes(1, 0)
 
     workbook.close()
@@ -5394,7 +6695,6 @@ def insumos_export_xlsx():
         download_name=filename,
     )
 
-
 @app.route('/insumos/import', methods=['POST'])
 @admin_required
 def insumos_import():
@@ -5405,12 +6705,12 @@ def insumos_import():
 
     origem = (request.form.get('origem') or '').upper()
     if origem not in {'BRAS', 'SIMPRO'}:
-        flash('Origem inválida para importação.', 'danger')
+        _safe_flash('Origem inválida para importação.', 'danger')
         return _go_back()
 
     upload = request.files.get('arquivo')
     if not upload or not upload.filename:
-        flash('Selecione um arquivo TXT/CSV para importar.', 'danger')
+        _safe_flash('Selecione um arquivo TXT/CSV para importar.', 'danger')
         return _go_back()
 
     fmt = (request.form.get('format') or 'delimited').lower()
@@ -5421,165 +6721,180 @@ def insumos_import():
     no_header = request.form.get('no_header') == 'on'
     truncate = request.form.get('truncate') == 'on'
     encoding = (request.form.get('encoding') or '').strip() or None
-    uf_values = [uf.strip().upper() for uf in request.form.getlist('uf') if uf and uf.strip()]
-    if not uf_values:
-        fallback_uf = (request.form.get('uf') or request.form.get('uf_referencia') or '').strip().upper()
-        if fallback_uf:
-            uf_values = [fallback_uf]
+    arquivo_label_override_raw = (request.form.get('arquivo_label') or '').strip()
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values: list[str] = []
     seen_ufs: set[str] = set()
-    uf_values = [uf for uf in uf_values if not (uf in seen_ufs or seen_ufs.add(uf))]
-    if not uf_values:
-        flash('Selecione pelo menos uma UF para importar.', 'danger')
-        return _go_back()
-    invalid_ufs = [uf for uf in uf_values if uf not in BR_UFS]
-    if invalid_ufs:
-        flash(f"UF inválida informada: {', '.join(invalid_ufs)}", 'danger')
-        return _go_back()
+    for raw in raw_ufs:
+        candidate = (raw or '').strip().upper()
+        if not candidate:
+            continue
+        if candidate not in BR_UFS:
+            _safe_flash(f'UF inválida informada: {candidate}', 'danger')
+            return _go_back()
+        if candidate not in seen_ufs:
+            uf_values.append(candidate)
+            seen_ufs.add(candidate)
+    uf_value = uf_values[0] if uf_values else None
     aliquota_input = (request.form.get('aliquota') or '').strip() or None
+    sequencia_input = (request.form.get('sequencia') or '').strip() or None
     aliquota_value: Decimal | None = None
     if aliquota_input:
         aliquota_str = _coerce_decimal(aliquota_input)
         if aliquota_str is None:
-            flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
+            _safe_flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
             return _go_back()
         aliquota_value = Decimal(aliquota_str)
 
     if not versao:
-        flash('Informe a versão de referência da tabela.', 'danger')
+        _safe_flash('Informe a versão de referência da tabela.', 'danger')
         return _go_back()
 
     map_upload = request.files.get('map_config')
-    map_temp_path: Path | None = None
-    file_temp_path: Path | None = None
+    map_config: dict = {}
+    if map_upload and map_upload.filename:
+        try:
+            payload = map_upload.read().decode('utf-8')
+            map_config = json.loads(payload) if payload else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            _safe_flash(f'Erro ao ler o mapa: {exc}', 'danger')
+            return _go_back()
+        if not isinstance(map_config, dict):
+            _safe_flash('Arquivo de mapeamento deve conter um objeto JSON.', 'danger')
+            return _go_back()
 
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(upload.filename).suffix) as tmp_file:
-            upload.save(tmp_file)
-            file_temp_path = Path(tmp_file.name)
+    lines_terminated = request.form.get('lines_terminated') or '\n'
+    if quotechar is not None and not str(quotechar).strip():
+        quotechar = None
+    skip_header = not no_header
 
-        if map_upload and map_upload.filename:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(map_upload.filename).suffix or '.json') as tmp_map:
-                map_upload.save(tmp_map)
-                map_temp_path = Path(tmp_map.name)
+    if origem == 'BRAS':
+        if fmt == 'fixed' and not map_config.get('columns'):
+            _safe_flash('Envie um arquivo de mapeamento contendo "columns" para largura fixa.', 'danger')
+            return _go_back()
 
-        map_config: dict = {}
-        if map_temp_path:
-            try:
-                map_config = json.loads(map_temp_path.read_text(encoding='utf-8'))
-            except json.JSONDecodeError as exc:
-                flash(f'Erro ao ler o mapa: {exc}', 'danger')
-                return _go_back()
-            if not isinstance(map_config, dict):
-                flash('Arquivo de mapeamento deve conter um objeto JSON.', 'danger')
-                return _go_back()
+        line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
+        if line_cfg:
+            lines_terminated = line_cfg
 
-        if origem == 'BRAS':
-            if fmt == 'fixed' and not map_config.get('columns'):
-                flash('Envie um arquivo de mapeamento contendo "columns" para largura fixa.', 'danger')
-                return _go_back()
+        encoding_cfg = map_config.get('encoding')
+        if isinstance(encoding_cfg, str) and encoding_cfg.strip():
+            encoding = encoding_cfg.strip()
 
-            line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
-            lines_terminated = line_cfg or (request.form.get('lines_terminated') or '\n')
+        skip_header_cfg = map_config.get('skip_header') if 'skip_header' in map_config else None
+        if skip_header_cfg is not None:
+            skip_header = bool(skip_header_cfg)
 
-            encoding_cfg = map_config.get('encoding')
-            if isinstance(encoding_cfg, str) and encoding_cfg.strip():
-                encoding = encoding_cfg.strip()
-
-            skip_header_cfg = map_config.get('skip_header') if 'skip_header' in map_config else None
-            skip_header = bool(skip_header_cfg) if skip_header_cfg is not None else (not no_header)
-
-            delimiter_cfg = map_config.get('delimiter') if fmt == 'delimited' else None
+        if fmt == 'delimited':
+            delimiter_cfg = map_config.get('delimiter')
             if delimiter_cfg:
                 delimiter = delimiter_cfg
-            quote_cfg = map_config.get('quotechar') if fmt == 'delimited' else None
+            quote_cfg = map_config.get('quotechar')
             if quote_cfg is not None:
                 quotechar = quote_cfg
             if quotechar is not None and not str(quotechar).strip():
                 quotechar = None
+    else:
+        if fmt != 'fixed':
+            _safe_flash('Importação SIMPRO suporta apenas arquivos de largura fixa.', 'danger')
+            return _go_back()
+        if not map_config:
+            _safe_flash('Envie um arquivo de mapeamento para importação de largura fixa.', 'danger')
+            return _go_back()
 
-            import_results: list[dict[str, object]] = []
-            for idx, uf in enumerate(uf_values):
-                result = _import_bras(
-                    file_path=file_temp_path,
-                    versao=versao,
-                    data_ref=data_ref,
-                    fmt=fmt,
-                    delimiter=_normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter,
-                    quotechar=quotechar,
-                    line_terminator=lines_terminated or '\n',
-                    skip_header=skip_header,
-                    encoding=encoding,
-                    map_config=map_config,
-                    truncate=truncate if idx == 0 else False,
-                    uf_default=uf,
-                    aliquota_default=aliquota_value,
-                )
-                result['uf'] = uf
-                import_results.append(result)
-            if import_results:
-                if len(import_results) == 1:
-                    res = import_results[0]
-                    flash(
-                        f"Importação BRAS concluída (UF {res['uf']} -> {res['arquivo']} | "
-                        f"{res['linhas_raw']} linhas brutas, {res['linhas_materializadas']} materializadas).",
-                        'success'
-                    )
-                else:
-                    resumo = '; '.join(
-                        f"{res['uf']} -> {res['arquivo']} ({res['linhas_raw']} brutas / {res['linhas_materializadas']} materializadas)"
-                        for res in import_results
-                    )
-                    flash(
-                        f"Importação BRAS concluída para {len(import_results)} UFs: {resumo}.",
-                        'success'
-                    )
-        else:
-            if fmt != 'fixed':
-                flash('Importação SIMPRO suporta apenas arquivos de largura fixa.', 'danger')
-                return _go_back()
-            if not map_config:
-                flash('Envie um arquivo de mapeamento para importação de largura fixa.', 'danger')
-                return _go_back()
+    delimiter_value = _normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter
 
-            import_results: list[dict[str, object]] = []
-            for idx, uf in enumerate(uf_values):
-                result = _import_simpro(
-                    file_path=file_temp_path,
-                    versao=versao,
-                    fmt=fmt,
-                    map_config=map_config,
-                    encoding=encoding,
-                    truncate=truncate if idx == 0 else False,
-                    uf_default=uf,
-                    aliquota_default=aliquota_value,
-                )
-                result['uf'] = uf
-                import_results.append(result)
-            if import_results:
-                if len(import_results) == 1:
-                    res = import_results[0]
-                    flash(
-                        f"Importação SIMPRO concluída (UF {res['uf']} -> {res['arquivo']} | "
-                        f"{res['linhas_raw']} linhas brutas, {res['linhas_materializadas']} materializadas).",
-                        'success'
-                    )
-                else:
-                    resumo = '; '.join(
-                        f"{res['uf']} -> {res['arquivo']} ({res['linhas_raw']} brutas / {res['linhas_materializadas']} materializadas)"
-                        for res in import_results
-                    )
-                    flash(
-                        f"Importação SIMPRO concluída para {len(import_results)} UFs: {resumo}.",
-                        'success'
-                    )
-    except click.ClickException as exc:
-        flash(str(exc), 'danger')
+    job_id = uuid4().hex
+    job_dir = INSUMO_IMPORT_ASYNC_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    original_name = secure_filename(upload.filename) or f'{origem.lower()}_{job_id}'
+    if arquivo_label_override_raw:
+        arquivo_label_override = secure_filename(arquivo_label_override_raw)
+    else:
+        arquivo_label_override = Path(original_name).stem or None
+    data_path = job_dir / original_name
+
+    try:
+        upload.stream.seek(0)
+        upload.save(data_path)
     except Exception as exc:  # noqa: BLE001
-        flash(f'Erro inesperado ao importar: {exc}', 'danger')
-    finally:
-        if file_temp_path and file_temp_path.exists():
-            file_temp_path.unlink(missing_ok=True)
-        if map_temp_path and map_temp_path.exists():
-            map_temp_path.unlink(missing_ok=True)
+        _safe_flash(f'Falha ao salvar o arquivo de importação: {exc}', 'danger')
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _go_back()
+
+    params_payload = {
+        'fmt': fmt,
+        'delimiter': delimiter_value,
+        'quotechar': quotechar,
+        'lines_terminated': lines_terminated,
+        'skip_header': skip_header,
+        'encoding': encoding,
+        'versao': versao,
+        'data_ref': data_ref,
+        'truncate': truncate,
+        'uf_values': uf_values,
+        'uf_default': uf_value,
+        'aliquota': str(aliquota_value) if aliquota_value is not None else None,
+        'sequencia_input': sequencia_input,
+        'map_config': map_config,
+        'arquivo_label': arquivo_label_override,
+    }
+
+    job = ImportJob(
+        id=job_id,
+        origem=origem,
+        original_filename=upload.filename,
+        data_path=str(data_path),
+        status=ImportJobStatus.PENDING.value,
+        versao=versao,
+        aliquota=aliquota_value,
+        uf_list=', '.join(uf_values),
+        params=params_payload,
+        message='Aguardando processamento.',
+    )
+
+    try:
+        db.session.add(job)
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        _safe_flash(f'Falha ao registrar a importação: {exc}', 'danger')
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return _go_back()
+
+    job_id = job.id
+    inline_env = (os.getenv('INSUMO_IMPORT_RUN_INLINE') or '').strip().lower()
+    inline = inline_env in {'1', 'true', 'yes', 'on'}
+    if inline:
+        _run_import_job(job_id)
+    else:
+        _spawn_async_import(job_id)
+
+    prefix = job_id[:8]
+    status_msg = 'processada imediatamente' if inline else 'agendada em segundo plano'
+    _safe_flash(
+        f'Importação {origem} {status_msg} (protocolo {prefix}). Acompanhe o status em "Importações em andamento".',
+        'info',
+    )
 
     return _go_back()
+
+
+@app.route('/insumos/import/jobs')
+@admin_required
+def insumos_import_jobs_list():
+    limit = _parse_positive_int(request.args.get('limit'), 20, maximum=100)
+    jobs = (
+        ImportJob.query
+        .order_by(ImportJob.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return jsonify({'items': [_serialize_import_job(job) for job in jobs]})
+
+
+@app.route('/insumos/import/jobs/<job_id>')
+@admin_required
+def insumos_import_job_detail(job_id: str):
+    job = ImportJob.query.get_or_404(job_id)
+    return jsonify(_serialize_import_job(job))

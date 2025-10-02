@@ -45,6 +45,14 @@
   </div>
 </div>
 
+{% if is_admin %}
+<div class="d-flex justify-content-end mt-3">
+  <a class="btn btn-outline-primary" href="{{ url_for('insumos_aliquotas') }}">
+    <i class="bi bi-sliders"></i> Ajustar alíquotas
+  </a>
+</div>
+{% endif %}
+
 <div class="border rounded-3 p-3 bg-white mt-4">
   <form id="insumoFilters" class="row gy-3">
     <div class="col-12 col-md-4">
@@ -115,11 +123,6 @@
           <i class="bi bi-eraser"></i>
         </button>
       </div>
-    </div>
-    <div class="col-12 col-lg-3 ms-auto align-self-end">
-      <button type="button" class="btn btn-outline-success w-100" id="btnExportar">
-        <i class="bi bi-file-earmark-spreadsheet me-1"></i>Exportar XLSX
-      </button>
     </div>
   </form>
 
@@ -192,7 +195,6 @@
   const btnPrev = document.getElementById('paginacaoAnterior');
   const btnNext = document.getElementById('paginacaoProximo');
   const perPageSelect = document.getElementById('fPerPage');
-  const btnExportar = document.getElementById('btnExportar');
   const btnLimpar = document.getElementById('btnLimpar');
   const modalEl = document.getElementById('detalheModal');
   const modalBody = document.getElementById('detalheConteudo');
@@ -201,7 +203,6 @@
 
   let page = 1;
   let totalPages = 0;
-  let lastParams = new URLSearchParams();
 
   function toggleLoading(state){
     if(state){
@@ -263,7 +264,8 @@
       const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
       const dataRef = item.data_atualizacao || '—';
       const origem = escapeHtml(item.origem);
-      const uf = escapeHtml(item.uf_referencia || '—');
+      const ufRaw = item.uf_referencia || '';
+      const uf = escapeHtml(ufRaw || '—');
       const aliquota = formatAliquota(item.aliquota);
       return `
         <tr>
@@ -287,7 +289,7 @@
           </td>
           <td class="small">${atualizacao}</td>
           <td class="text-end">
-            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}">
+            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufRaw)}">
               <i class="bi bi-eye"></i>
             </button>
           </td>
@@ -308,7 +310,6 @@
     }
 
     const params = getFilters();
-    lastParams = new URLSearchParams(params.toString());
     toggleLoading(true);
     try{
       const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`);
@@ -377,10 +378,12 @@
     if(!btn){ return; }
     const origem = btn.getAttribute('data-origem');
     const itemId = btn.getAttribute('data-id');
+    const ufItem = btn.getAttribute('data-uf') || '';
     if(!origem || !itemId){ return; }
     try{
       btn.disabled = true;
-      const res = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}`);
+      const queryUf = ufItem ? `?uf=${encodeURIComponent(ufItem)}` : '';
+      const res = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}${queryUf}`);
       if(!res.ok){ throw new Error('Item não encontrado.'); }
       const data = await res.json();
       const entries = [
@@ -409,20 +412,6 @@
     } finally {
       btn.disabled = false;
     }
-  });
-
-  btnExportar.addEventListener('click', function(){
-    const ufSel = document.getElementById('fUf').value.trim();
-    if(!ufSel){
-      alert('Informe uma UF para exportar os itens.');
-      return;
-    }
-    if(!lastParams.toString()){
-      lastParams = getFilters();
-    }
-    const query = lastParams.toString();
-    const url = `{{ url_for('insumos_export_xlsx') }}?${query}`;
-    window.open(url, '_blank');
   });
 })();
 </script>

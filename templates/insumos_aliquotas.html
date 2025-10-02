@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+
+{% block title %}Ajustar Alíquotas{% endblock %}
+{% block page_title %}Ajuste de Alíquotas{% endblock %}
+
+{% block content %}
+<div class="border rounded-3 bg-white p-3 mb-4">
+  <p class="mb-3 small text-muted">
+    Ajuste manual das alíquotas vigentes por UF. Informe o novo percentual e, opcionalmente, a data a partir da qual o ajuste passa a valer.
+  </p>
+  <form method="post" class="table-responsive">
+    <table class="table table-clean align-middle mb-0">
+      <thead>
+        <tr>
+          <th style="width:70px;">UF</th>
+          <th style="width:150px;">Alíquota atual</th>
+          <th style="width:150px;">Vigente desde</th>
+          <th style="width:150px;">Vigente até</th>
+          <th style="width:190px;">Nova alíquota (%)</th>
+          <th style="width:190px;">Vigente a partir</th>
+          <th style="width:120px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        {% set record = entry.record %}
+        <tr id="uf-{{ entry.uf }}" class="{% if entry.uf == highlight_uf %}table-info{% endif %}">
+          <td class="fw-semibold">{{ entry.uf }}</td>
+          <td>{% if entry.percent_display %}{{ entry.percent_display }}%{% else %}—{% endif %}</td>
+          <td>{% if record and record.valid_from %}{{ record.valid_from.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
+          <td>{% if record and record.valid_to %}{{ record.valid_to.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
+          <td>
+            <input type="text" class="form-control form-control-sm" name="aliquota_{{ entry.uf }}" value="{{ entry.form_value }}" placeholder="ex.: 18,5">
+          </td>
+          <td>
+            <input type="date" class="form-control form-control-sm" name="valid_from_{{ entry.uf }}" value="{{ entry.default_valid_from }}">
+          </td>
+          <td class="text-end">
+            <button type="submit" class="btn btn-primary btn-sm" name="target_uf" value="{{ entry.uf }}">
+              <i class="bi bi-save me-1"></i>Salvar
+            </button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </form>
+</div>
+
+<div class="border rounded-3 bg-white p-3">
+  <h6 class="mb-3">Histórico recente</h6>
+  <div class="table-responsive">
+    <table class="table table-clean align-middle mb-0">
+      <thead>
+        <tr>
+          <th style="width:70px;">UF</th>
+          <th style="width:160px;">Alíquota</th>
+          <th style="width:160px;">Vigente desde</th>
+          <th style="width:160px;">Vigente até</th>
+          <th style="width:130px;">Status</th>
+          <th style="width:180px;">Atualizado em</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if history_rows %}
+          {% for row in history_rows %}
+          <tr>
+            <td class="fw-semibold">{{ row.uf }}</td>
+            <td>{% if row.percent_display %}{{ row.percent_display }}%{% else %}—{% endif %}</td>
+            <td>{% if row.valid_from %}{{ row.valid_from.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
+            <td>{% if row.valid_to %}{{ row.valid_to.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
+            <td>
+              {% if row.is_current %}
+                <span class="badge bg-success">Atual</span>
+              {% else %}
+                <span class="badge bg-secondary">Inativo</span>
+              {% endif %}
+            </td>
+            <td>{% if row.updated_at %}{{ row.updated_at.strftime('%d/%m/%Y %H:%M') }}{% else %}—{% endif %}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr><td colspan="6" class="text-center text-muted py-4">Nenhum histórico encontrado.</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
