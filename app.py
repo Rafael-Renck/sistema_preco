@@ -678,7 +678,7 @@ def _clean_decimal_expression(column: str) -> str:
 
 def _build_bras_item_view_sql() -> str:
     preco_pmc = _clean_decimal_expression('r.col07')
-    preco_pfb = _clean_decimal_expression('r.col08')
+    preco_pfb = _clean_decimal_expression('r.col13')
 
     return (
         "CREATE OR REPLACE VIEW bras_item_v AS\n"
@@ -695,10 +695,10 @@ def _build_bras_item_view_sql() -> str:
         "    r.col17 AS ean,\n"
         "    r.col22 AS registro_anvisa,\n"
         "    r.col14 AS edicao,\n"
-        f"    {preco_pmc} AS preco_pmc_pacote,\n"
-        f"    {preco_pfb} AS preco_pfb_pacote,\n"
         f"    {preco_pmc} AS preco_pmc_unit,\n"
         f"    {preco_pfb} AS preco_pfb_unit,\n"
+        f"    {preco_pmc} AS preco_pmc_pacote,\n"
+        f"    {preco_pfb} AS preco_pfb_pacote,\n"
         "    NULL AS aliquota_ou_ipi,\n"
         "    NULL AS quantidade_embalagem,\n"
         "    r.imported_at\n"
@@ -1226,17 +1226,20 @@ def _sync_bras_insumo_index(
     arquivo_label: str | None,
     *,
     uf_default: str | None = None,
+    uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
 ) -> None:
-    params: dict[str, object] = {}
-    where_clause = ''
-    if arquivo_label:
-        params['arquivo'] = arquivo_label
-        where_clause = 'WHERE arquivo = :arquivo'
-    params['uf_default'] = uf_default
-    params['aliquota_default'] = aliquota_default
+    target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
+    if not target_ufs:
+        target_ufs = [None]
 
-    upsert_sql = text(
+    where_clause = ''
+    params_base: dict[str, object] = {'aliquota_default': aliquota_default, 'uf_default': uf_default}
+    if arquivo_label:
+        params_base['arquivo'] = arquivo_label
+        where_clause = 'WHERE arquivo = :arquivo'
+
+    upsert_template = text(
         """
         INSERT INTO insumos_index (
             origem, item_id, tuss, tiss, descricao, preco, aliquota,
@@ -1255,7 +1258,7 @@ def _sync_bras_insumo_index(
             n.registro_anvisa AS anvisa,
             COALESCE(n.edicao, n.arquivo) AS versao_tabela,
             NULL AS data_atualizacao,
-            COALESCE(:uf_default, NULL) AS uf_referencia,
+            COALESCE(:uf_value, :uf_default) AS uf_referencia,
             NOW() AS updated_at
         FROM bras_item_n n
         {where_clause}
@@ -1274,7 +1277,11 @@ def _sync_bras_insumo_index(
         """.replace('{where_clause}', where_clause)
     )
 
-    db.session.execute(upsert_sql, params)
+    for uf_value in target_ufs:
+        params = dict(params_base)
+        params['uf_value'] = uf_value
+        db.session.execute(upsert_template, params)
+
     db.session.commit()
 
 
@@ -1282,17 +1289,20 @@ def _sync_simpro_insumo_index(
     arquivo_label: str | None,
     *,
     uf_default: str | None = None,
+    uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
 ) -> None:
-    params: dict[str, object] = {}
-    where_clause = ''
-    if arquivo_label:
-        params['arquivo'] = arquivo_label
-        where_clause = 'WHERE arquivo = :arquivo'
-    params['uf_default'] = uf_default
-    params['aliquota_default'] = aliquota_default
+    target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
+    if not target_ufs:
+        target_ufs = [None]
 
-    upsert_sql = text(
+    where_clause = ''
+    params_base: dict[str, object] = {'aliquota_default': aliquota_default, 'uf_default': uf_default}
+    if arquivo_label:
+        params_base['arquivo'] = arquivo_label
+        where_clause = 'WHERE arquivo = :arquivo'
+
+    upsert_template = text(
         """
         INSERT INTO insumos_index (
             origem, item_id, tuss, tiss, descricao, preco, aliquota,
@@ -1311,7 +1321,7 @@ def _sync_simpro_insumo_index(
             n.anvisa AS anvisa,
             COALESCE(n.versao, n.arquivo) AS versao_tabela,
             n.data_ref AS data_atualizacao,
-            COALESCE(n.uf_referencia, :uf_default) AS uf_referencia,
+            COALESCE(:uf_value, n.uf_referencia, :uf_default) AS uf_referencia,
             NOW() AS updated_at
         FROM simpro_item_norm n
         {where_clause}
@@ -1330,7 +1340,11 @@ def _sync_simpro_insumo_index(
         """.replace('{where_clause}', where_clause)
     )
 
-    db.session.execute(upsert_sql, params)
+    for uf_value in target_ufs:
+        params = dict(params_base)
+        params['uf_value'] = uf_value
+        db.session.execute(upsert_template, params)
+
     db.session.commit()
 
 
@@ -1348,6 +1362,7 @@ def _import_bras(
     map_config: dict,
     truncate: bool,
     uf_default: str | None = None,
+    uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
     arquivo_label_override: str | None = None,
 ) -> dict:
@@ -1385,6 +1400,7 @@ def _import_bras(
     _sync_bras_insumo_index(
         arquivo_label if not truncate else None,
         uf_default=uf_default,
+        uf_values=uf_values,
         aliquota_default=aliquota_default,
     )
 
@@ -1405,6 +1421,7 @@ def _import_simpro(
     encoding: str | None,
     truncate: bool,
     uf_default: str | None,
+    uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None,
     arquivo_label_override: str | None = None,
 ) -> dict:
@@ -1435,6 +1452,7 @@ def _import_simpro(
     _sync_simpro_insumo_index(
         arquivo_label if not truncate else None,
         uf_default=uf_default,
+        uf_values=uf_values,
         aliquota_default=aliquota_default,
     )
 
@@ -2365,33 +2383,72 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     include_bras = filters.get('origem') in (None, 'BRAS')
     include_simpro = filters.get('origem') in (None, 'SIMPRO')
 
-    queries = []
-    totals: dict[str, int] = {}
+    totals = {'BRAS': 0, 'SIMPRO': 0}
+    sources: list[tuple[str, str, any, int]] = []
 
     if include_bras:
         bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
         bras_query = bras_query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
-        totals['BRAS'] = bras_query.count()
-        queries.append(('BRAS', bras_query))
-    else:
-        totals['BRAS'] = 0
+        bras_total = bras_query.count()
+        if bras_total <= 0:
+            _refresh_materialized_catalogs('BRASINDICE')
+            bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
+            bras_query = bras_query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
+            bras_total = bras_query.count()
+        if bras_total > 0:
+            sources.append(('BRAS_VIEW', 'BRAS', bras_query, bras_total))
+        if bras_total <= 0:
+            fallback_filters = dict(filters)
+            fallback_filters['origem'] = 'BRAS'
+            fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
+            fallback_query = fallback_query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
+            fallback_total = fallback_query.count()
+            if fallback_total > 0:
+                sources.append(('BRAS_INDEX', 'BRAS', fallback_query, fallback_total))
+                bras_total = fallback_total
+        totals['BRAS'] = bras_total
 
     if include_simpro:
         simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
         simpro_query = simpro_query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
-        totals['SIMPRO'] = simpro_query.count()
-        queries.append(('SIMPRO', simpro_query))
-    else:
-        totals['SIMPRO'] = 0
+        simpro_total = simpro_query.count()
+        if simpro_total <= 0:
+            _refresh_materialized_catalogs('SIMPRO')
+            simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
+            simpro_query = simpro_query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
+            simpro_total = simpro_query.count()
+        if simpro_total > 0:
+            sources.append(('SIMPRO_VIEW', 'SIMPRO', simpro_query, simpro_total))
+        if simpro_total <= 0:
+            fallback_filters = dict(filters)
+            fallback_filters['origem'] = 'SIMPRO'
+            fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
+            fallback_query = fallback_query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
+            fallback_total = fallback_query.count()
+            if fallback_total > 0:
+                sources.append(('SIMPRO_INDEX', 'SIMPRO', fallback_query, fallback_total))
+                simpro_total = fallback_total
+        totals['SIMPRO'] = simpro_total
 
-    total = sum(totals.values())
+    if not sources:
+        return {
+            'items': [],
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': 0,
+                'pages': 0,
+            }
+        }
+
+    total = sum(total for _, _, _, total in sources)
     start = max(page - 1, 0) * per_page
     remaining = per_page
     consumed = 0
     serialized: list[dict] = []
 
-    for origin, query in queries:
-        origin_total = totals[origin]
+    for source_kind, origin_key, query, origin_total in sources:
+        origin_total = origin_total or totals.get(origin_key, 0)
         if origin_total <= 0:
             consumed += origin_total
             continue
@@ -2402,10 +2459,12 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
         fetch_count = min(remaining, origin_total - local_offset)
         if fetch_count > 0:
             rows = query.offset(local_offset).limit(fetch_count).all()
-            if origin == 'BRAS':
+            if source_kind == 'BRAS_VIEW':
                 serialized.extend(_serialize_catalogo_bras(row) for row in rows)
-            else:
+            elif source_kind == 'SIMPRO_VIEW':
                 serialized.extend(_serialize_catalogo_simpro(row) for row in rows)
+            else:
+                serialized.extend(_serialize_insumo_index(row) for row in rows)
             remaining -= fetch_count
         consumed += origin_total
         if remaining <= 0:
@@ -3127,6 +3186,7 @@ def bras_import(file_path: Path, versao: str, data_str: str | None, fmt: str, de
         map_config=map_config,
         truncate=truncate,
         uf_default=uf_value,
+        uf_values=[uf_value] if uf_value else None,
         aliquota_default=aliquota_value,
     )
 
@@ -3179,6 +3239,7 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
         encoding=encoding,
         truncate=truncate,
         uf_default=uf_value,
+        uf_values=[uf_value] if uf_value else None,
         aliquota_default=aliquota_value,
     )
 
@@ -6325,24 +6386,45 @@ def _run_import_job(job_id: str) -> None:
                     map_config=map_config,
                     truncate=truncate,
                     uf_default=uf_default,
+                    uf_values=uf_values,
                     aliquota_default=aliquota_decimal,
                     arquivo_label_override=arquivo_label_override,
                 )
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
             else:
                 stage_start = time.perf_counter()
-                result = _import_simpro(
-                    file_path=file_path,
-                    versao=versao,
-                    fmt=fmt,
-                    map_config=map_config,
-                    encoding=encoding,
-                    truncate=truncate,
-                    uf_default=uf_default,
-                    aliquota_default=aliquota_decimal,
-                    arquivo_label_override=arquivo_label_override,
-                )
+                base_label = arquivo_label_override or (Path(job.original_filename).stem if job.original_filename else None)
+                if not base_label:
+                    base_label = versao or 'simpro'
+                target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
+                if not target_ufs:
+                    target_ufs = [None]
+                parts: list[tuple[dict, str | None]] = []
+                for idx, uf in enumerate(target_ufs):
+                    partial = _import_simpro(
+                        file_path=file_path,
+                        versao=versao,
+                        fmt=fmt,
+                        map_config=map_config,
+                        encoding=encoding,
+                        truncate=(truncate if idx == 0 else False),
+                        uf_default=uf,
+                        uf_values=[uf] if uf else None,
+                        aliquota_default=aliquota_decimal,
+                        arquivo_label_override=base_label,
+                    )
+                    if partial:
+                        parts.append((partial, uf))
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
+                arquivos = [p[0]['arquivo'] for p in parts if p[0].get('arquivo')]
+                result = {
+                    'arquivo': arquivos[0] if arquivos else None,
+                    'arquivos': arquivos,
+                    'linhas_raw': sum(p[0].get('linhas_raw') or 0 for p in parts),
+                    'linhas_materializadas': sum(p[0].get('linhas_materializadas') or 0 for p in parts),
+                    'load_strategy': next((p[0].get('load_strategy') for p in parts if p[0].get('load_strategy')), None),
+                    '_partials': parts,
+                }
 
             job.status = ImportJobStatus.SUCCESS.value
             job.message = (
@@ -6367,14 +6449,29 @@ def _run_import_job(job_id: str) -> None:
 
             try:
                 post_start = time.perf_counter()
-                _post_catalog_ingest(
-                    origem=origem,
-                    arquivo_label=result['arquivo'],
-                    versao=versao,
-                    sequencia_input=sequencia_input,
-                    aliquota_value=aliquota_decimal,
-                    uf_values=uf_values,
-                )
+                partials = result.get('_partials') if origem == 'SIMPRO' else None
+                if partials:
+                    for partial, uf in partials:
+                        label = partial.get('arquivo') if isinstance(partial, dict) else None
+                        if not label:
+                            continue
+                        _post_catalog_ingest(
+                            origem=origem,
+                            arquivo_label=label,
+                            versao=versao,
+                            sequencia_input=sequencia_input,
+                            aliquota_value=aliquota_decimal,
+                            uf_values=[uf] if uf else uf_values,
+                        )
+                else:
+                    _post_catalog_ingest(
+                        origem=origem,
+                        arquivo_label=result.get('arquivo'),
+                        versao=versao,
+                        sequencia_input=sequencia_input,
+                        aliquota_value=aliquota_decimal,
+                        uf_values=uf_values,
+                    )
                 metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
             except Exception as exc:  # noqa: BLE001
                 app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
