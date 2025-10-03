@@ -264,8 +264,11 @@
       const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
       const dataRef = item.data_atualizacao || '—';
       const origem = escapeHtml(item.origem);
-      const ufRaw = item.uf_referencia || '';
-      const uf = escapeHtml(ufRaw || '—');
+      const ufDisplay = item.uf_referencia || '';
+      const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
+      const uf = escapeHtml(ufDisplay || '—');
+      const ufSel = document.getElementById('fUf').value.trim();
+      const ufForDetail = ufSel || (ufCodes.length === 1 ? ufCodes[0] : (ufCodes[0] || ''));
       const aliquota = formatAliquota(item.aliquota);
       return `
         <tr>
@@ -289,7 +292,7 @@
           </td>
           <td class="small">${atualizacao}</td>
           <td class="text-end">
-            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufRaw)}">
+            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail)}">
               <i class="bi bi-eye"></i>
             </button>
           </td>

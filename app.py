@@ -496,7 +496,7 @@ class SimproItem(db.Model):
     fabricante = db.Column(db.String(255), nullable=True)
     versao_tabela = db.Column(db.String(100), nullable=True)
     data_atualizacao = db.Column(db.Date, nullable=True)
-    uf_referencia = db.Column(db.String(5), nullable=True)
+    uf_referencia = db.Column(db.String(64), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = db.Column(
         db.DateTime,
@@ -547,7 +547,7 @@ class SimproItemNormalized(db.Model):
     ean = db.Column(db.String(32), index=True, nullable=True)
     situacao = db.Column(db.String(40), nullable=True)
     versao = db.Column(db.String(100), nullable=True)
-    uf_referencia = db.Column(db.String(5), nullable=True)
+    uf_referencia = db.Column(db.String(64), nullable=True)
     imported_at = db.Column(
         db.DateTime,
         nullable=False,
@@ -630,7 +630,7 @@ class InsumoIndex(db.Model):
     anvisa = db.Column(db.String(50), index=True, nullable=True)
     versao_tabela = db.Column(db.String(100), nullable=True)
     data_atualizacao = db.Column(db.Date, nullable=True)
-    uf_referencia = db.Column(db.String(5), nullable=True)
+    uf_referencia = db.Column(db.String(64), nullable=True)
     updated_at = db.Column(
         db.DateTime,
         nullable=False,
@@ -1222,6 +1222,65 @@ def _materialize_bras_items(arquivo_label: str | None) -> int:
     return result.rowcount or 0
 
 
+def _normalize_uf_codes(
+    uf_values: Sequence[str] | None,
+    *,
+    uf_default: str | None = None,
+) -> list[str]:
+    codes: list[str] = []
+    pool = list(uf_values or [])
+    if uf_default is not None:
+        pool.append(uf_default)
+    for raw in pool:
+        raw_str = (raw or '').strip().upper()
+        if not raw_str:
+            continue
+        if raw_str not in codes:
+            codes.append(raw_str)
+    return codes
+
+
+def _encode_uf_codes(codes: Sequence[str] | None) -> str | None:
+    if not codes:
+        return None
+    filtered = [code.strip().upper() for code in codes if code and code.strip()]
+    if not filtered:
+        return None
+    return '|' + '|'.join(filtered) + '|'
+
+
+UF_SPLIT_RE = re.compile(r'[|,\s]+')
+
+
+def _decode_uf_codes(value: str | None) -> list[str]:
+    if not value:
+        return []
+    text = value.strip()
+    if not text:
+        return []
+    if text.startswith('|') and text.endswith('|') and len(text) >= 2:
+        text = text.strip('|')
+    parts = [segment.strip().upper() for segment in UF_SPLIT_RE.split(text) if segment and segment.strip()]
+    if not parts and value:
+        fallback = value.strip().upper()
+        if fallback:
+            parts = [fallback]
+    deduped: list[str] = []
+    for code in parts:
+        if code and code not in deduped:
+            deduped.append(code)
+    return deduped
+
+
+def _combine_uf_codes(*values: str | None) -> list[str]:
+    combined: list[str] = []
+    for raw in values:
+        for code in _decode_uf_codes(raw):
+            if code not in combined:
+                combined.append(code)
+    return combined
+
+
 def _sync_bras_insumo_index(
     arquivo_label: str | None,
     *,
@@ -1230,11 +1289,15 @@ def _sync_bras_insumo_index(
     aliquota_default: Decimal | None = None,
 ) -> None:
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
-    if not target_ufs:
-        target_ufs = [None]
+    uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
+    uf_storage = _encode_uf_codes(uf_codes)
 
     where_clause = ''
-    params_base: dict[str, object] = {'aliquota_default': aliquota_default, 'uf_default': uf_default}
+    params_base: dict[str, object] = {
+        'aliquota_default': aliquota_default,
+        'uf_default': uf_default,
+        'uf_storage': uf_storage,
+    }
     if arquivo_label:
         params_base['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
@@ -1258,7 +1321,7 @@ def _sync_bras_insumo_index(
             n.registro_anvisa AS anvisa,
             COALESCE(n.edicao, n.arquivo) AS versao_tabela,
             NULL AS data_atualizacao,
-            COALESCE(:uf_value, :uf_default) AS uf_referencia,
+            COALESCE(:uf_storage, :uf_default) AS uf_referencia,
             NOW() AS updated_at
         FROM bras_item_n n
         {where_clause}
@@ -1277,11 +1340,7 @@ def _sync_bras_insumo_index(
         """.replace('{where_clause}', where_clause)
     )
 
-    for uf_value in target_ufs:
-        params = dict(params_base)
-        params['uf_value'] = uf_value
-        db.session.execute(upsert_template, params)
-
+    db.session.execute(upsert_template, params_base)
     db.session.commit()
 
 
@@ -1293,11 +1352,15 @@ def _sync_simpro_insumo_index(
     aliquota_default: Decimal | None = None,
 ) -> None:
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
-    if not target_ufs:
-        target_ufs = [None]
+    uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
+    uf_storage = _encode_uf_codes(uf_codes)
 
     where_clause = ''
-    params_base: dict[str, object] = {'aliquota_default': aliquota_default, 'uf_default': uf_default}
+    params_base: dict[str, object] = {
+        'aliquota_default': aliquota_default,
+        'uf_default': uf_default,
+        'uf_storage': uf_storage,
+    }
     if arquivo_label:
         params_base['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
@@ -1321,7 +1384,7 @@ def _sync_simpro_insumo_index(
             n.anvisa AS anvisa,
             COALESCE(n.versao, n.arquivo) AS versao_tabela,
             n.data_ref AS data_atualizacao,
-            COALESCE(:uf_value, n.uf_referencia, :uf_default) AS uf_referencia,
+            COALESCE(:uf_storage, n.uf_referencia, :uf_default) AS uf_referencia,
             NOW() AS updated_at
         FROM simpro_item_norm n
         {where_clause}
@@ -1340,11 +1403,7 @@ def _sync_simpro_insumo_index(
         """.replace('{where_clause}', where_clause)
     )
 
-    for uf_value in target_ufs:
-        params = dict(params_base)
-        params['uf_value'] = uf_value
-        db.session.execute(upsert_template, params)
-
+    db.session.execute(upsert_template, params_base)
     db.session.commit()
 
 
@@ -2513,6 +2572,34 @@ def _catalogo_fetch_all(filters: dict, limit: int | None = None) -> list[dict]:
 
 
 def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = None, preco_pfb: Decimal | None = None) -> dict:
+    uf_codes = _decode_uf_codes(item.uf_referencia)
+    uf_display = ', '.join(uf_codes) if uf_codes else item.uf_referencia
+    preco_pmc_value: Decimal | None = preco_pmc if preco_pmc is not None else item.preco
+    preco_pfb_value: Decimal | None = preco_pfb if preco_pfb is not None else item.preco
+
+    if item.origem == 'BRAS':
+        bras_row = BrasItemNormalized.query.get(item.item_id)
+        if bras_row and bras_row.arquivo and bras_row.linha_num is not None:
+            raw_row = (
+                BrasRaw.query
+                .with_entities(BrasRaw.col07, BrasRaw.col08)
+                .filter_by(arquivo=bras_row.arquivo, linha_num=bras_row.linha_num)
+                .first()
+            )
+            if raw_row is not None:
+                raw_pmc = _coerce_decimal(raw_row.col07)
+                raw_pfb = _coerce_decimal(raw_row.col08)
+                if raw_pmc is not None:
+                    try:
+                        preco_pmc_value = Decimal(raw_pmc)
+                    except (InvalidOperation, ValueError):
+                        pass
+                if raw_pfb is not None:
+                    try:
+                        preco_pfb_value = Decimal(raw_pfb)
+                    except (InvalidOperation, ValueError):
+                        pass
+
     return {
         'origem': item.origem,
         'item_id': item.item_id,
@@ -2520,15 +2607,16 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
         'tiss': item.tiss,
         'descricao': item.descricao,
         'preco': _decimal_to_string(item.preco),
-        'preco_pmc': _decimal_to_string(preco_pmc if preco_pmc is not None else item.preco),
-        'preco_pfb': _decimal_to_string(preco_pfb if preco_pfb is not None else item.preco),
+        'preco_pmc': _decimal_to_string(preco_pmc_value),
+        'preco_pfb': _decimal_to_string(preco_pfb_value),
         'aliquota': _decimal_to_string(item.aliquota),
         'fabricante': item.fabricante,
         'anvisa': item.anvisa,
         'versao_tabela': item.versao_tabela,
         'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
         'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
-        'uf_referencia': item.uf_referencia,
+        'uf_referencia': uf_display,
+        'uf_referencia_codes': uf_codes,
     }
 
 
@@ -2538,6 +2626,7 @@ def _serialize_insumo_detail(
     index_entry: InsumoIndex | None = None,
     *,
     catalog_entry: CatalogoBrasindice | CatalogoSimpro | None = None,
+    selected_uf: str | None = None,
 ) -> dict:
     index_aliquota = _decimal_to_string(index_entry.aliquota) if index_entry else None
     index_uf = index_entry.uf_referencia if index_entry else None
@@ -2583,6 +2672,8 @@ def _serialize_insumo_detail(
         descricao = item.produto_nome or ''
         if item.apresentacao_descricao:
             descricao = f"{descricao} • {item.apresentacao_descricao}" if descricao else item.apresentacao_descricao
+        uf_codes = _combine_uf_codes(catalog_uf, index_uf)
+        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf))
         return {
             'origem': 'BRAS',
             'item_id': item.id,
@@ -2599,7 +2690,8 @@ def _serialize_insumo_detail(
             'data_atualizacao': _first_defined(catalog_data_ref, index_data),
             'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
             'created_at': None,
-            'uf_referencia': _first_defined(catalog_uf, index_uf),
+            'uf_referencia': uf_display,
+            'uf_referencia_codes': uf_codes,
             'arquivo': item.arquivo,
             'linha_num': item.linha_num,
             'preco_pmc_pacote': _decimal_to_string(item.preco_pmc_pacote),
@@ -2611,6 +2703,8 @@ def _serialize_insumo_detail(
     if isinstance(item, SimproItemNormalized):
         preco_candidates = [item.preco2, item.preco1, item.preco3, item.preco4]
         preco_effective = next((p for p in preco_candidates if p is not None), None)
+        uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
+        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
         return {
             'origem': 'SIMPRO',
             'item_id': item.id,
@@ -2627,13 +2721,16 @@ def _serialize_insumo_detail(
             'data_atualizacao': _first_defined(catalog_data_ref, item.data_ref.isoformat() if isinstance(item.data_ref, date) else None, index_data),
             'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
             'created_at': None,
-            'uf_referencia': _first_defined(catalog_uf, item.uf_referencia, index_uf),
+            'uf_referencia': uf_display,
+            'uf_referencia_codes': uf_codes,
             'situacao': item.situacao,
             'validade_anvisa': item.validade_anvisa.isoformat() if isinstance(item.validade_anvisa, date) else None,
             'ean': item.ean,
         }
 
     if isinstance(item, SimproItem):  # fallback legacy
+        uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
+        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
         return {
             'origem': origem,
             'item_id': item.id,
@@ -2650,9 +2747,12 @@ def _serialize_insumo_detail(
             'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
             'updated_at': item.updated_at.isoformat() if isinstance(item.updated_at, datetime) else None,
             'created_at': item.created_at.isoformat() if isinstance(item.created_at, datetime) else None,
-            'uf_referencia': item.uf_referencia,
+            'uf_referencia': uf_display,
+            'uf_referencia_codes': uf_codes,
         }
 
+    uf_codes = _combine_uf_codes(catalog_uf, index_uf)
+    uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf))
     return {
         'origem': origem,
         'item_id': item.id,
@@ -2669,7 +2769,8 @@ def _serialize_insumo_detail(
         'data_atualizacao': None,
         'updated_at': None,
         'created_at': None,
-        'uf_referencia': None,
+        'uf_referencia': uf_display,
+        'uf_referencia_codes': uf_codes,
     }
 
 
@@ -2713,7 +2814,14 @@ def _apply_insumo_filters(query, filters: dict):
     if filters.get('versao_tabela'):
         query = query.filter(InsumoIndex.versao_tabela == filters['versao_tabela'])
     if filters.get('uf_referencia'):
-        query = query.filter(func.upper(InsumoIndex.uf_referencia) == filters['uf_referencia'])
+        uf_target = filters['uf_referencia']
+        pattern = f"%|{uf_target}|%"
+        query = query.filter(
+            or_(
+                func.upper(InsumoIndex.uf_referencia) == uf_target,
+                func.upper(func.coalesce(InsumoIndex.uf_referencia, '')).like(pattern)
+            )
+        )
     if filters.get('aliquota') is not None:
         query = query.filter(InsumoIndex.aliquota == filters['aliquota'])
 
@@ -6251,11 +6359,28 @@ def insumo_detail(origem: str, item_id: int):
             catalog_entry = base_query.order_by(CatalogoSimpro.uf.asc()).first()
 
     index_query = InsumoIndex.query.filter_by(origem=origem, item_id=item_id)
-    index_entry = index_query.filter(InsumoIndex.uf_referencia == uf_param).first() if uf_param else None
+    if uf_param:
+        like_pattern = f"%|{uf_param}|%"
+        index_entry = index_query.filter(
+            or_(
+                func.upper(InsumoIndex.uf_referencia) == uf_param,
+                func.upper(func.coalesce(InsumoIndex.uf_referencia, '')).like(like_pattern)
+            )
+        ).first()
+    else:
+        index_entry = None
     if index_entry is None:
         index_entry = index_query.first()
 
-    return jsonify(_serialize_insumo_detail(origem, item, index_entry=index_entry, catalog_entry=catalog_entry))
+    return jsonify(
+        _serialize_insumo_detail(
+            origem,
+            item,
+            index_entry=index_entry,
+            catalog_entry=catalog_entry,
+            selected_uf=uf_param or None,
+        )
+    )
 
 
 @app.route('/insumos')
@@ -6399,8 +6524,11 @@ def _run_import_job(job_id: str) -> None:
                 target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
                 if not target_ufs:
                     target_ufs = [None]
-                parts: list[tuple[dict, str | None]] = []
+                parts: list[tuple[dict, str | None, str | None]] = []
                 for idx, uf in enumerate(target_ufs):
+                    current_label = base_label
+                    if uf:
+                        current_label = f"{base_label}_{uf}"
                     partial = _import_simpro(
                         file_path=file_path,
                         versao=versao,
@@ -6411,18 +6539,18 @@ def _run_import_job(job_id: str) -> None:
                         uf_default=uf,
                         uf_values=[uf] if uf else None,
                         aliquota_default=aliquota_decimal,
-                        arquivo_label_override=base_label,
+                        arquivo_label_override=current_label,
                     )
                     if partial:
-                        parts.append((partial, uf))
+                        parts.append((partial, uf, current_label))
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
-                arquivos = [p[0]['arquivo'] for p in parts if p[0].get('arquivo')]
+                arquivos = [label for _, _, label in parts if label]
                 result = {
                     'arquivo': arquivos[0] if arquivos else None,
                     'arquivos': arquivos,
-                    'linhas_raw': sum(p[0].get('linhas_raw') or 0 for p in parts),
-                    'linhas_materializadas': sum(p[0].get('linhas_materializadas') or 0 for p in parts),
-                    'load_strategy': next((p[0].get('load_strategy') for p in parts if p[0].get('load_strategy')), None),
+                    'linhas_raw': sum(partial.get('linhas_raw') or 0 for partial, _, _ in parts),
+                    'linhas_materializadas': sum(partial.get('linhas_materializadas') or 0 for partial, _, _ in parts),
+                    'load_strategy': next((partial.get('load_strategy') for partial, _, _ in parts if partial.get('load_strategy')), None),
                     '_partials': parts,
                 }
 
@@ -6451,8 +6579,9 @@ def _run_import_job(job_id: str) -> None:
                 post_start = time.perf_counter()
                 partials = result.get('_partials') if origem == 'SIMPRO' else None
                 if partials:
-                    for partial, uf in partials:
-                        label = partial.get('arquivo') if isinstance(partial, dict) else None
+                    for partial, uf, label in partials:
+                        if isinstance(partial, dict):
+                            label = label or partial.get('arquivo')
                         if not label:
                             continue
                         _post_catalog_ingest(
