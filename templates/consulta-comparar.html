@@ -34,6 +34,9 @@
   .meta{display:flex;flex-wrap:wrap;gap:.4rem .5rem;align-items:center}
   .meta .chip{border:1px solid var(--ap-border);border-radius:999px;padding:.2rem .6rem;font-size:.75rem;background:#fff}
   .check-grid .form-check{padding:.4rem .5rem;border:1px solid var(--ap-border);border-radius:10px;background:#fff}
+  .check-grid .form-check.suggested{border-color:#0d9488;box-shadow:0 0 0 1px rgba(13,148,136,.25) inset;background:#f0fdfa}
+  .table-smart tbody tr.row-excede td{background:rgba(220,53,69,.08)}
+  .table-smart tbody tr.row-excede:hover td{background:rgba(220,53,69,.12)}
   /* === Autocomplete de Procedimentos === */
 .ap-picker{ position:relative; }
 .ap-input{ padding-right:2.25rem; }
@@ -54,6 +57,15 @@
 }
 .ap-item:last-child{ border-bottom:0; }
 .ap-item:hover, .ap-item.active{ background:rgba(32,132,125,.08); }
+
+.ap-state{ padding:.5rem .75rem; font-size:.85rem; color:var(--ap-muted); background:#fff; border:1px solid var(--ap-border); border-top:0; }
+.ap-hint{border:1px dashed var(--ap-border); background:var(--ap-bg-soft); border-radius:10px; padding:.75rem;}
+.ap-hint .mini-label{display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; margin-bottom:.35rem;}
+.ap-hint .badge{padding:.4rem .6rem; font-size:.75rem; border-radius:999px; border:1px solid rgba(13,148,136,.35); color:#067a6f; background:rgba(13,148,136,.12);}
+.ap-hint .soft{font-size:.8rem;}
+.btn[data-loading="on"] .btn-icon-slot[data-state="icon"],
+.btn[data-loading="on"] .btn-icon-slot[data-state="label"]{ opacity:.6; }
+.btn[data-loading="on"] .spinner-border{ display:inline-block !important; margin-right:.35rem; }
 
 /* Coluna do código fixa, monoespaçada */
 .ap-code{ font-weight:600; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -85,7 +97,7 @@
 
   {# ================= Filtros ================= #}
   <div class="p-3 filters">
-    <form method="get" action="{{ url_for('consulta_comparar') }}" class="row g-3 align-items-end" novalidate>
+    <form id="consultaForm" method="get" action="{{ url_for('consulta_comparar') }}" class="row g-3 align-items-end needs-validation" novalidate>
       <input type="hidden" name="run" value="1">
 
       <div class="col-12 col-lg-4">
@@ -96,6 +108,7 @@
             <option value="{{ n }}" {% if tabela_nome==n %}selected{% endif %}>{{ n }}</option>
           {% endfor %}
         </select>
+        <div class="invalid-feedback">Selecione uma tabela para continuar.</div>
       </div>
 
       <div class="col-6 col-lg-2">
@@ -107,14 +120,23 @@
       </div>
 
       <div class="col-12 col-lg-6">
-  <label class="form-label">Procedimentos (múltiplos)</label>
+  <label class="form-label d-flex justify-content-between align-items-center gap-2">
+    <span>Procedimentos (múltiplos)</span>
+    <span class="mini-label" id="cbhpmProcCounter" aria-live="polite"></span>
+  </label>
 
   <!-- Picker de procedimentos (CBHPM) -->
-  <div id="cbhpmProcPicker" class="ap-picker">
-    <div class="ap-chips" id="cbhpmChips"></div>
+  <div id="cbhpmProcPicker" class="ap-picker" role="combobox" aria-haspopup="listbox" aria-expanded="false">
+    <div class="ap-chips" id="cbhpmChips" aria-live="polite"></div>
     <input id="cbhpmInput" type="text" class="form-control ap-input"
            autocomplete="off" placeholder="Digite código ou parte da descrição...">
-    <div id="cbhpmList" class="ap-list" hidden></div>
+    <div id="cbhpmList" class="ap-list" role="listbox" hidden></div>
+  </div>
+
+  <div id="cbhpmVersoesHint" class="ap-hint mt-2" hidden>
+    <span class="mini-label">CBHPM sugeridas para marcar</span>
+    <div class="soft mb-2">As versões destacadas abaixo têm o procedimento digitado. Marque-as na lista de versões se quiser compará-las.</div>
+    <div class="d-flex flex-wrap gap-2" id="cbhpmVersoesHintList"></div>
   </div>
 
   <div class="mt-1 soft">
@@ -127,8 +149,16 @@
 
 
       <div class="col-12 col-lg-2 d-grid">
-        <button class="btn btn-primary btn-icon" type="submit">
-          <i data-lucide="equal"></i> Comparar
+        <button id="btnSubmitComparar" class="btn btn-primary btn-icon" type="submit" data-default-label="Comparar">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true" hidden></span>
+          <span class="btn-icon-slot" data-state="icon"><i data-lucide="equal"></i></span>
+          <span class="btn-icon-slot" data-state="label">Comparar</span>
+        </button>
+      </div>
+
+      <div class="col-12 col-lg-2 d-grid">
+        <button type="button" class="btn btn-outline-secondary btn-icon" id="btnResetFiltros">
+          <i data-lucide="rotate-ccw"></i> Limpar filtros
         </button>
       </div>
 
@@ -140,14 +170,18 @@
           </div>
         </div>
         <div class="col-12">
-          <div class="d-flex justify-content-between align-items-center mb-2">
-            <div class="soft">Versões disponíveis</div>
-            <div class="d-flex gap-2">
+          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <div class="soft">Versões disponíveis <span class="mini-label" id="versoesCount" aria-live="polite"></span></div>
+            <div class="d-flex flex-wrap gap-2">
+              <div class="input-group input-group-sm" style="width:220px;">
+                <span class="input-group-text"><i data-lucide="search"></i></span>
+                <input type="search" class="form-control" id="filtroVersoes" placeholder="Filtrar versões..." aria-label="Filtrar versões">
+              </div>
               <button id="btnMarkAllVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="check-square"></i> Marcar todas</button>
               <button id="btnClearVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="eraser"></i> Limpar</button>
             </div>
           </div>
-          <div class="row g-2 check-grid">
+          <div class="row g-2 check-grid" id="versoesChecklist">
             {% for v in versoes_disp %}
             <div class="col-12 col-sm-6 col-md-4 col-lg-3">
               <div class="form-check">
@@ -161,8 +195,16 @@
       {% else %}
         {% if prestadores_disp %}
         <div class="col-12">
-          <div class="soft mb-2">Prestadores</div>
-          <div class="row g-2 check-grid">
+          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <div class="soft">Prestadores <span class="mini-label" id="prestadoresCount" aria-live="polite"></span></div>
+            <div class="d-flex flex-wrap gap-2">
+              <div class="input-group input-group-sm" style="width:220px;">
+                <span class="input-group-text"><i data-lucide="search"></i></span>
+                <input type="search" class="form-control" id="filtroPrestadores" placeholder="Filtrar prestadores..." aria-label="Filtrar prestadores">
+              </div>
+            </div>
+          </div>
+          <div class="row g-2 check-grid" id="prestadoresChecklist">
             {% for p in prestadores_disp %}
             <div class="col-12 col-sm-6 col-md-4 col-lg-3">
               <div class="form-check">
@@ -272,6 +314,20 @@
         </button>
       </li>
     </ul>
+  </div>
+
+  <div class="d-flex flex-wrap gap-2 align-items-center mt-2" id="cbhpmScenarioControls">
+    <button type="button" class="btn btn-outline-secondary btn-icon btn-sm" id="btnSaveScenario">
+      <i data-lucide="bookmark-plus"></i> Salvar cenário
+    </button>
+    <div class="input-group input-group-sm" style="max-width:360px;">
+      <span class="input-group-text"><i data-lucide="archive"></i></span>
+      <select class="form-select" id="cbhpmSavedList">
+        <option value="">Cenários salvos...</option>
+      </select>
+      <button class="btn btn-outline-primary" type="button" id="btnApplyScenario">Aplicar</button>
+      <button class="btn btn-outline-danger" type="button" id="btnDeleteScenario">Excluir</button>
+    </div>
   </div>
 
   <div class="tab-content mt-3">
@@ -443,6 +499,8 @@
 
 'use strict';
 const restoreCbhpmPayload = {{ restore_cbhpm_payload|tojson|default('null') }};
+const PROCEDIMENTO_SUGGEST_URL = '/api/procedimentos/suggest';
+const VERSOES_POR_CODIGO_URL = {{ url_for('api_versoes_por_codigo')|tojson }};
 const cbhpmDtpSearchCache = new Map();
 const cbhpmDtpMeta = new Map();
 
@@ -477,12 +535,173 @@ window._procedimentosSelecionados = {{ (procedimentos_raw or [])|tojson }};
 /* ===== Util ===== */
 const $$ = (sel,ctx=document)=>Array.from(ctx.querySelectorAll(sel));
 const brl = (v)=>{ if(v===null||v===undefined||v==='')return '-'; const n=Number(v); return Number.isNaN(n)?v:n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'}); };
+const pct = (v)=>{
+  if(v===null||v===undefined||v==='') return null;
+  const n = Number(v);
+  if(Number.isNaN(n)) return null;
+  return n.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})+'%';
+};
 const esc = (value)=> String(value ?? '').replace(/[&<>"']/g, (ch)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[ch]));
 const toCSV = (rows)=>rows.map(r=>r.map(v=>{const s=(v??'').toString();return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(';')).join('\n');
 const download = (filename, text)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8;'})); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); };
+const SCENARIO_STORAGE_KEY = 'cbhpmSavedScenarios.v1';
+
+function loadSavedScenarios(){
+  try{
+    const raw = localStorage.getItem(SCENARIO_STORAGE_KEY);
+    if(!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  }catch(err){
+    console.warn('Falha ao carregar cenários salvos:', err);
+    return [];
+  }
+}
+
+function persistSavedScenarios(list){
+  try{
+    localStorage.setItem(SCENARIO_STORAGE_KEY, JSON.stringify(list));
+  }catch(err){
+    console.warn('Não foi possível salvar o cenário localmente.', err);
+  }
+}
+
+function scenarioMetricsFromResult(result){
+  if(!result || typeof result !== 'object') return null;
+  const total = _toNumber(result.total_final || result.total);
+  let excedente = 0;
+  let tetoBase = 0;
+  const alertas = Array.isArray(result.teto_alertas) ? result.teto_alertas : [];
+  if(alertas.length){
+    excedente = alertas.reduce((acc, alerta)=> acc + _toNumber(alerta.excedente), 0);
+    tetoBase = alertas.reduce((acc, alerta)=> acc + _toNumber(alerta.teto_valor_total), 0);
+  }else if(_hasValue(result.teto_excedente)){
+    excedente = _toNumber(result.teto_excedente);
+    tetoBase = _toNumber(result.teto_valor_total);
+  }
+  const excedPct = tetoBase > 0 ? (excedente / tetoBase * 100) : null;
+  return { total, excedente, tetoBase, excedPct };
+}
+
+function formatDiffCurrency(value){
+  if(!Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${brl(value)}`;
+}
+
+function formatDiffPercent(value){
+  if(!Number.isFinite(value)) return null;
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}%`;
+}
+
+function prepareItemsForView(items, state){
+  const opts = state || {};
+  let arr = Array.isArray(items) ? items.map(item=>({ ...item })) : [];
+  if(opts.onlyExced){
+    arr = arr.filter(item=>{
+      const status = String(item.teto_status || '').toUpperCase();
+      if(status === 'ULTRAPASSA') return true;
+      return _toNumber(item.teto_excedente) > 0;
+    });
+  }
+  const sortKey = opts.sort || 'codigo';
+  arr.sort((a,b)=>{
+    switch(sortKey){
+      case 'excedente_desc':{
+        const diff = _toNumber(b.teto_excedente) - _toNumber(a.teto_excedente);
+        if(diff !== 0) return diff;
+        return String(a.codigo||'').localeCompare(String(b.codigo||''), 'pt-BR', {numeric:true});
+      }
+      case 'total_desc':{
+        const diff = _toNumber(b.total_final || b.total) - _toNumber(a.total_final || a.total);
+        if(diff !== 0) return diff;
+        return String(a.codigo||'').localeCompare(String(b.codigo||''), 'pt-BR', {numeric:true});
+      }
+      default:
+        return String(a.codigo||'').localeCompare(String(b.codigo||''), 'pt-BR', {numeric:true});
+    }
+  });
+  return arr;
+}
+
+function initTooltips(root){
+  if(!root || !window.bootstrap || !bootstrap.Tooltip) return;
+  root.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el=>{
+    const instance = bootstrap.Tooltip.getInstance(el);
+    if(instance) instance.dispose();
+    new bootstrap.Tooltip(el);
+  });
+}
+
+function highlightVersoes(versoes){
+  const set = new Set((versoes || []).map(v=>String(v)));
+  $$('.ver-chk').forEach(chk=>{
+    const wrapper = chk.closest('.form-check');
+    if(!wrapper) return;
+    if(set.has(chk.value)){
+      wrapper.classList.add('suggested');
+    }else{
+      wrapper.classList.remove('suggested');
+    }
+  });
+}
+
+function initChecklistFilter({ containerId, inputId, countId, checkboxSelector }){
+  const container = document.getElementById(containerId);
+  if(!container) return null;
+  const searchInput = document.getElementById(inputId);
+  const countEl = document.getElementById(countId);
+  const items = [...container.querySelectorAll(checkboxSelector)].map(chk=>{
+    const wrapper = chk.closest('[class*="col-"]') || chk.closest('.form-check');
+    const text = (chk.nextElementSibling?.textContent || '').trim().toLowerCase();
+    return { chk, wrapper, text };
+  });
+
+  function updateCount(){
+    if(!countEl) return;
+    const total = items.length;
+    const selectedCount = items.filter(item=>item.chk.checked).length;
+    const visibleCount = items.filter(item=>!item.wrapper?.hidden).length;
+    let summary = selectedCount ? `${selectedCount}/${total} selecionado${selectedCount>1?'s':''}` : `${total} opções`;
+    if(visibleCount !== total){
+      summary += ` · ${visibleCount} visíveis`;
+    }
+    countEl.textContent = summary;
+  }
+
+  function applyFilter(){
+    const term = (searchInput?.value || '').trim().toLowerCase();
+    items.forEach(item=>{
+      const match = !term || item.text.includes(term);
+      if(item.wrapper){
+        item.wrapper.hidden = !match;
+      }
+    });
+    updateCount();
+  }
+
+  if(searchInput){
+    searchInput.addEventListener('input', applyFilter);
+    searchInput.addEventListener('search', applyFilter);
+  }
+
+  container.addEventListener('change', updateCount, true);
+  applyFilter();
+
+  return {
+    updateCount,
+    applyFilter
+  };
+}
 
 /* ===== Versões (CBHPM) ===== */
-function toggleAllVersoes(state){ $$('.ver-chk').forEach(chk=>chk.checked=!!state); }
+function toggleAllVersoes(state){
+  $$('.ver-chk').forEach(chk=>{ chk.checked = !!state; });
+  if(typeof window._updateVersoesResumo === 'function'){
+    window._updateVersoesResumo();
+  }
+}
 
 /* ===== Exportar/Copiar ===== */
 function collectResults(){
@@ -515,7 +734,11 @@ function openDetalhe(codigo){
   new bootstrap.Modal(modalEl).show();
 
   if(isCBHPM){
-    const params=new URLSearchParams(); params.set('codigo',codigo); if(ufSel)params.set('uf',ufSel); (versoes||[]).forEach(v=>params.append('versoes',v));
+    const params=new URLSearchParams();
+    params.set('codigo',codigo);
+    if(tabelaNome) params.set('tabela_nome', tabelaNome);
+    if(ufSel) params.set('uf',ufSel);
+    (versoes||[]).forEach(v=>params.append('versoes',v));
     fetch('/api/cbhpm/detalhe?'+params.toString())
       .then(r=>r.json()).then(data=>{
         const items=(data&&data.items)?data.items:[];
@@ -563,6 +786,10 @@ const _toNumber = (value)=> {
 window._cbhpmHasResult = window._cbhpmHasResult || false;
 window._cbhpmLastPayload = window._cbhpmLastPayload || null;
 window._cbhpmViaPctByCode = window._cbhpmViaPctByCode || {};
+window._cbhpmViewState = window._cbhpmViewState || { onlyExced:false, sort:'codigo' };
+window._cbhpmSavedScenarios = window._cbhpmSavedScenarios || loadSavedScenarios();
+window._cbhpmBaselineScenario = window._cbhpmBaselineScenario || null;
+window._cbhpmCurrentResult = window._cbhpmCurrentResult || null;
 
 const _normalizeCode = (code)=> (code||'').toString().trim();
 const _formatPctLabel = (pct)=> `${Number(pct||'100').toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:2})}%`;
@@ -615,7 +842,13 @@ function simularCBHPM(){
     .then(r=>r.json())
     .then(data=>{
       window._cbhpmHasResult = !data.error;
-      if(data.error){ out.innerHTML='<div class="alert alert-danger">'+data.error+'</div>'; return; }
+      if(data.error){
+        window._cbhpmCurrentResult = null;
+        out.innerHTML='<div class="alert alert-danger">'+data.error+'</div>';
+        return;
+      }
+      window._cbhpmCurrentResult = data;
+      const state = window._cbhpmViewState || (window._cbhpmViewState = { onlyExced:false, sort:'codigo' });
 
       const serverMapRaw = (data.via_entrada_pcts && typeof data.via_entrada_pcts === 'object') ? data.via_entrada_pcts : {};
       const serverMap = {};
@@ -634,30 +867,54 @@ function simularCBHPM(){
       const tetoStatus = String(tetoStatusRaw || 'OK').toUpperCase();
       const excedeuTeto = tetoStatus === 'ULTRAPASSA';
       const excedenteTotal = tetoAlertas.reduce((acc, alerta)=> acc + _toNumber(alerta.excedente), 0);
+      const totalTetoBase = tetoAlertas.reduce((acc, alerta)=> acc + _toNumber(alerta.teto_valor_total), 0);
+      const excedenteTotalPct = totalTetoBase > 0 ? (excedenteTotal / totalTetoBase * 100) : null;
+      const statusTooltip = excedeuTeto
+        ? `Total excede o teto em ${brl(excedenteTotal)}${Number.isFinite(excedenteTotalPct)?` (${excedenteTotalPct.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}%)`:''}`
+        : 'Todos os itens dentro do teto cadastrado';
 
       if(Array.isArray(data.itens)){
         const viaSummary = _viaSummary(serverMap);
         const statusBadge = !hasTetoInfo
           ? '—'
           : (excedeuTeto
-              ? '<span class="badge bg-danger-subtle text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa o teto</span>'
-              : '<span class="badge bg-success-subtle text-success"><i class="bi bi-check-circle me-1"></i>Dentro do teto</span>');
+              ? `<span class="badge bg-danger-subtle text-danger" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa o teto</span>`
+              : `<span class="badge bg-success-subtle text-success" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-check-circle me-1"></i>Dentro do teto</span>`);
         let html='';
         if(tetoAlertas.length){
           const list = tetoAlertas.map(alerta=>{
             const excedenteFmt = brl(alerta.excedente);
-            return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong></li>`;
+            const excedPct = alerta.pct_excedente ? pct(alerta.pct_excedente) : null;
+            const pctInfo = excedPct ? ` (<strong>${excedPct}</strong>)` : '';
+            return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong>${pctInfo}</li>`;
           }).join('');
           html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3"><i class="bi bi-exclamation-triangle-fill fs-5"></i><div><strong>Ultrapassa o teto CBHPM</strong><ul class="mb-0 mt-2 ps-3">${list}</ul></div></div>`;
         } else if(hasTetoInfo){
           html += '<div class="alert alert-info d-flex align-items-start gap-2 mb-3"><i class="bi bi-info-circle-fill fs-5"></i><div>Todos os itens ficaram dentro do teto CBHPM cadastrado.</div></div>';
         }
 
-        html+='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
+        html += '<div class="d-flex flex-wrap gap-2 align-items-center mb-2">'
+             + '<div class="form-check form-switch mb-0">'
+             + `<input class="form-check-input" type="checkbox" id="cbhpmOnlyExced" ${state.onlyExced?'checked':''}>`
+             + '<label class="form-check-label" for="cbhpmOnlyExced">Somente ultrapassando</label>'
+             + '</div>'
+             + '<div class="input-group input-group-sm" style="max-width:260px;">'
+             + '<span class="input-group-text">Ordenar</span>'
+             + '<select class="form-select" id="cbhpmSort">'
+             + `<option value="codigo" ${state.sort==='codigo'?'selected':''}>Código</option>`
+             + `<option value="excedente_desc" ${state.sort==='excedente_desc'?'selected':''}>Excedente (maior)</option>`
+             + `<option value="total_desc" ${state.sort==='total_desc'?'selected':''}>Total (maior)</option>`
+             + '</select>'
+             + '</div>'
+             + '<button type="button" class="btn btn-outline-secondary btn-sm" id="cbhpmResetView">Limpar filtros</button>'
+             + '</div>';
+
+        html+='<div class="table-responsive mt-2" style="max-height:70vh"><table class="table table-sm table-striped align-middle mb-0">';
         html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th><th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-center">Status</th><th class="text-end">Excedente</th></tr></thead><tbody>';
 
         const activeCodes = new Set();
-        data.itens.forEach(it=>{
+        const tableItems = prepareItemsForView(data.itens, state);
+        tableItems.forEach(it=>{
           const isDtp = (it.origem === 'dtp');
           const descricao = (it.descricao||'-');
           const descHtml = isDtp ? `${descricao} <span class="badge bg-info-subtle text-info ms-1">DTP</span>` : descricao;
@@ -685,20 +942,25 @@ function simularCBHPM(){
           const selectHtml = isDtp ? '-' : `<select class="form-select form-select-sm via-selector" data-code="${codeKey}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')}</select>`;
           const tetoValor = (!isDtp && _hasValue(it.teto_valor_total)) ? brl(it.teto_valor_total) : '-';
           let excedenteValor = (!isDtp && _hasValue(it.teto_excedente)) ? brl(it.teto_excedente) : '-';
+          const excedentePct = (!isDtp && _hasValue(it.teto_pct_excedente)) ? pct(it.teto_pct_excedente) : null;
           const itemStatus = (!isDtp && it.teto_status) ? String(it.teto_status).toUpperCase() : 'OK';
+          const rowClass = (!isDtp && itemStatus === 'ULTRAPASSA') ? 'row-excede' : '';
           const tetoClass = (!isDtp && itemStatus === 'ULTRAPASSA') ? 'text-end text-danger fw-semibold' : 'text-end';
-          let excedClass = tetoClass;
+          const excedClass = (!isDtp && itemStatus === 'ULTRAPASSA') ? 'text-end text-danger fw-semibold' : 'text-end';
           if(excedenteValor === '-' && (!isDtp && itemStatus === 'ULTRAPASSA')){
             excedenteValor = 'Ultrapassa';
           }
-          if(itemStatus !== 'ULTRAPASSA'){
-            excedClass = 'text-end';
+          if(excedenteValor !== '-' && excedenteValor !== 'Ultrapassa' && excedentePct){
+            excedenteValor += ` (${excedentePct})`;
           }
+          const statusTooltipRow = itemStatus === 'ULTRAPASSA'
+            ? `Total ${totalFinal} ultrapassa teto ${tetoValor}${excedenteValor && excedenteValor !== 'Ultrapassa'?` em ${excedenteValor}`:''}`
+            : `Dentro do teto ${tetoValor}`;
           const statusHtml = isDtp ? '-' : (itemStatus === 'ULTRAPASSA'
-            ? '<span class="badge bg-danger-subtle text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa</span>'
-            : '<span class="badge bg-success-subtle text-success"><i class="bi bi-check-circle me-1"></i>OK</span>');
-          html+='<tr>'
-             +  '<td>'+ (it.codigo||'-') +'</td>'
+            ? `<span class="badge bg-danger-subtle text-danger" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltipRow)}"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa</span>`
+            : `<span class="badge bg-success-subtle text-success" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltipRow)}"><i class="bi bi-check-circle me-1"></i>OK</span>`);
+      html+='<tr class="'+rowClass+'">'
+         +  '<td>'+ (it.codigo||'-') +'</td>'
              +  '<td>'+ descHtml +'</td>'
              +  '<td class="text-end">'+ porte +'</td>'
              +  '<td class="text-end">'+ filme +'</td>'
@@ -718,6 +980,8 @@ function simularCBHPM(){
         html+='</tbody></table></div>';
         const totalOriginalAgg = brl(data.total_original || data.total);
         const totalFinalAgg = brl(data.total_final || data.total);
+        const totalTetoBase = tetoAlertas.reduce((acc, alerta)=> acc + _toNumber(alerta.teto_valor_total), 0);
+        const excedenteTotalPct = totalTetoBase > 0 ? pct((excedenteTotal / totalTetoBase) * 100) : null;
         html+='<div class="mt-3"><span class="mini-label">Porte:</span> <strong>'+brl(data.total_porte)+'</strong> · '
              + '<span class="mini-label">Filme:</span> <strong>'+brl(data.total_filme)+'</strong> · '
              + '<span class="mini-label">UCO:</span> <strong>'+brl(data.total_uco)+'</strong> · '
@@ -727,11 +991,25 @@ function simularCBHPM(){
              + '<span class="mini-label">Total final:</span> <strong>'+totalFinalAgg+'</strong> · '
              + '<span class="mini-label">Teto:</span> '+ statusBadge;
         if(excedenteTotal > 0){
-          html += ' · <span class="mini-label">Excedente acumulado:</span> <strong>'+brl(excedenteTotal)+'</strong>';
+          html += ' · <span class="mini-label">Excedente acumulado:</span> <strong>'+brl(excedenteTotal)+'</strong>'+ (excedenteTotalPct ? ` (<strong>${excedenteTotalPct}</strong>)` : '');
         }
         html+='</div>';
+        const baseline = window._cbhpmBaselineScenario;
+        if(baseline && baseline.metrics){
+          const currentMetrics = scenarioMetricsFromResult(data);
+          if(currentMetrics){
+            const baseMetrics = baseline.metrics || {};
+            const diffTotal = Number.isFinite(currentMetrics.total) && Number.isFinite(baseMetrics.total) ? currentMetrics.total - baseMetrics.total : NaN;
+            const diffExced = Number.isFinite(currentMetrics.excedente) && Number.isFinite(baseMetrics.excedente) ? currentMetrics.excedente - baseMetrics.excedente : NaN;
+            const diffPct = Number.isFinite(currentMetrics.excedPct) && Number.isFinite(baseMetrics.excedPct) ? (currentMetrics.excedPct - baseMetrics.excedPct) : NaN;
+            const pctLabel = formatDiffPercent(diffPct);
+            html += `<div class="soft mt-2">Comparação com “${esc(baseline.name || 'Sem nome')}”: Total ${formatDiffCurrency(diffTotal)} · Excedente ${formatDiffCurrency(diffExced)}${pctLabel?` · Δ% excedente ${pctLabel}`:''}</div>`;
+          }
+        }
         html+='<div class="soft mt-1">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Redutor via entrada: <strong>'+ viaSummary +'</strong></div>';
-        out.innerHTML=html; if(window.lucide)lucide.createIcons();
+        out.innerHTML=html;
+        if(window.lucide)lucide.createIcons();
+        initTooltips(out);
         out.querySelectorAll('.via-selector').forEach(sel=>{
           sel.addEventListener('change', (ev)=>{
             const code = ev.target.dataset.code;
@@ -740,6 +1018,28 @@ function simularCBHPM(){
             simularCBHPM();
           });
         });
+        const filterToggle = out.querySelector('#cbhpmOnlyExced');
+        if(filterToggle){
+          filterToggle.addEventListener('change', ()=>{
+            state.onlyExced = filterToggle.checked;
+            simularCBHPM();
+          });
+        }
+        const sortSelect = out.querySelector('#cbhpmSort');
+        if(sortSelect){
+          sortSelect.addEventListener('change', ()=>{
+            state.sort = sortSelect.value;
+            simularCBHPM();
+          });
+        }
+        const resetBtn = out.querySelector('#cbhpmResetView');
+        if(resetBtn){
+          resetBtn.addEventListener('click', ()=>{
+            state.onlyExced = false;
+            state.sort = 'codigo';
+            simularCBHPM();
+          });
+        }
         return;
       }
 
@@ -756,23 +1056,26 @@ function simularCBHPM(){
       const statusBadgeSingle = !hasTetoInfo
         ? '—'
         : (tetoStatus === 'ULTRAPASSA'
-            ? '<span class="badge bg-danger-subtle text-danger"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa o teto</span>'
-            : '<span class="badge bg-success-subtle text-success"><i class="bi bi-check-circle me-1"></i>Dentro do teto</span>');
+            ? `<span class="badge bg-danger-subtle text-danger" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa o teto</span>`
+            : `<span class="badge bg-success-subtle text-success" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-check-circle me-1"></i>Dentro do teto</span>`);
       const totalOriginalSingle = brl(data.total_original || data.total);
       const totalFinalSingle = brl(data.total_final || data.total);
       const tetoValorSingle = _hasValue(data.teto_valor_total) ? brl(data.teto_valor_total) : '-';
       const excedenteSingle = _hasValue(data.teto_excedente) ? brl(data.teto_excedente) : '-';
+      const excedPctSingle = _hasValue(data.teto_pct_excedente) ? pct(data.teto_pct_excedente) : null;
       const tetoCardSubtitle = !hasTetoInfo
         ? '-'
         : (tetoStatus === 'ULTRAPASSA'
-            ? (excedenteSingle !== '-' ? `Excedente ${excedenteSingle}` : 'Ultrapassa o teto')
+            ? (excedenteSingle !== '-' ? `Excedente ${excedenteSingle}${excedPctSingle?' ('+excedPctSingle+')':''}` : 'Ultrapassa o teto')
             : 'Dentro do limite');
 
       let html='';
       if(tetoAlertas.length){
         const list = tetoAlertas.map(alerta=>{
           const excedenteFmt = brl(alerta.excedente);
-          return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong></li>`;
+          const excedPct = alerta.pct_excedente ? pct(alerta.pct_excedente) : null;
+          const pctInfo = excedPct ? ` (<strong>${excedPct}</strong>)` : '';
+          return `<li><strong>${esc(alerta.codigo||'-')}</strong> — ${esc(alerta.descricao||'-')}: total ${brl(alerta.total_calculado)} × teto ${brl(alerta.teto_valor_total)} ⇒ excedente <strong>${excedenteFmt}</strong>${pctInfo}</li>`;
         }).join('');
         html += `<div class="alert alert-warning d-flex align-items-start gap-2 mb-3"><i class="bi bi-exclamation-triangle-fill fs-5"></i><div><strong>Ultrapassa o teto CBHPM</strong><ul class="mb-0 mt-2 ps-3">${list}</ul></div></div>`;
       } else if(hasTetoInfo){
@@ -792,7 +1095,19 @@ function simularCBHPM(){
       html+='</div></div>';
       html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong> · Redutor via entrada: <strong>'+ pctLabel +'</strong> · Teto: '+ statusBadgeSingle +'</div>';
       if(excedenteSingle !== '-' && hasTetoInfo){
-        html+='<div class="soft text-danger">Excedente calculado: <strong>'+excedenteSingle+'</strong></div>';
+        html+='<div class="soft text-danger">Excedente calculado: <strong>'+excedenteSingle+'</strong>'+ (excedPctSingle?` (<strong>${excedPctSingle}</strong>)`:'') +'</div>';
+      }
+      const baseline = window._cbhpmBaselineScenario;
+      if(baseline && baseline.metrics){
+        const currentMetrics = scenarioMetricsFromResult(data);
+        if(currentMetrics){
+          const baseMetrics = baseline.metrics || {};
+          const diffTotal = Number.isFinite(currentMetrics.total) && Number.isFinite(baseMetrics.total) ? currentMetrics.total - baseMetrics.total : NaN;
+          const diffExced = Number.isFinite(currentMetrics.excedente) && Number.isFinite(baseMetrics.excedente) ? currentMetrics.excedente - baseMetrics.excedente : NaN;
+          const diffPct = Number.isFinite(currentMetrics.excedPct) && Number.isFinite(baseMetrics.excedPct) ? (currentMetrics.excedPct - baseMetrics.excedPct) : NaN;
+          const pctLabelDiff = formatDiffPercent(diffPct);
+          html += `<div class="soft mt-2">Comparação com “${esc(baseline.name || 'Sem nome')}”: Total ${formatDiffCurrency(diffTotal)} · Excedente ${formatDiffCurrency(diffExced)}${pctLabelDiff?` · Δ% excedente ${pctLabelDiff}`:''}</div>`;
+        }
       }
       if(baseCode){
         const currentPct = serverMap[baseCode] || _getViaPctFor(baseCode);
@@ -804,6 +1119,8 @@ function simularCBHPM(){
         _pruneViaPctStore([baseCode]);
       }
       out.innerHTML=html;
+      if(window.lucide)lucide.createIcons();
+      initTooltips(out);
       out.querySelectorAll('.via-selector').forEach(sel=>{
         sel.addEventListener('change', (ev)=>{
           const code = ev.target.dataset.code;
@@ -1008,7 +1325,7 @@ async function buscarDTPPacote(){
   if(ctx.uf)          qs.set('uf', ctx.uf);
 
   try{
-    const resp = await fetch(`/api/procedimentos/suggest?${qs.toString()}`);
+    const resp = await fetch(`${PROCEDIMENTO_SUGGEST_URL}?${qs.toString()}`);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     results = Array.isArray(data.items) ? data.items.map(x=>({
@@ -1069,10 +1386,22 @@ async function buscarDTPPacote(){
   const input = document.getElementById('cbhpmInput');
   const list  = document.getElementById('cbhpmList');
   const chips = document.getElementById('cbhpmChips');
+  const countLabel = document.getElementById('cbhpmProcCounter');
+  const hintWrap = document.getElementById('cbhpmVersoesHint');
+  const hintList = document.getElementById('cbhpmVersoesHintList');
+  if(!input || !list || !chips) return;
+
+  wrap.setAttribute('aria-controls', 'cbhpmList');
+  input.setAttribute('aria-controls', 'cbhpmList');
+  input.setAttribute('aria-autocomplete', 'list');
 
   let results = [];
   let activeIndex = -1;
   const selected = new Map();
+  let lastQuery = '';
+  const MIN_CHARS = 2;
+  const versoesCache = new Map(); // chave composta codigo+UF
+  const versoesByCodigo = new Map();
 
   function escapeHtml(value){
     return String(value ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]));
@@ -1085,6 +1414,11 @@ async function buscarDTPPacote(){
     return text.length > max ? text.slice(0, max - 3) + '...' : text;
   }
 
+  function formUfFiltro(){
+    const sel = document.querySelector('select[name="uf"]');
+    return sel ? (sel.value || '') : '';
+  }
+
   function versaoSelecionada(){
     const sel = document.getElementById('cbhpm-versao');
     return sel && sel.value ? sel.value : '';
@@ -1094,9 +1428,42 @@ async function buscarDTPPacote(){
     return sel ? (sel.value || '') : '';
   }
 
+  function cacheKey(code, uf){
+    return `${code}@@${uf || ''}`;
+  }
+
+  function setExpanded(state){
+    wrap.setAttribute('aria-expanded', state ? 'true' : 'false');
+    input.setAttribute('aria-expanded', state ? 'true' : 'false');
+  }
+
+  function closeList(){
+    list.hidden = true;
+    list.innerHTML = '';
+    setExpanded(false);
+  }
+
+  function showListMessage(message){
+    list.innerHTML = `<div class="ap-state">${escapeHtml(message)}</div>`;
+    list.hidden = false;
+    setExpanded(true);
+  }
+
   function renderList(){
-    list.innerHTML = results.map((item, idx)=>`
-      <div class="ap-item ${idx===activeIndex?'active':''}" data-codigo="${escapeAttr(item.codigo)}">
+    if(!results.length){
+      if(lastQuery.length >= MIN_CHARS){
+        showListMessage('Nenhum procedimento encontrado.');
+      }else if(lastQuery.length){
+        showListMessage('Digite pelo menos 2 caracteres para buscar.');
+      }else{
+        closeList();
+      }
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+
+    const optionsHtml = results.map((item, idx)=>`
+      <div class="ap-item ${idx===activeIndex?'active':''}" id="cbhpm-opt-${idx}" role="option" aria-selected="${idx===activeIndex?'true':'false'}" data-codigo="${escapeAttr(item.codigo)}" tabindex="-1">
         <div class="ap-code">${escapeHtml(item.codigo)}</div>
         <div class="ap-desc">
           <div>${escapeHtml(item.descricao || '')}</div>
@@ -1104,7 +1471,17 @@ async function buscarDTPPacote(){
         </div>
       </div>
     `).join('');
-    list.hidden = results.length === 0;
+
+    list.innerHTML = optionsHtml;
+    list.hidden = false;
+    setExpanded(true);
+    const activeEl = list.querySelector('.ap-item.active');
+    if(activeEl){
+      input.setAttribute('aria-activedescendant', activeEl.id);
+      activeEl.scrollIntoView({ block:'nearest' });
+    }else{
+      input.removeAttribute('aria-activedescendant');
+    }
   }
 
   function renderChips(){
@@ -1116,24 +1493,102 @@ async function buscarDTPPacote(){
         <input type="hidden" name="procedimentos" value="${escapeAttr(value.codigo)}">
       </span>
     `).join('');
+    if(countLabel){
+      const count = selected.size;
+      countLabel.textContent = count ? `${count} selecionado${count>1?'s':''}` : 'Nenhum selecionado';
+    }
+  }
+
+  function renderVersoesHint(){
+    const union = new Set();
+    versoesByCodigo.forEach(list=>{
+      (Array.isArray(list) ? list : []).forEach(v=>{ if(v) union.add(String(v)); });
+    });
+
+    if(!hintWrap || !hintList){
+      highlightVersoes([...union]);
+      return;
+    }
+
+    if(!union.size){
+      highlightVersoes([]);
+      if(versoesByCodigo.size){
+        hintWrap.hidden = false;
+        hintList.innerHTML = '<span class="soft">Nenhuma versão CBHPM encontrada para os códigos selecionados.</span>';
+      }else{
+        hintWrap.hidden = true;
+        hintList.innerHTML = '';
+      }
+      return;
+    }
+
+    const sorted = [...union].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+    hintList.innerHTML = sorted.map(v=>`<span class="badge">${escapeHtml(v)}</span>`).join('');
+    hintWrap.hidden = false;
+    highlightVersoes(sorted);
+  }
+
+  function ensureVersoes(code){
+    const normalized = (code || '').trim();
+    if(!normalized) return;
+    const ufFiltro = formUfFiltro();
+    const key = cacheKey(normalized, ufFiltro);
+
+    if(versoesCache.has(key)){
+      versoesByCodigo.set(normalized, versoesCache.get(key));
+      renderVersoesHint();
+      return;
+    }
+
+    if(hintWrap && hintList){
+      hintWrap.hidden = false;
+      hintList.innerHTML = '<span class="soft">Carregando versões sugeridas...</span>';
+    }
+
+    const params = new URLSearchParams({ codigo: normalized });
+    if(ufFiltro) params.set('uf', ufFiltro);
+
+    fetch(`${VERSOES_POR_CODIGO_URL}?${params.toString()}`)
+      .then(resp=> resp.ok ? resp.json() : [])
+      .then(data=>{
+        const list = Array.isArray(data) ? data : [];
+        versoesCache.set(key, list);
+        if(selected.has(normalized)){
+          versoesByCodigo.set(normalized, list);
+        }
+        renderVersoesHint();
+      })
+      .catch(()=>{
+        versoesCache.set(key, []);
+        if(selected.has(normalized)){
+          versoesByCodigo.set(normalized, []);
+        }
+        renderVersoesHint();
+      });
   }
 
   function add(item){
-    if(!item || !item.codigo || selected.has(item.codigo)) return;
-    selected.set(item.codigo, item);
+    if(!item) return;
+    const normalized = (item.codigo || '').trim();
+    if(!normalized || selected.has(normalized)) return;
+    selected.set(normalized, { ...item, codigo: normalized });
     renderChips();
+    ensureVersoes(normalized);
   }
 
   function remove(codigo){
     if(!codigo) return;
-    selected.delete(codigo);
+    const normalized = (codigo || '').trim();
+    selected.delete(normalized);
+    versoesByCodigo.delete(normalized);
     renderChips();
+    renderVersoesHint();
   }
 
   function clearResults(){
     results = [];
     activeIndex = -1;
-    renderList();
+    closeList();
   }
 
   function pick(index){
@@ -1146,9 +1601,14 @@ async function buscarDTPPacote(){
   const debounce = (fn, ms)=>{ let t; return (...args)=>{ clearTimeout(t); t = setTimeout(()=>fn(...args), ms); }; };
   const buscar = debounce(async (query)=>{
     query = (query || '').trim();
-    if(query.length < 2){ clearResults(); return; }
+    lastQuery = query;
+    if(query.length < MIN_CHARS){
+      results = [];
+      renderList();
+      return;
+    }
 
-    const url = new URL('/api/procedimentos/suggest', window.location.origin);
+    const url = new URL(PROCEDIMENTO_SUGGEST_URL, window.location.origin);
     url.searchParams.set('q', query);
     const versao = versaoSelecionada();
     if(versao) url.searchParams.set('tabela_nome', versao);
@@ -1157,25 +1617,41 @@ async function buscarDTPPacote(){
     url.searchParams.set('limit', '30');
 
     try{
+      showListMessage('Buscando procedimentos...');
       const response = await fetch(url);
+      if(!response.ok){
+        results = [];
+        renderList();
+        return;
+      }
       const data = await response.json();
       const items = Array.isArray(data?.items) ? data.items : [];
-      results = items.map(x => ({
-        codigo: x.codigo ?? x.id ?? '',
-        descricao: x.descricao ?? x.nome ?? '',
-        extra: x.caminho ?? x.grupo ?? ''
-      })).filter(x => x.codigo && !selected.has(x.codigo));
+      results = items.map(x => {
+        const codigo = (x.codigo ?? x.id ?? '').toString().trim();
+        return {
+          codigo,
+          descricao: x.descricao ?? x.nome ?? '',
+          extra: x.caminho ?? x.grupo ?? ''
+        };
+      }).filter(x => x.codigo && !selected.has(x.codigo));
       activeIndex = results.length ? 0 : -1;
       renderList();
     }catch(err){
       console.error('suggest fail:', err);
-      clearResults();
+      results = [];
+      showListMessage('Não foi possível buscar agora. Tente novamente.');
     }
   }, 180);
 
+  function moveSelection(delta){
+    if(!results.length){ return; }
+    activeIndex = Math.min(Math.max(activeIndex + delta, 0), results.length - 1);
+    renderList();
+  }
+
   input.addEventListener('input', event => buscar(event.target.value));
   input.addEventListener('keydown', event =>{
-    if(list.hidden && event.key === 'Enter'){
+    if(event.key === 'Enter' && list.hidden){
       const raw = input.value.trim();
       if(raw){
         const code = raw.split(' - ', 1)[0].trim();
@@ -1184,15 +1660,20 @@ async function buscarDTPPacote(){
       }
       return;
     }
+    if(list.hidden && (event.key === 'ArrowDown' || event.key === 'ArrowUp')){
+      if(results.length){
+        event.preventDefault();
+        renderList();
+      }
+      return;
+    }
     if(list.hidden) return;
     if(event.key === 'ArrowDown'){
       event.preventDefault();
-      activeIndex = Math.min(activeIndex + 1, results.length - 1);
-      renderList();
+      moveSelection(1);
     }else if(event.key === 'ArrowUp'){
       event.preventDefault();
-      activeIndex = Math.max(activeIndex - 1, 0);
-      renderList();
+      moveSelection(-1);
     }else if(event.key === 'Enter'){
       event.preventDefault();
       pick(activeIndex);
@@ -1221,6 +1702,12 @@ async function buscarDTPPacote(){
     }
   });
 
+  document.addEventListener('focusin', event =>{
+    if(!wrap.contains(event.target)){
+      clearResults();
+    }
+  });
+
   const initial = Array.isArray(window._procedimentosSelecionados) ? window._procedimentosSelecionados : [];
   initial.forEach(raw => {
     const code = (raw || '').split(' - ', 1)[0].trim();
@@ -1229,62 +1716,147 @@ async function buscarDTPPacote(){
   });
 
   window._cbhpm_getSelectedCodes = () => [...selected.keys()];
-})();
-// === PATCH: garantir que o "comparar" filtre por código digitado ===
-(function () {
-  const form = document.querySelector('form[action="{{ url_for("consulta_comparar") }}"]');
-  if (!form) return;
+  window._cbhpm_clearSelection = () => {
+    selected.clear();
+    versoesByCodigo.clear();
+    renderChips();
+    renderVersoesHint();
+    clearResults();
+  };
+  window._cbhpm_refreshVersoesHints = () => {
+    versoesByCodigo.clear();
+    if(!selected.size){
+      renderVersoesHint();
+      return;
+    }
+    [...selected.keys()].forEach(code=> ensureVersoes(code));
+  };
 
-  // util: extrai códigos de "12345" ou "12345 - descrição"
-  function extractCodes(raw) {
+  renderChips();
+  renderVersoesHint();
+})();
+// === PATCH: garantir que o "comparar" filtre por código digitado + validação visual ===
+(function () {
+  const form = document.getElementById('consultaForm');
+  if (!form) return;
+  const submitButton = document.getElementById('btnSubmitComparar');
+
+  const setSubmitLoading = (state) => {
+    if (!submitButton) return;
+    const spinner = submitButton.querySelector('.spinner-border');
+    const labelEl = submitButton.querySelector('[data-state="label"]');
+    if (state) {
+      submitButton.dataset.loading = 'on';
+      submitButton.disabled = true;
+      if (spinner) spinner.hidden = false;
+      if (labelEl) labelEl.textContent = 'Consultando...';
+    } else {
+      submitButton.dataset.loading = 'off';
+      submitButton.disabled = false;
+      if (spinner) spinner.hidden = true;
+      if (labelEl) labelEl.textContent = submitButton?.dataset?.defaultLabel || 'Comparar';
+    }
+  };
+
+  const extractCodes = (raw) => {
     if (!raw) return [];
     const txt = String(raw).trim();
-    // suporta múltiplos separados por vírgula, espaço, ; ou quebra de linha
+    if (!txt) return [];
     const parts = txt.split(/\r?\n|[;,]+|\s+/).filter(Boolean);
     const codes = [];
-    parts.forEach(p => {
+    parts.forEach((p) => {
       const code = p.split(' - ', 1)[0].trim();
       if (code) codes.push(code);
     });
     return codes;
-  }
+  };
 
   form.addEventListener('submit', (ev) => {
-    // já existem chips/inputs "procedimentos"? se sim, mantém
     const already = form.querySelectorAll('input[name="procedimentos"]').length;
+    if (!form.checkValidity()) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      form.classList.add('was-validated');
+      setSubmitLoading(false);
+      return;
+    }
 
-    // pega o que estiver digitado no picker e no textarea de pacote
-    const inputTyped = document.getElementById('cbhpmInput')?.value || '';
-    const pacoteRaw  = document.getElementById('cbhpm-pacote')?.value || '';
+    form.classList.add('was-validated');
 
-    // se não há chips, cria a partir do que foi digitado/colado
     if (!already) {
-      const fromInput  = extractCodes(inputTyped);
+      const inputTyped = document.getElementById('cbhpmInput')?.value || '';
+      const pacoteRaw = document.getElementById('cbhpm-pacote')?.value || '';
+      const fromInput = extractCodes(inputTyped);
       const fromPacote = extractCodes(pacoteRaw);
       const all = [...new Set([...fromInput, ...fromPacote])];
-      all.forEach(code => {
+      all.forEach((code) => {
         const hid = document.createElement('input');
         hid.type = 'hidden';
         hid.name = 'procedimentos';
         hid.value = code;
+        hid.dataset.autogen = '1';
         form.appendChild(hid);
       });
-
-      // dica: se você quiser que o backend trate como busca EXATA por código:
       if (all.length > 0) {
         const ex = document.createElement('input');
         ex.type = 'hidden';
         ex.name = 'codigo_exact';
         ex.value = '1';
+        ex.dataset.autogen = '1';
         form.appendChild(ex);
       }
     }
 
-    // limpa o input livre para evitar que o backend use um "q" genérico
-    if (document.getElementById('cbhpmInput')) {
-      document.getElementById('cbhpmInput').value = '';
+    const pickerInput = document.getElementById('cbhpmInput');
+    if (pickerInput) {
+      pickerInput.value = '';
     }
+
+    setSubmitLoading(true);
   });
+
+  const resetProcedimentos = () => {
+    if (typeof window._cbhpm_clearSelection === 'function') {
+      window._cbhpm_clearSelection();
+    }
+    form.querySelectorAll('input[data-autogen="1"]').forEach((el) => el.remove());
+    const list = document.getElementById('cbhpmList');
+    if (list) {
+      list.innerHTML = '';
+      list.hidden = true;
+    }
+    const countLabel = document.getElementById('cbhpmProcCounter');
+    if (countLabel) countLabel.textContent = 'Nenhum selecionado';
+  };
+
+  form.addEventListener('reset', () => {
+    setTimeout(() => {
+      form.classList.remove('was-validated');
+      setSubmitLoading(false);
+      resetProcedimentos();
+    }, 0);
+  });
+
+  const resetBtn = document.getElementById('btnResetFiltros');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      form.reset();
+      form.classList.remove('was-validated');
+      setSubmitLoading(false);
+      resetProcedimentos();
+      ['filtroVersoes', 'filtroPrestadores'].forEach((id) => {
+        const input = document.getElementById(id);
+        if (input) {
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      });
+      if (typeof window._applyVersoesFiltro === 'function') window._applyVersoesFiltro();
+      if (typeof window._updateVersoesResumo === 'function') window._updateVersoesResumo();
+      if (typeof window._applyPrestadoresFiltro === 'function') window._applyPrestadoresFiltro();
+      if (typeof window._updatePrestadoresResumo === 'function') window._updatePrestadoresResumo();
+    });
+  }
 })();
 /* === Helper: monta o payload do simulador CBHPM (reuso) === */
 
@@ -1402,6 +1974,96 @@ function setCBHPMPayload(data){
   renderDtpSelected();
 }
 
+function refreshScenarioSelect(){
+  const select = document.getElementById('cbhpmSavedList');
+  if(!select) return;
+  const scenarios = Array.isArray(window._cbhpmSavedScenarios) ? window._cbhpmSavedScenarios : [];
+  const current = select.value;
+  select.innerHTML = '<option value="">Cenários salvos...</option>' + scenarios.map(item=>{
+    const label = item.name || 'Sem nome';
+    return `<option value="${esc(item.id)}">${esc(label)}</option>`;
+  }).join('');
+  if(current && scenarios.some(s=>s.id === current)){
+    select.value = current;
+  }
+}
+
+function handleSaveScenario(){
+  const payload = getCBHPMPayload();
+  if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
+    alert('Informe ao menos um código ou pacote antes de salvar.');
+    return;
+  }
+  if(!window._cbhpmCurrentResult){
+    alert('Execute a simulação antes de salvar o cenário.');
+    return;
+  }
+  const defaultName = payload.codigo || (payload.codigos && payload.codigos[0]) || `Cenário ${new Date().toLocaleString('pt-BR')}`;
+  const name = prompt('Nome para o cenário:', defaultName);
+  if(!name) return;
+  const scenarios = Array.isArray(window._cbhpmSavedScenarios) ? window._cbhpmSavedScenarios : [];
+  const metrics = scenarioMetricsFromResult(window._cbhpmCurrentResult) || {};
+  const scenario = {
+    id: (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+    name: name.trim(),
+    created_at: new Date().toISOString(),
+    payload,
+    metrics
+  };
+  scenarios.push(scenario);
+  window._cbhpmSavedScenarios = scenarios;
+  persistSavedScenarios(scenarios);
+  refreshScenarioSelect();
+  if(window.showToast){
+    showToast('Cenário salvo com sucesso.', 'success');
+  }
+}
+
+function handleApplyScenario(){
+  const select = document.getElementById('cbhpmSavedList');
+  if(!select || !select.value) return;
+  const scenarios = Array.isArray(window._cbhpmSavedScenarios) ? window._cbhpmSavedScenarios : [];
+  const scenario = scenarios.find(s=>s.id === select.value);
+  if(!scenario){
+    alert('Cenário não encontrado.');
+    return;
+  }
+  setCBHPMPayload(scenario.payload);
+  window._cbhpmBaselineScenario = scenario;
+  simularCBHPM();
+}
+
+function handleDeleteScenario(){
+  const select = document.getElementById('cbhpmSavedList');
+  if(!select || !select.value) return;
+  if(!confirm('Remover o cenário selecionado?')) return;
+  let scenarios = Array.isArray(window._cbhpmSavedScenarios) ? window._cbhpmSavedScenarios : [];
+  scenarios = scenarios.filter(s=>s.id !== select.value);
+  window._cbhpmSavedScenarios = scenarios;
+  persistSavedScenarios(scenarios);
+  refreshScenarioSelect();
+  select.value = '';
+}
+
+function setupScenarioControls(){
+  const saveBtn = document.getElementById('btnSaveScenario');
+  if(saveBtn && !saveBtn.dataset._bound){
+    saveBtn.addEventListener('click', handleSaveScenario);
+    saveBtn.dataset._bound = '1';
+  }
+  const applyBtn = document.getElementById('btnApplyScenario');
+  if(applyBtn && !applyBtn.dataset._bound){
+    applyBtn.addEventListener('click', handleApplyScenario);
+    applyBtn.dataset._bound = '1';
+  }
+  const deleteBtn = document.getElementById('btnDeleteScenario');
+  if(deleteBtn && !deleteBtn.dataset._bound){
+    deleteBtn.addEventListener('click', handleDeleteScenario);
+    deleteBtn.dataset._bound = '1';
+  }
+  refreshScenarioSelect();
+}
+
 async function exportCBHPM(fmt){ // fmt: 'pdf' | 'xlsx'
 
   const endpoint = fmt === 'xlsx' ? '/api/simulacao_cbhpm/xlsx' : '/api/simulacao_cbhpm/pdf';
@@ -1494,6 +2156,40 @@ function saveBlobAsFile(blob, filename){
 
 /* ===== Bindings ===== */
 document.addEventListener('DOMContentLoaded', ()=>{
+  const versoesHelper = initChecklistFilter({
+    containerId: 'versoesChecklist',
+    inputId: 'filtroVersoes',
+    countId: 'versoesCount',
+    checkboxSelector: '.ver-chk'
+  });
+  if(versoesHelper){
+    window._updateVersoesResumo = versoesHelper.updateCount;
+    window._applyVersoesFiltro = versoesHelper.applyFilter;
+  }else{
+    window._updateVersoesResumo = ()=>{};
+    window._applyVersoesFiltro = ()=>{};
+  }
+
+  const prestadoresHelper = initChecklistFilter({
+    containerId: 'prestadoresChecklist',
+    inputId: 'filtroPrestadores',
+    countId: 'prestadoresCount',
+    checkboxSelector: 'input[type="checkbox"]'
+  });
+  if(prestadoresHelper){
+    window._updatePrestadoresResumo = prestadoresHelper.updateCount;
+    window._applyPrestadoresFiltro = prestadoresHelper.applyFilter;
+  }else{
+    window._updatePrestadoresResumo = ()=>{};
+    window._applyPrestadoresFiltro = ()=>{};
+  }
+
+  document.querySelector('select[name="uf"]')?.addEventListener('change', ()=>{
+    if(typeof window._cbhpm_refreshVersoesHints === 'function'){
+      window._cbhpm_refreshVersoesHints();
+    }
+  });
+
   document.getElementById('btnMarkAllVersoes')?.addEventListener('click',()=>toggleAllVersoes(true));
   document.getElementById('btnClearVersoes')?.addEventListener('click',()=>toggleAllVersoes(false));
 
@@ -1550,6 +2246,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('btnExportCBHPMXLSX')?.addEventListener('click', ()=>exportCBHPM('xlsx'));
   document.getElementById('btnExportCBHPMPDF')?.addEventListener('click',  ()=>exportCBHPM('pdf'));
   renderDtpSelected();
+  setupScenarioControls();
   if (restoreCbhpmPayload) {
     setCBHPMPayload(restoreCbhpmPayload);
     setTimeout(()=>{ simularCBHPM(); }, 150);

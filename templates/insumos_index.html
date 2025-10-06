@@ -177,7 +177,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
       </div>
       <div class="modal-body">
-        <dl class="row mb-0" id="detalheConteudo"></dl>
+        <div id="detalheConteudo"></div>
       </div>
     </div>
   </div>
@@ -228,6 +228,153 @@
     const num = Number(value);
     if(Number.isNaN(num)) return value;
     return num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:4}) + '%';
+  }
+
+  const TIMELINE_MONTHS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+
+  function toNumber(value){
+    if(value === null || value === undefined || value === '') return null;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  }
+
+  function formatPercent(value){
+    const num = toNumber(value);
+    if(num === null){
+      return '—';
+    }
+    return `${num.toLocaleString('pt-BR', {minimumFractionDigits:0, maximumFractionDigits:1})}%`;
+  }
+
+  function parseBrDate(value){
+    if(!value || typeof value !== 'string') return null;
+    const parts = value.split('/');
+    if(parts.length === 3){
+      const [dia, mes, ano] = parts.map(part => parseInt(part, 10));
+      if(!Number.isNaN(dia) && !Number.isNaN(mes) && !Number.isNaN(ano)){
+        const date = new Date(ano < 100 ? 2000 + ano : ano, mes - 1, dia);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+    }
+    const timestamp = Date.parse(value);
+    return Number.isNaN(timestamp) ? null : new Date(timestamp);
+  }
+
+  function formatTimelineDate(row){
+    const date = parseBrDate(row.data_atualizacao);
+    if(date){
+      const monthLabel = TIMELINE_MONTHS[date.getMonth()] || '';
+      const yearLabel = String(date.getFullYear()).slice(-2);
+      return `${monthLabel}/${yearLabel}`;
+    }
+    if(row.versao){
+      return String(row.versao);
+    }
+    return row.uf || '—';
+  }
+
+  function pickPriceInfo(row){
+    const candidates = [
+      { value: row.preco_pmc, label: 'PMC' },
+      { value: row.preco_pfb, label: 'PFB' },
+      { value: row.preco, label: 'Preço' },
+    ];
+    for(const entry of candidates){
+      const num = toNumber(entry.value);
+      if(num !== null){
+        return {
+          label: entry.label,
+          num,
+          formatted: formatMoney(num),
+        };
+      }
+    }
+    return { label: null, num: null, formatted: null };
+  }
+
+  function buildTimelineEvents(rows, targetUf){
+    if(!Array.isArray(rows) || !rows.length){
+      return [];
+    }
+    const normalizedUf = (targetUf || '').toUpperCase();
+    let relevant = rows.filter(row => {
+      const ufValue = (row.uf || '').toUpperCase();
+      return !normalizedUf || ufValue === normalizedUf;
+    });
+    if(!relevant.length){
+      relevant = rows.slice();
+    }
+    const sorted = relevant.slice().sort((a, b) => {
+      const dateA = parseBrDate(a.data_atualizacao);
+      const dateB = parseBrDate(b.data_atualizacao);
+      if(dateA && dateB){
+        return dateA.getTime() - dateB.getTime();
+      }
+      if(dateA) return -1;
+      if(dateB) return 1;
+      const versaoA = a.versao || '';
+      const versaoB = b.versao || '';
+      return versaoA.localeCompare(versaoB);
+    });
+    if(!sorted.length){
+      return [];
+    }
+
+    const events = [];
+    let prevInfo = null;
+    let prevRow = null;
+    sorted.forEach((row, index) => {
+      const info = pickPriceInfo(row);
+      if(index === 0){
+        if(info.num !== null){
+          events.push({
+            title: formatTimelineDate(row),
+            text: `${info.label || 'Preço'} inicial R$ ${info.formatted}`,
+          });
+        }
+      } else if(info.num !== null){
+        let added = false;
+        if(prevInfo && prevInfo.num !== null && prevInfo.num !== 0){
+          const diff = info.num - prevInfo.num;
+          const pct = diff / prevInfo.num;
+          if(Number.isFinite(pct) && Math.abs(pct) >= 0.1){
+            const directionUp = pct > 0;
+            const directionLabel = directionUp ? 'Alta' : 'Queda';
+            events.push({
+              title: formatTimelineDate(row),
+              text: `${directionLabel} de ${(Math.abs(pct) * 100).toFixed(1)}% -> ${info.label || 'Preço'} R$ ${info.formatted}`,
+            });
+            added = true;
+          }
+        }
+        const versionChanged = prevRow && row.versao && row.versao !== prevRow.versao;
+        if(!added && versionChanged){
+          events.push({
+            title: formatTimelineDate(row),
+            text: `Versão ${row.versao} - ${info.label || 'Preço'} R$ ${info.formatted}`,
+          });
+          added = true;
+        }
+        if(!added && index === sorted.length - 1){
+          events.push({
+            title: formatTimelineDate(row),
+            text: `${info.label || 'Preço'} atual R$ ${info.formatted}`,
+          });
+        }
+      }
+      prevInfo = info;
+      prevRow = row;
+    });
+
+    const unique = [];
+    const seen = new Set();
+    events.forEach(evt => {
+      const key = `${evt.title}|${evt.text}`;
+      if(seen.has(key)) return;
+      seen.add(key);
+      unique.push(evt);
+    });
+    return unique;
   }
 
   function getFilters(){
@@ -292,13 +439,14 @@
           </td>
           <td class="small">${atualizacao}</td>
           <td class="text-end">
-            <button class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail)}">
+            <button type="button" class="btn btn-light btn-sm border visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail)}">
               <i class="bi bi-eye"></i>
             </button>
           </td>
         </tr>`;
     }).join('');
     tbody.innerHTML = rows;
+    // Delegated listener below cuida do clique, não precisamos registrar aqui.
   }
 
   async function carregar(){
@@ -405,10 +553,140 @@
         ['Criado em', data.created_at ? data.created_at.replace('T',' ') : '—'],
         ['Atualizado em', data.updated_at ? data.updated_at.replace('T',' ') : '—']
       ];
-      modalBody.innerHTML = entries.map(([label, value]) => `
+      const historico = Array.isArray(data.historico) ? data.historico : [];
+      const impactoClinico = Array.isArray(data.impacto_clinico) ? data.impacto_clinico : [];
+      const entriesMarkup = entries.map(([label, value]) => `
         <dt class="col-4 text-muted small">${escapeHtml(label)}</dt>
         <dd class="col-8 small">${escapeHtml(String(value))}</dd>
       `).join('');
+      let impactoMarkup = '';
+      if (impactoClinico.length) {
+        const cards = impactoClinico.map(item => {
+          const freq = toNumber(item.frequencia_relativa);
+          const freqLabel = freq !== null ? formatPercent(freq * 100) : null;
+          const custoProcedimento = item.custo_procedimento !== null && item.custo_procedimento !== undefined ? formatMoney(item.custo_procedimento) : null;
+          const headerParts = [];
+          if(item.procedimento_codigo){ headerParts.push(item.procedimento_codigo); }
+          if(item.procedimento_descricao){ headerParts.push(item.procedimento_descricao); }
+          const header = headerParts.length ? headerParts.join(' · ') : 'Procedimento associado';
+          const drgInfo = item.drg ? `DRG ${escapeHtml(item.drg)}` : '';
+          const metrics = [
+            freqLabel ? `Frequência estimada: ${freqLabel}` : '',
+            custoProcedimento ? `Custo médio: R$ ${custoProcedimento}` : '',
+            drgInfo,
+          ].filter(Boolean).join(' · ');
+          const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
+          const variacoesMarkup = variacoes.length ? `
+            <div class="border rounded p-2 bg-light mt-2">
+              ${variacoes.map(v => {
+                const pctLabel = formatPercent(v.percentual);
+                const deltaUnit = formatMoney(v.delta_unitario);
+                const deltaProc = v.delta_procedimento ? formatMoney(v.delta_procedimento) : '—';
+                return `
+                  <div class="d-flex justify-content-between small">
+                    <span>${escapeHtml(pctLabel)}</span>
+                    <span>Δ Unidade: R$ ${escapeHtml(deltaUnit)}${deltaProc !== '—' ? ` · Δ Procedimento: R$ ${escapeHtml(deltaProc)}` : ''}</span>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          ` : '';
+          const substitutos = Array.isArray(item.substitutos) ? item.substitutos : [];
+          const substitutosMarkup = substitutos.length ? `
+            <div class="d-flex flex-wrap gap-2 mt-2">
+              ${substitutos.map(label => `<span class="badge bg-secondary-subtle text-secondary">${escapeHtml(label)}</span>`).join('')}
+            </div>
+          ` : '';
+          const narrativa = item.narrativa ? `<p class="small mb-0 mt-2">${escapeHtml(item.narrativa)}</p>` : '';
+          return `
+            <div class="border rounded p-3 bg-white">
+              <div class="fw-semibold">${escapeHtml(header)}</div>
+              ${metrics ? `<div class="text-muted small mt-1">${metrics}</div>` : ''}
+              ${variacoesMarkup}
+              ${substitutosMarkup}
+              ${narrativa}
+            </div>
+          `;
+        }).join('');
+        impactoMarkup = `
+          <hr class="my-3">
+          <div class="mb-3">
+            <h6 class="mb-2 d-flex align-items-center gap-2">Impacto clínico <span class="badge rounded-pill text-bg-dark">ADM</span></h6>
+            <div class="d-flex flex-column gap-3">
+              ${cards}
+            </div>
+          </div>
+        `;
+      }
+      let historicoMarkup = '';
+      if (historico.length) {
+        const targetUf = (data.uf_filtro || data.uf_referencia || '').toUpperCase();
+        const timelineEvents = buildTimelineEvents(historico, targetUf);
+        const timelineMarkup = timelineEvents.length
+          ? `
+            <div class="d-flex flex-wrap gap-2">
+              ${timelineEvents.map(evt => `
+                <div class="border rounded px-3 py-2 bg-light small">
+                  <div class="fw-semibold text-uppercase text-muted">${escapeHtml(evt.title)}</div>
+                  <div>${escapeHtml(evt.text)}</div>
+                </div>
+              `).join('')}
+            </div>
+          `
+          : '<p class="text-muted small mb-0">Nenhum evento relevante detectado para esta série.</p>';
+        const rows = historico.map(item => {
+          const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
+          const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
+          const aliquotaFmt = formatAliquota(item.aliquota);
+          const dataAtualizacao = escapeHtml(item.data_atualizacao || '—');
+          const versao = escapeHtml(item.versao || '—');
+          const uf = escapeHtml(item.uf || '—');
+          return `
+            <tr>
+              <td class="small">${versao}</td>
+              <td class="small">${uf}</td>
+              <td class="small text-end">${escapeHtml(precoPmc)}</td>
+              <td class="small text-end">${escapeHtml(precoPfb)}</td>
+              <td class="small text-end">${escapeHtml(aliquotaFmt)}</td>
+              <td class="small text-end">${dataAtualizacao}</td>
+            </tr>
+          `;
+        }).join('');
+        historicoMarkup = `
+          <hr class="my-3">
+          <div class="mb-3">
+            <h6 class="mb-2">Linha do tempo</h6>
+            ${timelineMarkup}
+          </div>
+          <div>
+            <h6 class="mb-2">Histórico por versão/UF</h6>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th class="small">Versão</th>
+                    <th class="small">UF</th>
+                    <th class="small text-end">PMC</th>
+                    <th class="small text-end">PFB</th>
+                    <th class="small text-end">Alíquota</th>
+                    <th class="small text-end">Atualização</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+      modalBody.innerHTML = `
+        <dl class="row g-2 mb-0">
+          ${entriesMarkup}
+        </dl>
+        ${impactoMarkup}
+        ${historicoMarkup || '<p class="text-muted small mb-0 mt-3">Histórico por versão/UF indisponível.</p>'}
+      `;
       modal.show();
     } catch(err){
       alert(err.message);

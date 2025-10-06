@@ -390,6 +390,17 @@ class ImportJob(db.Model):
         db.Index('idx_import_jobs_status', 'status'),
     )
 
+
+def _job_message_trim(message: str | None, *, limit: int = 500) -> str | None:
+    if not message:
+        return None
+    msg = message.strip()
+    if not msg:
+        return None
+    if len(msg) <= limit:
+        return msg
+    return msg[: limit - 3] + '...'
+
 class BrasRaw(db.Model):
     __tablename__ = 'bras_raw'
 
@@ -559,6 +570,32 @@ class SimproItemNormalized(db.Model):
         db.Index('idx_simpro_item_norm_ean', 'ean'),
         db.Index('idx_simpro_item_norm_anvisa', 'anvisa'),
         db.Index('idx_simpro_item_norm_versao', 'versao'),
+    )
+
+
+class InsumoContextoClinico(db.Model):
+    __tablename__ = 'insumo_contexto_clinico'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    origem = db.Column(db.Enum('BRAS', 'SIMPRO', name='insumo_origem'), nullable=False)
+    item_id = db.Column(db.BigInteger, nullable=False)
+    drg = db.Column(db.String(50), nullable=True)
+    procedimento_codigo = db.Column(db.String(50), nullable=True)
+    procedimento_descricao = db.Column(db.String(255), nullable=True)
+    frequencia_relativa = db.Column(db.Numeric(8, 6), nullable=True)
+    custo_procedimento = db.Column(db.Numeric(14, 2), nullable=True)
+    substitutos_raw = db.Column(db.Text, nullable=True)
+    narrativa = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_icc_origem_item', 'origem', 'item_id'),
     )
 
 
@@ -2396,7 +2433,7 @@ def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
     preco_pmc = row.preco_pmc_unit or row.preco_pmc_pacote
     preco_pfb = row.preco_pfb_unit or row.preco_pfb_pacote
     base_preco = preco_pmc or preco_pfb
-    aliquota_decimal = (Decimal(row.aliquota_bp) / Decimal('100')) if row.aliquota_bp is not None else None
+    aliquota_decimal = _aliquota_bp_to_decimal(row.aliquota_bp)
     return {
         'origem': 'BRAS',
         'item_id': row.item_id,
@@ -2418,7 +2455,7 @@ def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
 
 def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
     preco_fav = row.preco2 or row.preco1 or row.preco3 or row.preco4
-    aliquota_decimal = (Decimal(row.aliquota_bp) / Decimal('100')) if row.aliquota_bp is not None else None
+    aliquota_decimal = _aliquota_bp_to_decimal(row.aliquota_bp)
     return {
         'origem': 'SIMPRO',
         'item_id': row.item_id,
@@ -2644,7 +2681,7 @@ def _serialize_insumo_detail(
     if catalog_entry is not None:
         aliquota_bp = getattr(catalog_entry, 'aliquota_bp', None)
         if aliquota_bp is not None:
-            catalog_aliquota = _decimal_to_string(Decimal(aliquota_bp) / Decimal('100'))
+            catalog_aliquota = _decimal_to_string(_aliquota_bp_to_decimal(aliquota_bp))
         catalog_uf = getattr(catalog_entry, 'uf', None)
         catalog_periodo = getattr(catalog_entry, 'periodo', None) or getattr(catalog_entry, 'etag_versao', None)
         imported_at = getattr(catalog_entry, 'imported_at', None)
@@ -3702,6 +3739,7 @@ def _compute_simulacao_cbhpm(data):
     }
 
     quantize_money = Decimal('0.01')
+    quantize_pct = Decimal('0.01')
 
     via_pct_map_raw = data.get('via_entrada_pcts')
     via_pct_map: dict[str, Decimal] = {}
@@ -4019,16 +4057,24 @@ def _compute_simulacao_cbhpm(data):
                     calc_total = _as_decimal(payload_entry.get('total_final') or payload_entry.get('total'))
                 excedido = False
                 excedente = None
+                pct_total = None
+                pct_excedente = None
                 if teto_val is not None and calc_total is not None:
                     diff = (calc_total - teto_val).quantize(quantize_money, rounding=ROUND_HALF_UP)
                     if diff > Decimal('0'):
                         excedido = True
                         excedente = diff
+                    if teto_val != Decimal('0'):
+                        pct_total = (calc_total / teto_val * Decimal('100')).quantize(quantize_pct, rounding=ROUND_HALF_UP)
+                        if diff > Decimal('0'):
+                            pct_excedente = (diff / teto_val * Decimal('100')).quantize(quantize_pct, rounding=ROUND_HALF_UP)
                 payload_entry['teto_valor_total'] = _stringify_for_output(teto_val) if teto_val is not None else None
                 payload_entry['teto_descricao'] = teto_row.descricao
                 payload_entry['teto_excedente'] = _stringify_for_output(excedente) if excedente is not None else None
                 payload_entry['teto_excedido'] = excedido
                 payload_entry['teto_status'] = 'ULTRAPASSA' if excedido else 'OK'
+                payload_entry['teto_pct_total'] = _stringify_for_output(pct_total) if pct_total is not None else None
+                payload_entry['teto_pct_excedente'] = _stringify_for_output(pct_excedente) if pct_excedente is not None else None
                 if excedido:
                     teto_alerts.append({
                         'codigo': payload_entry.get('codigo'),
@@ -4036,6 +4082,8 @@ def _compute_simulacao_cbhpm(data):
                         'total_calculado': _stringify_for_output(calc_total),
                         'teto_valor_total': _stringify_for_output(teto_val),
                         'excedente': _stringify_for_output(excedente),
+                        'pct_total': _stringify_for_output(pct_total) if pct_total is not None else None,
+                        'pct_excedente': _stringify_for_output(pct_excedente) if pct_excedente is not None else None,
                         'descricao_teto': teto_row.descricao,
                     })
 
@@ -4136,22 +4184,32 @@ def _compute_simulacao_cbhpm(data):
             calc_total = _as_decimal(resp.get('total_final') or resp.get('total'))
             excedido = False
             excedente = None
+            pct_total = None
+            pct_excedente = None
             if teto_val is not None and calc_total is not None:
                 diff = (calc_total - teto_val).quantize(quantize_money, rounding=ROUND_HALF_UP)
                 if diff > Decimal('0'):
                     excedido = True
                     excedente = diff
+                if teto_val != Decimal('0'):
+                    pct_total = (calc_total / teto_val * Decimal('100')).quantize(quantize_pct, rounding=ROUND_HALF_UP)
+                    if diff > Decimal('0'):
+                        pct_excedente = (diff / teto_val * Decimal('100')).quantize(quantize_pct, rounding=ROUND_HALF_UP)
             resp['teto_valor_total'] = _stringify_for_output(teto_val) if teto_val is not None else None
             resp['teto_descricao'] = teto_row.descricao
             resp['teto_excedente'] = _stringify_for_output(excedente) if excedente is not None else None
             resp['teto_excedido'] = excedido
             resp['teto_status'] = 'ULTRAPASSA' if excedido else 'OK'
+            resp['teto_pct_total'] = _stringify_for_output(pct_total) if pct_total is not None else None
+            resp['teto_pct_excedente'] = _stringify_for_output(pct_excedente) if pct_excedente is not None else None
             resp['teto_alertas'] = [{
                 'codigo': codigo,
                 'descricao': resp.get('descricao'),
                 'total_calculado': _stringify_for_output(calc_total) if calc_total is not None else None,
                 'teto_valor_total': _stringify_for_output(teto_val) if teto_val is not None else None,
                 'excedente': _stringify_for_output(excedente) if excedente is not None else None,
+                'pct_total': _stringify_for_output(pct_total) if pct_total is not None else None,
+                'pct_excedente': _stringify_for_output(pct_excedente) if pct_excedente is not None else None,
                 'descricao_teto': teto_row.descricao,
             }] if excedido else []
         else:
@@ -4841,6 +4899,175 @@ def api_versoes_por_codigo():
     return jsonify(versoes)
 
 
+@app.route('/api/procedimentos/suggest')
+@login_required
+def api_procedimentos_suggest():
+    """Sugere procedimentos a partir de um termo livre.
+
+    Aceita parâmetros opcionais:
+    - tabela_nome: restringe à tabela selecionada
+    - uf: filtra por UF associada à tabela ou ao procedimento
+    - limit: quantidade máxima de itens (default=30, máximo 100)
+    """
+    term = (request.args.get('q') or '').strip()
+    if len(term) < 2:
+        return jsonify({'items': []})
+
+    tabela_nome = (request.args.get('tabela_nome') or '').strip()
+    uf = (request.args.get('uf') or '').strip().upper()
+    try:
+        limit = int(request.args.get('limit') or 30)
+    except (TypeError, ValueError):
+        limit = 30
+    limit = max(1, min(limit, 100))
+
+    tabela = None
+    if tabela_nome:
+        tabela = Tabela.query.filter(Tabela.nome == tabela_nome).first()
+
+    tabela_id = tabela.id if tabela else None
+
+    like_term = f"%{term}%"
+    code_prefix = f"{term}%"
+
+    items = []
+    seen_codes = set()
+
+    if tabela and tabela.tipo_tabela == 'cbhpm':
+        query = (
+            db.session.query(CBHPMItem.codigo, CBHPMItem.procedimento, Tabela.nome)
+            .join(Tabela, CBHPMItem.id_tabela == Tabela.id)
+            .filter(CBHPMItem.id_tabela == tabela_id)
+        )
+        if uf:
+            query = query.filter(or_(CBHPMItem.uf == uf, Tabela.uf == uf))
+        query = query.filter(or_(CBHPMItem.codigo.ilike(code_prefix), CBHPMItem.procedimento.ilike(like_term)))
+        query = query.order_by(CBHPMItem.codigo).limit(limit)
+        for codigo, descricao, versao_nome in query.all():
+            codigo_norm = (codigo or '').strip()
+            if not codigo_norm or codigo_norm in seen_codes:
+                continue
+            seen_codes.add(codigo_norm)
+            items.append({
+                'codigo': codigo_norm,
+                'descricao': descricao,
+                'caminho': versao_nome,
+            })
+    elif tabela:
+        query = (
+            db.session.query(Procedimento.codigo, Procedimento.descricao, Tabela.nome)
+            .join(Tabela, Procedimento.id_tabela == Tabela.id)
+            .filter(Procedimento.id_tabela == tabela_id)
+        )
+        if uf:
+            query = query.filter(or_(Tabela.uf == uf, Procedimento.uf == uf))
+        query = query.filter(or_(Procedimento.codigo.ilike(code_prefix), Procedimento.descricao.ilike(like_term)))
+        query = query.order_by(Procedimento.codigo).limit(limit)
+        for codigo, descricao, tabela_nome_row in query.all():
+            codigo_norm = (codigo or '').strip()
+            if not codigo_norm or codigo_norm in seen_codes:
+                continue
+            seen_codes.add(codigo_norm)
+            items.append({
+                'codigo': codigo_norm,
+                'descricao': descricao,
+                'caminho': tabela_nome_row,
+            })
+
+    # Se nenhuma tabela específica foi pedida (ou não encontrada), faz uma busca genérica
+    if not items and tabela is None:
+        cbhpm_query = (
+            db.session.query(CBHPMItem.codigo, CBHPMItem.procedimento, Tabela.nome)
+            .join(Tabela, CBHPMItem.id_tabela == Tabela.id)
+            .filter(Tabela.tipo_tabela == 'cbhpm')
+        )
+        if uf:
+            cbhpm_query = cbhpm_query.filter(or_(CBHPMItem.uf == uf, Tabela.uf == uf))
+        cbhpm_query = cbhpm_query.filter(or_(CBHPMItem.codigo.ilike(code_prefix), CBHPMItem.procedimento.ilike(like_term)))
+        cbhpm_query = cbhpm_query.order_by(CBHPMItem.codigo).limit(limit)
+        for codigo, descricao, versao_nome in cbhpm_query.all():
+            codigo_norm = (codigo or '').strip()
+            if not codigo_norm or codigo_norm in seen_codes:
+                continue
+            seen_codes.add(codigo_norm)
+            items.append({
+                'codigo': codigo_norm,
+                'descricao': descricao,
+                'caminho': versao_nome,
+            })
+            if len(items) >= limit:
+                break
+
+    return jsonify({'items': items[:limit]})
+
+
+@app.route('/api/cbhpm/detalhe')
+@login_required
+def api_cbhpm_detalhe():
+    codigo = (request.args.get('codigo') or '').strip()
+    if not codigo:
+        return jsonify({'error': 'Código obrigatório.'}), 400
+
+    uf = (request.args.get('uf') or '').strip().upper() or None
+    versoes = [v.strip() for v in request.args.getlist('versoes') if v and v.strip()]
+    tabela_nome = (request.args.get('tabela_nome') or '').strip()
+
+    query = (
+        db.session.query(
+            Tabela.nome.label('versao'),
+            CBHPMItem.procedimento,
+            CBHPMItem.subtotal,
+            CBHPMItem.total_porte,
+            CBHPMItem.valor_porte,
+            CBHPMItem.total_uco,
+            CBHPMItem.uco,
+            CBHPMItem.total_filme,
+            CBHPMItem.filme
+        )
+        .join(Tabela, CBHPMItem.id_tabela == Tabela.id)
+        .filter(Tabela.tipo_tabela == 'cbhpm')
+        .filter(CBHPMItem.codigo == codigo)
+    )
+
+    if versoes:
+        query = query.filter(Tabela.nome.in_(versoes))
+    elif tabela_nome:
+        query = query.filter(Tabela.nome == tabela_nome)
+
+    if uf:
+        query = query.filter(or_(Tabela.uf == uf, CBHPMItem.uf == uf))
+
+    records = query.order_by(Tabela.nome).all()
+
+    items = []
+    numeric_values = []
+    for versao, descricao, subtotal, total_porte, valor_porte, total_uco, uco, total_filme, filme in records:
+        valor = subtotal or total_porte or valor_porte or total_uco or uco or total_filme or filme
+        if valor is not None:
+            try:
+                numeric = float(valor)
+                numeric_values.append(numeric)
+            except (TypeError, ValueError):
+                pass
+        items.append({
+            'versao': versao,
+            'descricao': descricao,
+            'valor': float(valor) if valor is not None else None,
+        })
+
+    summary = None
+    if numeric_values:
+        count = len(numeric_values)
+        summary = {
+            'min': min(numeric_values),
+            'max': max(numeric_values),
+            'avg': sum(numeric_values) / count if count else None,
+            'count': count,
+        }
+
+    return jsonify({'items': items, 'summary': summary})
+
+
 @app.route('/gerenciar-usuarios')
 @admin_required
 def gerenciar_usuarios():
@@ -5439,6 +5666,205 @@ def _stringify_for_output(value):
     if isinstance(value, dict):
         return {k: _stringify_for_output(v) for k, v in value.items()}
     return value
+
+
+def _aliquota_bp_to_decimal(raw) -> Decimal | None:
+    if raw in (None, ''):
+        return None
+    try:
+        return Decimal(str(raw)) / Decimal('100')
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _collect_catalogo_filters_bras(item_id: int, item) -> list[list]:
+    filters: list[list] = []
+    seen: set[tuple] = set()
+
+    def _add(name: str, *values, extra: list | None = None) -> None:
+        key = (name,) + tuple(values)
+        if key in seen:
+            return
+        seen.add(key)
+        exprs: list = []
+        if name == 'item_id':
+            exprs.append(CatalogoBrasindice.item_id == values[0])
+        elif name == 'produto_apresentacao':
+            exprs.append(CatalogoBrasindice.produto_codigo == values[0])
+            exprs.append(CatalogoBrasindice.apresentacao_codigo == values[1])
+        elif name == 'produto':
+            exprs.append(CatalogoBrasindice.produto_codigo == values[0])
+        elif name == 'ean':
+            exprs.append(CatalogoBrasindice.ean == values[0])
+        elif name == 'anvisa':
+            exprs.append(CatalogoBrasindice.registro_anvisa == values[0])
+        elif extra:
+            exprs.extend(extra)
+        if extra and name not in {'produto_apresentacao', 'produto', 'ean', 'anvisa', 'item_id'}:
+            exprs.extend(extra)
+        if exprs:
+            filters.append(exprs)
+
+    _add('item_id', item_id)
+
+    produto_codigo = getattr(item, 'produto_codigo', None)
+    apresentacao_codigo = getattr(item, 'apresentacao_codigo', None)
+    if produto_codigo and apresentacao_codigo:
+        _add('produto_apresentacao', produto_codigo, apresentacao_codigo)
+    if produto_codigo:
+        _add('produto', produto_codigo)
+
+    ean = getattr(item, 'ean', None)
+    if ean:
+        _add('ean', ean)
+
+    registro_anvisa = getattr(item, 'registro_anvisa', None)
+    if registro_anvisa:
+        _add('anvisa', registro_anvisa)
+
+    return filters
+
+
+def _collect_catalogo_filters_simpro(item_id: int, item) -> list[list]:
+    filters: list[list] = []
+    seen: set[tuple] = set()
+
+    def _add(name: str, *values) -> None:
+        key = (name,) + tuple(values)
+        if key in seen:
+            return
+        seen.add(key)
+        exprs: list = []
+        if name == 'item_id':
+            exprs.append(CatalogoSimpro.item_id == values[0])
+        elif name == 'codigo':
+            exprs.append(CatalogoSimpro.codigo == values[0])
+        elif name == 'codigo_alt':
+            exprs.append(CatalogoSimpro.codigo_alt == values[0])
+        elif name == 'ean':
+            exprs.append(CatalogoSimpro.ean == values[0])
+        elif name == 'anvisa':
+            exprs.append(CatalogoSimpro.anvisa == values[0])
+        elif name == 'tuss':
+            exprs.append(CatalogoSimpro.codigo == values[0])
+        elif name == 'tiss':
+            exprs.append(CatalogoSimpro.codigo_alt == values[0])
+        if exprs:
+            filters.append(exprs)
+
+    _add('item_id', item_id)
+
+    codigo = getattr(item, 'codigo', None)
+    if codigo:
+        _add('codigo', codigo)
+
+    codigo_alt = getattr(item, 'codigo_alt', None)
+    if codigo_alt:
+        _add('codigo_alt', codigo_alt)
+
+    ean = getattr(item, 'ean', None)
+    if ean:
+        _add('ean', ean)
+
+    anvisa = getattr(item, 'anvisa', None)
+    if anvisa:
+        _add('anvisa', anvisa)
+
+    tuss = getattr(item, 'tuss', None)
+    if tuss:
+        _add('tuss', tuss)
+
+    tiss = getattr(item, 'tiss', None)
+    if tiss:
+        _add('tiss', tiss)
+
+    return filters
+
+
+def _resolve_catalogo_history(
+    origem: str,
+    *,
+    item_id: int,
+    item,
+    uf_param: str | None,
+) -> tuple[CatalogoBrasindice | CatalogoSimpro | None, list]:
+    uf_param = (uf_param or '').upper() or None
+
+    if origem == 'BRAS':
+        filter_sets = _collect_catalogo_filters_bras(item_id, item)
+        order_columns = (CatalogoBrasindice.periodo.desc(), CatalogoBrasindice.uf.asc())
+        model_query_factory = lambda: CatalogoBrasindice.query
+    else:
+        filter_sets = _collect_catalogo_filters_simpro(item_id, item)
+        order_columns = (CatalogoSimpro.periodo.desc(), CatalogoSimpro.uf.asc())
+        model_query_factory = lambda: CatalogoSimpro.query
+
+    for filter_exprs in filter_sets:
+        query = model_query_factory()
+        for expr in filter_exprs:
+            query = query.filter(expr)
+        rows = query.order_by(*order_columns).limit(50).all()
+        if not rows:
+            continue
+        entry = None
+        if uf_param:
+            entry = next((row for row in rows if (row.uf or '').upper() == uf_param), None)
+        if entry is None:
+            entry = rows[0]
+        return entry, rows
+
+    return None, []
+
+
+def _split_substitutos(raw) -> list[str]:
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    text = str(raw)
+    parts = re.split(r'[;,\n]+', text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _serialize_contexto_clinico(
+    entry: InsumoContextoClinico,
+    detail_payload: dict,
+) -> dict:
+    base_price = _as_decimal(detail_payload.get('preco_pfb'))
+    if base_price is None:
+        base_price = _as_decimal(detail_payload.get('preco_pmc'))
+    if base_price is None:
+        base_price = _as_decimal(detail_payload.get('preco'))
+
+    custo_procedimento = _as_decimal(entry.custo_procedimento)
+    frequencia = _as_decimal(entry.frequencia_relativa)
+
+    variacoes = []
+    if base_price is not None:
+        for pct_raw in (Decimal('0.05'), Decimal('0.10'), Decimal('0.20')):
+            delta_unit = (base_price * pct_raw) if base_price is not None else None
+            delta_proc = None
+            if custo_procedimento is not None:
+                delta_proc = custo_procedimento * pct_raw
+            variacoes.append({
+                'percentual': _decimal_to_string(pct_raw * Decimal('100'), precision=1),
+                'delta_unitario': _decimal_to_string(delta_unit),
+                'delta_procedimento': _decimal_to_string(delta_proc) if delta_proc is not None else None,
+            })
+
+    substitutos = _split_substitutos(entry.substitutos_raw)
+
+    return {
+        'drg': entry.drg,
+        'procedimento_codigo': entry.procedimento_codigo,
+        'procedimento_descricao': entry.procedimento_descricao,
+        'frequencia_relativa': _decimal_to_string(frequencia, precision=3) if frequencia is not None else None,
+        'custo_procedimento': _decimal_to_string(custo_procedimento),
+        'variacoes': variacoes,
+        'substitutos': substitutos,
+        'narrativa': entry.narrativa,
+        'origem': entry.origem,
+    }
 
 
 def _lookup_porte_valor(operadora_id, uf, nome_hint, porte_codigo):
@@ -6347,16 +6773,43 @@ def insumo_detail(origem: str, item_id: int):
 
     uf_param = (request.args.get('uf') or request.args.get('uf_referencia') or '').strip().upper()
 
+    catalog_entry, historico_rows = _resolve_catalogo_history(
+        origem,
+        item_id=item_id,
+        item=item,
+        uf_param=uf_param,
+    )
+
+    historico: list[dict[str, object]] = []
     if origem == 'BRAS':
-        base_query = CatalogoBrasindice.query.filter(CatalogoBrasindice.item_id == item_id)
-        catalog_entry = base_query.filter(CatalogoBrasindice.uf == uf_param).first() if uf_param else None
-        if catalog_entry is None:
-            catalog_entry = base_query.order_by(CatalogoBrasindice.uf.asc()).first()
+        for row in historico_rows:
+            aliquota_value = _aliquota_bp_to_decimal(row.aliquota_bp)
+            historico.append({
+                'versao': row.periodo,
+                'uf': row.uf,
+                'preco': _stringify_for_output(
+                    row.preco_pmc_unit
+                    or row.preco_pmc_pacote
+                    or row.preco_pfb_unit
+                    or row.preco_pfb_pacote
+                ),
+                'preco_pmc': _stringify_for_output(row.preco_pmc_unit or row.preco_pmc_pacote),
+                'preco_pfb': _stringify_for_output(row.preco_pfb_unit or row.preco_pfb_pacote),
+                'aliquota': _stringify_for_output(aliquota_value),
+                'data_atualizacao': row.imported_at.strftime('%d/%m/%Y') if isinstance(row.imported_at, datetime) else None,
+            })
     else:
-        base_query = CatalogoSimpro.query.filter(CatalogoSimpro.item_id == item_id)
-        catalog_entry = base_query.filter(CatalogoSimpro.uf == uf_param).first() if uf_param else None
-        if catalog_entry is None:
-            catalog_entry = base_query.order_by(CatalogoSimpro.uf.asc()).first()
+        for row in historico_rows:
+            aliquota_value = _aliquota_bp_to_decimal(row.aliquota_bp)
+            historico.append({
+                'versao': row.periodo,
+                'uf': row.uf,
+                'preco': _stringify_for_output(row.preco1 or row.preco2 or row.preco3 or row.preco4),
+                'preco_pmc': None,
+                'preco_pfb': _stringify_for_output(row.preco1 or row.preco2 or row.preco3 or row.preco4),
+                'aliquota': _stringify_for_output(aliquota_value),
+                'data_atualizacao': row.data_ref.strftime('%d/%m/%Y') if isinstance(row.data_ref, date) else None,
+            })
 
     index_query = InsumoIndex.query.filter_by(origem=origem, item_id=item_id)
     if uf_param:
@@ -6372,15 +6825,103 @@ def insumo_detail(origem: str, item_id: int):
     if index_entry is None:
         index_entry = index_query.first()
 
-    return jsonify(
-        _serialize_insumo_detail(
+    detail_payload = _serialize_insumo_detail(
             origem,
             item,
             index_entry=index_entry,
             catalog_entry=catalog_entry,
             selected_uf=uf_param or None,
         )
+    detail_payload['historico'] = historico
+    detail_payload['uf_filtro'] = uf_param or None
+
+    if session.get('perfil') == 'adm':
+        contexto_rows = (
+            InsumoContextoClinico.query
+            .filter_by(origem=origem, item_id=item_id)
+            .order_by(InsumoContextoClinico.procedimento_descricao.asc())
+            .all()
+        )
+        if contexto_rows:
+            detail_payload['impacto_clinico'] = [
+                _serialize_contexto_clinico(row, detail_payload)
+                for row in contexto_rows
+            ]
+    return jsonify(detail_payload)
+
+
+@app.route('/insumos/<origem>/<int:item_id>/contexto', methods=['POST'])
+@admin_required
+def insumo_contexto_create(origem: str, item_id: int):
+    origem = (origem or '').upper()
+    if origem not in {'BRAS', 'SIMPRO'}:
+        abort(404)
+
+    model = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
+    item = model.query.get(item_id)
+    if item is None:
+        abort(404)
+
+    payload = request.get_json(silent=True) or {}
+
+    def _clean_str(value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip() or None
+        return str(value).strip() or None
+
+    procedimento_codigo = _clean_str(payload.get('procedimento_codigo'))
+    procedimento_descricao = _clean_str(payload.get('procedimento_descricao'))
+    drg = _clean_str(payload.get('drg'))
+    narrativa = _clean_str(payload.get('narrativa'))
+
+    if not procedimento_codigo and not procedimento_descricao:
+        return jsonify({'error': 'Informe ao menos o procedimento ou sua descrição.'}), 400
+
+    freq_decimal: Decimal | None = None
+    freq_input = payload.get('frequencia_percent')
+    if freq_input not in (None, ''):
+        freq_str = _coerce_decimal(str(freq_input))
+        if freq_str is None:
+            return jsonify({'error': 'Frequência inválida.'}), 400
+        try:
+            freq_decimal = Decimal(freq_str) / Decimal('100')
+        except (InvalidOperation, ValueError):
+            return jsonify({'error': 'Frequência inválida.'}), 400
+
+    custo_decimal: Decimal | None = None
+    custo_input = payload.get('custo_procedimento')
+    if custo_input not in (None, ''):
+        custo_str = _coerce_decimal(str(custo_input))
+        if custo_str is None:
+            return jsonify({'error': 'Custo inválido.'}), 400
+        try:
+            custo_decimal = Decimal(custo_str)
+        except (InvalidOperation, ValueError):
+            return jsonify({'error': 'Custo inválido.'}), 400
+
+    substitutos_raw = payload.get('substitutos_raw') or payload.get('substitutos')
+    if isinstance(substitutos_raw, (list, tuple)):
+        substitutos_raw = ', '.join(str(part).strip() for part in substitutos_raw if str(part).strip())
+    substitutos_raw = _clean_str(substitutos_raw)
+
+    entry = InsumoContextoClinico(
+        origem=origem,
+        item_id=item_id,
+        drg=drg,
+        procedimento_codigo=procedimento_codigo,
+        procedimento_descricao=procedimento_descricao,
+        frequencia_relativa=freq_decimal,
+        custo_procedimento=custo_decimal,
+        substitutos_raw=substitutos_raw,
+        narrativa=narrativa,
     )
+
+    db.session.add(entry)
+    db.session.commit()
+
+    return jsonify({'success': True}), 201
 
 
 @app.route('/insumos')
@@ -6448,14 +6989,14 @@ def _run_import_job(job_id: str) -> None:
 
         job.status = ImportJobStatus.RUNNING.value
         job.started_at = datetime.utcnow()
-        job.message = 'Processando arquivo de importação...'
+        job.message = _job_message_trim('Processando arquivo de importação...')
         db.session.commit()
 
         params = job.params or {}
         file_path = Path(job.data_path)
         if not file_path.exists():
             job.status = ImportJobStatus.FAILED.value
-            job.message = 'Arquivo da importação não encontrado no servidor.'
+            job.message = _job_message_trim('Arquivo da importação não encontrado no servidor.')
             job.finished_at = datetime.utcnow()
             db.session.commit()
             return
@@ -6555,7 +7096,7 @@ def _run_import_job(job_id: str) -> None:
                 }
 
             job.status = ImportJobStatus.SUCCESS.value
-            job.message = (
+            job.message = _job_message_trim(
                 f"Importação concluída (arquivo {result['arquivo']} | {result['linhas_raw']} linhas brutas, "
                 f"{result['linhas_materializadas']} materializadas)."
             )
@@ -6606,7 +7147,7 @@ def _run_import_job(job_id: str) -> None:
                 app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
                 job = ImportJob.query.get(job_id)
                 if job:
-                    job.message = (job.message or '') + ' Consolidação posterior falhou.'
+                    job.message = _job_message_trim((job.message or '') + ' Consolidação posterior falhou.')
                     _set_job_metrics(job, metrics)
                     db.session.commit()
         except Exception as exc:  # noqa: BLE001
@@ -6616,7 +7157,7 @@ def _run_import_job(job_id: str) -> None:
             job = ImportJob.query.get(job_id)
             if job:
                 job.status = ImportJobStatus.FAILED.value
-                job.message = str(exc)
+                job.message = _job_message_trim(str(exc))
                 job.finished_at = datetime.utcnow()
                 _set_job_metrics(job, metrics)
                 db.session.commit()
@@ -6806,7 +7347,7 @@ def insumos_aliquotas():
         )
         percent_display = None
         if record and record.aliquota_bp is not None:
-            percent_display = _decimal_to_string(Decimal(record.aliquota_bp) / Decimal('100'))
+            percent_display = _decimal_to_string(_aliquota_bp_to_decimal(record.aliquota_bp))
         entries.append({
             'uf': uf,
             'record': record,
@@ -6826,7 +7367,7 @@ def insumos_aliquotas():
     for row in history:
         percent_display = None
         if row.aliquota_bp is not None:
-            percent_display = _decimal_to_string(Decimal(row.aliquota_bp) / Decimal('100'))
+            percent_display = _decimal_to_string(_aliquota_bp_to_decimal(row.aliquota_bp))
         history_rows.append({
             'uf': row.uf,
             'percent_display': percent_display,
