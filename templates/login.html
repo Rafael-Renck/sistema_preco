@@ -94,6 +94,33 @@
             transition: border-color 0.3s ease, box-shadow 0.3s ease;
         }
 
+        .password-wrapper {
+            position: relative;
+        }
+
+        .password-wrapper input {
+            padding-right: 44px;
+        }
+
+        .toggle-password {
+            position: absolute;
+            top: 50%;
+            right: 10px;
+            transform: translateY(-50%);
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            color: #555;
+            font-size: 1.1rem;
+            padding: 4px;
+            line-height: 1;
+        }
+
+        .toggle-password:focus {
+            outline: none;
+            color: #007bff;
+        }
+
         .input-group input:focus {
             outline: none;
             /* Brilho azul ao focar */
@@ -101,8 +128,8 @@
             box-shadow: 0 0 8px rgba(0, 123, 255, 0.2);
         }
 
-        /* Estilo do botão */
-        button {
+        /* Estilo do botão principal */
+        .login-container button[type="submit"] {
             width: 100%;
             padding: 15px;
             /* Gradiente de azul para o botão */
@@ -118,7 +145,7 @@
             letter-spacing: 1px;
         }
 
-        button:hover {
+        .login-container button[type="submit"]:hover {
             transform: translateY(-3px);
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
         }
@@ -155,7 +182,12 @@
                 
                 <div class="input-group">
                     <label for="senha">Senha</label>
-                    <input type="password" id="senha" name="senha" placeholder="Digite sua senha" required>
+                    <div class="password-wrapper">
+                        <input type="password" id="senha" name="senha" placeholder="Digite sua senha" required>
+                        <button class="toggle-password" type="button" data-target="#senha" aria-label="Mostrar/ocultar senha">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
                 </div>
                 
                 <button type="submit">Entrar</button>
@@ -163,5 +195,24 @@
         </div>
     </div>
 
+    <script>
+        document.querySelectorAll('.toggle-password').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                const targetSelector = btn.getAttribute('data-target');
+                const input = document.querySelector(targetSelector);
+                if (!input) {
+                    return;
+                }
+                const icon = btn.querySelector('i');
+                const isPassword = input.getAttribute('type') === 'password';
+                input.setAttribute('type', isPassword ? 'text' : 'password');
+                if (icon) {
+                    icon.classList.toggle('fa-eye');
+                    icon.classList.toggle('fa-eye-slash');
+                }
+                input.focus();
+            });
+        });
+    </script>
 </body>
 </html>

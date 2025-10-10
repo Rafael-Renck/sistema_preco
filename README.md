@@ -28,6 +28,14 @@ Se não houver usuários, ele cria um admin inicial definido por variáveis de a
 - E-mail: valor de `ADMIN_EMAIL` (padrão `admin@local`)
 - Senha: valor de `ADMIN_PASSWORD` (padrão `admin123`)
 
+## Segurança
+
+- Hash de senha com PBKDF2 (`werkzeug.security`), histórico recente para evitar reutilização e migração automática dos cadastros existentes.
+- Política de complexidade configurável (tamanho mínimo, combinações de caracteres) aplicada em criação, edição e troca de senha.
+- Bloqueio temporário após múltiplas falhas consecutivas, com auditoria completa de sucessos, falhas, bloqueios e mudanças sensíveis (senha, permissões).
+- Sessões rotacionadas em cada login/logout, expiração configurada (`PERMANENT_SESSION_LIFETIME`) e invalidação imediata quando a senha é trocada ou o usuário sai.
+- Trilha de auditoria disponível para administradores no menu **Auditoria**, com filtros por evento, usuário, IP e datas.
+
 ## Estrutura
 
 - `app.py`: app Flask + modelos SQLAlchemy + rotas.
@@ -38,7 +46,7 @@ Se não houver usuários, ele cria um admin inicial definido por variáveis de a
 
 ## Próximos passos sugeridos
 
-- Autenticação com hashing de senha (Werkzeug) e sessões.
+- Autenticação multifator (ex.: TOTP ou WebAuthn) e alertas em tempo real de acesso suspeito.
 - CRUD completo (forms e APIs) para Usuários, Operadoras, Tabelas e Procedimentos.
 - Upload/parse de tabelas de preços (CSV/Excel) e rotina de comparação.
 - Testes automatizados e migrações com Alembic.

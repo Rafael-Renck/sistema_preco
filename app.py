@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from functools import wraps
 from sqlalchemy import text, or_, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import unicodedata
@@ -48,6 +49,7 @@ from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from werkzeug.security import generate_password_hash, check_password_hash
 # --- 1. CONFIGURAÇÃO INICIAL ---
 # Inicializa a aplicação Flask
 load_dotenv()
@@ -75,6 +77,15 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
 # Inicializa o SQLAlchemy para interagir com o banco de dados
 db = SQLAlchemy(app)
 
+PASSWORD_EXPIRATION_DAYS = 90
+PASSWORD_HISTORY_SIZE = int(os.getenv('PASSWORD_HISTORY_SIZE', '5') or '5')
+PASSWORD_MIN_LENGTH = int(os.getenv('PASSWORD_MIN_LENGTH', '10') or '10')
+MAX_FAILED_LOGIN_ATTEMPTS = int(os.getenv('MAX_FAILED_LOGIN_ATTEMPTS', '5') or '5')
+ACCOUNT_LOCK_MINUTES = int(os.getenv('ACCOUNT_LOCK_MINUTES', '15') or '15')
+SESSION_LIFETIME_MINUTES = int(os.getenv('SESSION_LIFETIME_MINUTES', '120') or '120')
+
+app.permanent_session_lifetime = timedelta(minutes=SESSION_LIFETIME_MINUTES)
+
 usuario_operadoras = db.Table(
     'usuario_operadoras',
     db.Column('usuario_id', db.Integer, db.ForeignKey('usuarios.id'), primary_key=True),
@@ -82,12 +93,78 @@ usuario_operadoras = db.Table(
 )
 
 
+def _is_password_hashed(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    return value.startswith(('pbkdf2:', 'scrypt:', 'argon2:', 'bcrypt:'))
+
+
+def _hash_password(raw_password: str) -> str:
+    return generate_password_hash(raw_password.strip(), method='pbkdf2:sha256', salt_length=16)
+
+
+def _verify_password(stored: Optional[str], candidate: str) -> bool:
+    if not stored or candidate is None:
+        return False
+    if _is_password_hashed(stored):
+        try:
+            return check_password_hash(stored, candidate)
+        except ValueError:
+            return False
+    return stored == candidate
+
+
+def _now_utc() -> datetime:
+    return datetime.utcnow()
+
+
 # --- 1.1 Autorização/Session helpers ---
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
-        if not session.get('user_id'):
+        user_id = session.get('user_id')
+        if not user_id:
             return redirect(url_for('login'))
+        try:
+            usuario = Usuario.query.get(user_id)
+        except Exception:
+            usuario = None
+        if not usuario:
+            session.clear()
+            session.modified = True
+            return redirect(url_for('login'))
+        g.current_user = usuario
+
+        login_time = _parse_iso_datetime(session.get('login_time'))
+        if login_time is None:
+            login_time = _now_utc()
+            session['login_time'] = login_time.isoformat()
+            session.modified = True
+        now = _now_utc()
+        if usuario.last_logout_at and login_time <= usuario.last_logout_at:
+            session.clear()
+            session.modified = True
+            _safe_flash('Sua sessão expirou. Faça login novamente.', 'warning')
+            return redirect(url_for('login'))
+        if usuario.senha_atualizada_em and login_time < usuario.senha_atualizada_em:
+            session.clear()
+            session.modified = True
+            _safe_flash('Sua sessão foi invalidada após a troca de senha. Faça login novamente.', 'warning')
+            return redirect(url_for('login'))
+        if usuario.locked_until and usuario.locked_until > now:
+            session.clear()
+            session.modified = True
+            _safe_flash('Conta temporariamente bloqueada. Faça login novamente após o desbloqueio.', 'danger')
+            return redirect(url_for('login'))
+
+        must_change_flag = bool(usuario.must_reset_senha)
+        if session.get('must_change_senha') != must_change_flag:
+            session['must_change_senha'] = must_change_flag
+            session.modified = True
+        if session.get('must_change_senha'):
+            allow_endpoints = {'alterar_senha', 'logout', 'static'}
+            if request.endpoint not in allow_endpoints:
+                return redirect(url_for('alterar_senha'))
         return f(*args, **kwargs)
     return wrapper
 
@@ -194,6 +271,8 @@ def inject_session():
         "session_operadora_ids": session.get('operadora_ids') or [],
         "session_feature_insumos": (session.get('feature_insumos') if session.get('feature_insumos') is not None else (session.get('perfil') == 'adm')),
         "session_feature_tuss_rol": (session.get('feature_tuss_rol') if session.get('feature_tuss_rol') is not None else (session.get('perfil') == 'adm')),
+        "security_password_min_length": PASSWORD_MIN_LENGTH,
+        "security_password_history_size": PASSWORD_HISTORY_SIZE,
     }
 
 
@@ -205,7 +284,7 @@ class Usuario(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     nome = db.Column(db.String(255), nullable=False)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    senha = db.Column(db.String(255), nullable=False) # Em um projeto real, usaríamos hash!
+    senha = db.Column(db.String(255), nullable=False)
     perfil = db.Column(db.String(50), nullable=False)
     operadoras = db.relationship(
         'Operadora',
@@ -215,6 +294,132 @@ class Usuario(db.Model):
     )
     acesso_insumos = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
     acesso_tuss_rol = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
+    must_reset_senha = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
+    senha_atualizada_em = db.Column(db.DateTime, nullable=True)
+    failed_login_attempts = db.Column(db.Integer, nullable=False, default=0, server_default=text('0'))
+    locked_until = db.Column(db.DateTime, nullable=True)
+    last_logout_at = db.Column(db.DateTime, nullable=True)
+    senhas_historico = db.relationship(
+        'UsuarioSenhaHistorico',
+        backref='usuario',
+        lazy='dynamic',
+        cascade='all, delete-orphan'
+    )
+
+
+class UsuarioSenhaHistorico(db.Model):
+    __tablename__ = 'usuario_senhas_historico'
+    id = db.Column(db.Integer, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id', ondelete='CASCADE'), nullable=False, index=True)
+    senha_hash = db.Column(db.String(255), nullable=False)
+    criada_em = db.Column(db.DateTime, nullable=False, default=_now_utc)
+
+
+class AuditLog(db.Model):
+    __tablename__ = 'audit_logs'
+    id = db.Column(db.BigInteger, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id', ondelete='SET NULL'), nullable=True, index=True)
+    email_alvo = db.Column(db.String(255), nullable=True)
+    evento = db.Column(db.String(64), nullable=False)
+    ip = db.Column(db.String(64), nullable=True)
+    detalhes = db.Column(db.Text, nullable=True)
+    criado_em = db.Column(db.DateTime, nullable=False, default=_now_utc, index=True)
+    usuario = db.relationship('Usuario', lazy='joined')
+
+
+_PASSWORD_COMPLEXITY_TESTS = [
+    (re.compile(r'[A-Z]'), 'ao menos uma letra maiúscula'),
+    (re.compile(r'[a-z]'), 'ao menos uma letra minúscula'),
+    (re.compile(r'[0-9]'), 'ao menos um dígito'),
+    (re.compile(r'[^A-Za-z0-9]'), 'ao menos um caractere especial'),
+]
+
+
+def _password_policy_error(password: str) -> Optional[str]:
+    if len(password or '') < PASSWORD_MIN_LENGTH:
+        return f'A senha deve conter pelo menos {PASSWORD_MIN_LENGTH} caracteres.'
+    for pattern, description in _PASSWORD_COMPLEXITY_TESTS:
+        if not pattern.search(password or ''):
+            return f'A senha deve conter {description}.'
+    return None
+
+
+def _password_was_used_recently(usuario: Usuario, password: str) -> bool:
+    if not usuario or not password:
+        return False
+    historico = (
+        UsuarioSenhaHistorico.query.filter_by(usuario_id=usuario.id)
+        .order_by(UsuarioSenhaHistorico.id.desc())
+        .limit(PASSWORD_HISTORY_SIZE)
+        .all()
+    )
+    for registro in historico:
+        try:
+            if check_password_hash(registro.senha_hash, password):
+                return True
+        except ValueError:
+            continue
+    if usuario.senha and _is_password_hashed(usuario.senha):
+        try:
+            return check_password_hash(usuario.senha, password)
+        except ValueError:
+            return False
+    return usuario.senha == password
+
+
+def _append_password_history(usuario: Usuario, senha_hash: str) -> None:
+    if not usuario or not senha_hash:
+        return
+    registro = UsuarioSenhaHistorico(usuario_id=usuario.id, senha_hash=senha_hash)
+    db.session.add(registro)
+    db.session.flush()
+    excess = (
+        UsuarioSenhaHistorico.query
+        .filter(UsuarioSenhaHistorico.usuario_id == usuario.id)
+        .order_by(UsuarioSenhaHistorico.id.desc())
+        .offset(PASSWORD_HISTORY_SIZE)
+    ).all()
+    ids_to_delete = [r.id for r in excess]
+    if ids_to_delete:
+        UsuarioSenhaHistorico.query.filter(UsuarioSenhaHistorico.id.in_(ids_to_delete)).delete(synchronize_session=False)
+
+
+def _get_remote_addr() -> Optional[str]:
+    if not has_request_context():
+        return None
+    forwarded = request.headers.get('X-Forwarded-For')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.remote_addr
+
+
+def _register_audit(evento: str, usuario: Optional[Usuario] = None, email_alvo: Optional[str] = None, detalhes: Optional[dict | str] = None) -> None:
+    try:
+        detalhes_str = None
+        if isinstance(detalhes, dict):
+            detalhes_str = json.dumps(detalhes, ensure_ascii=False)
+        elif detalhes is not None:
+            detalhes_str = str(detalhes)
+        registro = AuditLog(
+            usuario_id=usuario.id if usuario else None,
+            email_alvo=email_alvo,
+            evento=evento,
+            ip=_get_remote_addr(),
+            detalhes=detalhes_str,
+        )
+        db.session.add(registro)
+    except Exception as exc:
+        app.logger.warning('Falha ao registrar auditoria %s: %s', evento, exc)
+
+
+def _parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
 
 class Operadora(db.Model):
     __tablename__ = 'operadoras'
@@ -3953,26 +4158,122 @@ def dashboard():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    erro = None
     if request.method == 'POST':
-        email = request.form.get('email')
-        senha = request.form.get('senha')
-        usuario = Usuario.query.filter_by(email=email, senha=senha).first()
+        email = (request.form.get('email') or '').strip()
+        senha = request.form.get('senha') or ''
+        agora = _now_utc()
+        usuario = Usuario.query.filter_by(email=email).first()
         if usuario:
-            session['user_id'] = usuario.id
-            session['perfil']  = usuario.perfil
-            session['nome']    = usuario.nome
-            nomes = [op.nome for op in usuario.operadoras]
-            ids = [op.id for op in usuario.operadoras]
-            session['operadora_ids'] = ids
-            session['operadora_id'] = ids[0] if ids else None
-            session['operadora_nomes'] = nomes
-            session['operadora_nome'] = ', '.join(nomes) if nomes else None
-            session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
-            session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
-            return redirect(url_for('dashboard'))
+            if usuario.locked_until and usuario.locked_until > agora:
+                minutos = max(int((usuario.locked_until - agora).total_seconds() // 60) + 1, 1)
+                erro = f'Conta temporariamente bloqueada. Tente novamente em aproximadamente {minutos} minuto(s).'
+                _register_audit(
+                    'login.locked',
+                    usuario=usuario,
+                    detalhes={'locked_until': usuario.locked_until.isoformat()}
+                )
+                db.session.commit()
+                return render_template('login.html', erro=erro, hide_chrome=True)
 
-        # falha: mantém layout limpo
-        return render_template('login.html', erro='Credenciais inválidas', hide_chrome=True)
+            if _verify_password(usuario.senha, senha):
+                # migra senhas legadas sem hash
+                if not _is_password_hashed(usuario.senha):
+                    novo_hash = _hash_password(senha)
+                    usuario.senha = novo_hash
+                    usuario.senha_atualizada_em = usuario.senha_atualizada_em or agora
+                    try:
+                        _append_password_history(usuario, novo_hash)
+                    except Exception:
+                        app.logger.warning('Falha ao salvar histórico de senha para o usuário %s', usuario.email)
+
+                usuario.failed_login_attempts = 0
+                usuario.locked_until = None
+
+                session.clear()
+                session.permanent = True
+                session['user_id'] = usuario.id
+                session['perfil'] = usuario.perfil
+                session['nome'] = usuario.nome
+                nomes = [op.nome for op in usuario.operadoras]
+                ids = [op.id for op in usuario.operadoras]
+                session['operadora_ids'] = ids
+                session['operadora_id'] = ids[0] if ids else None
+                session['operadora_nomes'] = nomes
+                session['operadora_nome'] = ', '.join(nomes) if nomes else None
+                session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+                session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
+                session['login_time'] = agora.isoformat()
+                session['session_nonce'] = uuid4().hex
+                session['login_ip'] = _get_remote_addr()
+                session['password_changed_at'] = usuario.senha_atualizada_em.isoformat() if usuario.senha_atualizada_em else None
+
+                must_change = bool(usuario.must_reset_senha)
+                last_change = usuario.senha_atualizada_em
+                if not must_change:
+                    if last_change is None:
+                        must_change = True
+                    else:
+                        try:
+                            delta = _now_utc() - last_change
+                            if delta > timedelta(days=PASSWORD_EXPIRATION_DAYS):
+                                must_change = True
+                        except Exception:
+                            must_change = True
+                if must_change and not usuario.must_reset_senha:
+                    usuario.must_reset_senha = True
+                session['must_change_senha'] = must_change
+
+                _register_audit('login.success', usuario=usuario)
+                try:
+                    db.session.commit()
+                except Exception as exc:
+                    db.session.rollback()
+                    app.logger.error('Falha ao confirmar login: %s', exc)
+                    erro = 'Não foi possível concluir o login. Tente novamente em instantes.'
+                    session.clear()
+                    return render_template('login.html', erro=erro, hide_chrome=True)
+
+                if must_change:
+                    return redirect(url_for('alterar_senha'))
+                return redirect(url_for('dashboard'))
+
+            usuario.failed_login_attempts = (usuario.failed_login_attempts or 0) + 1
+            bloqueado = False
+            if usuario.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+                usuario.locked_until = agora + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
+                usuario.failed_login_attempts = 0
+                bloqueado = True
+            _register_audit(
+                'login.failure',
+                usuario=usuario,
+                detalhes={
+                    'reason': 'senha_incorreta',
+                    'blocked': bloqueado,
+                    'next_unlock': usuario.locked_until.isoformat() if usuario.locked_until else None,
+                },
+            )
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+            if bloqueado:
+                erro = f'Conta bloqueada por {ACCOUNT_LOCK_MINUTES} minutos após múltiplas tentativas.'
+            else:
+                erro = 'Credenciais inválidas.'
+            return render_template('login.html', erro=erro, hide_chrome=True)
+
+        _register_audit(
+            'login.failure',
+            email_alvo=email,
+            detalhes={'reason': 'usuario_inexistente'}
+        )
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        erro = 'Credenciais inválidas.'
+        return render_template('login.html', erro=erro, hide_chrome=True)
 
     # GET: layout limpo
     return render_template('login.html', hide_chrome=True)
@@ -3981,8 +4282,75 @@ def login():
 
 @app.route('/logout')
 def logout():
+    usuario_id = session.get('user_id')
+    if usuario_id:
+        try:
+            usuario = Usuario.query.get(usuario_id)
+        except Exception:
+            usuario = None
+        if usuario:
+            usuario.last_logout_at = _now_utc()
+            _register_audit('logout', usuario=usuario)
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
     session.clear()
+    session.modified = True
     return redirect(url_for('login'))
+
+
+@app.route('/minha-senha', methods=['GET', 'POST'])
+@login_required
+def alterar_senha():
+    usuario = Usuario.query.get_or_404(session.get('user_id'))
+    erro = None
+    aviso = None
+    if request.method == 'POST':
+        atual = (request.form.get('senha_atual') or '').strip()
+        nova = (request.form.get('senha_nova') or '').strip()
+        confirma = (request.form.get('senha_confirmacao') or '').strip()
+
+        if not _verify_password(usuario.senha, atual):
+            erro = 'Senha atual incorreta.'
+        elif not nova:
+            erro = 'Informe a nova senha.'
+        elif nova != confirma:
+            erro = 'Confirmação da senha não confere.'
+        elif nova == atual:
+            erro = 'A nova senha deve ser diferente da atual.'
+        else:
+            politica = _password_policy_error(nova)
+            if politica:
+                erro = politica
+            elif _password_was_used_recently(usuario, nova):
+                erro = f'Não reutilize as últimas {PASSWORD_HISTORY_SIZE} senhas.'
+
+        if not erro:
+            try:
+                senha_hash = _hash_password(nova)
+                agora = _now_utc()
+                usuario.senha = senha_hash
+                usuario.must_reset_senha = False
+                usuario.senha_atualizada_em = agora
+                usuario.failed_login_attempts = 0
+                usuario.locked_until = None
+                usuario.last_logout_at = agora
+                _append_password_history(usuario, senha_hash)
+                _register_audit('password.change', usuario=usuario)
+                db.session.commit()
+                session['must_change_senha'] = False
+                session['login_time'] = agora.isoformat()
+                session['password_changed_at'] = agora.isoformat()
+                flash('Senha atualizada com sucesso.', 'success')
+                return redirect(url_for('dashboard'))
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.error('Erro ao atualizar senha: %s', exc)
+                erro = 'Erro ao atualizar a senha. Tente novamente em instantes.'
+
+    must_change = session.get('must_change_senha')
+    return render_template('minha-senha.html', erro=erro, must_change=must_change, aviso=aviso)
 
 
 
@@ -6280,6 +6648,36 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                 except Exception:
                     db.session.rollback()
                 try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN must_reset_senha TINYINT(1) NOT NULL DEFAULT 1"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN senha_atualizada_em DATETIME NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN failed_login_attempts INT NOT NULL DEFAULT 0"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN locked_until DATETIME NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN last_logout_at DATETIME NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("UPDATE usuarios SET acesso_insumos = COALESCE(acesso_insumos, 1), acesso_tuss_rol = COALESCE(acesso_tuss_rol, 1), must_reset_senha = COALESCE(must_reset_senha, 0), senha_atualizada_em = COALESCE(senha_atualizada_em, CURRENT_TIMESTAMP)"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
                     db.session.execute(text(
                         """
                         CREATE TABLE IF NOT EXISTS usuario_operadoras (
@@ -6310,13 +6708,40 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                     db.session.rollback()
                 # Garante criação da tabela CBHPM (se ainda não existir)
                 db.create_all()
+                try:
+                    usuarios = Usuario.query.all()
+                    changed = False
+                    for usuario in usuarios:
+                        if usuario and usuario.senha and not _is_password_hashed(usuario.senha):
+                            hashed = _hash_password(usuario.senha)
+                            usuario.senha = hashed
+                            usuario.senha_atualizada_em = usuario.senha_atualizada_em or _now_utc()
+                            db.session.add(usuario)
+                            changed = True
+                            try:
+                                _append_password_history(usuario, hashed)
+                            except Exception:
+                                pass
+                    if changed:
+                        db.session.commit()
+                except Exception:
+                    db.session.rollback()
                 # Semeia um usuário admin padrão se não existir nenhum usuário
                 try:
                     if db.session.query(Usuario).count() == 0:
                         admin_email = os.getenv('ADMIN_EMAIL', 'admin@local')
                         admin_senha = os.getenv('ADMIN_PASSWORD', 'admin123')
                         admin_nome = os.getenv('ADMIN_NAME', 'Administrador')
-                        db.session.add(Usuario(nome=admin_nome, email=admin_email, senha=admin_senha, perfil='adm'))
+                        senha_hash = _hash_password(admin_senha)
+                        admin = Usuario(nome=admin_nome, email=admin_email, senha=senha_hash, perfil='adm')
+                        admin.must_reset_senha = True
+                        admin.senha_atualizada_em = _now_utc()
+                        db.session.add(admin)
+                        db.session.flush()
+                        try:
+                            _append_password_history(admin, senha_hash)
+                        except Exception:
+                            pass
                         db.session.commit()
                         print(f"[init] Usuário admin criado: {admin_email} / senha padrão")
                 except Exception:
@@ -6361,6 +6786,9 @@ def usuario_novo():
         perfil = request.form.get('perfil')
         if not all([nome, email, senha, perfil]):
             return render_template('usuario-form.html', erro='Preencha todos os campos', modo='novo', form=request.form, operadoras=operadoras)
+        politica = _password_policy_error(senha or '')
+        if politica:
+            return render_template('usuario-form.html', erro=politica, modo='novo', form=request.form, operadoras=operadoras)
         raw_operadoras = [s.strip() for s in request.form.getlist('operadora_ids') if s and s.strip()]
         operadora_ids: list[int] = []
         for raw in raw_operadoras:
@@ -6395,23 +6823,38 @@ def usuario_novo():
                 erro='Selecione ao menos uma operadora para usuários dos perfis Operadora ou Adm de Contrato.',
                 modo='novo',
                 form=request.form,
-                operadoras=operadoras,
-            )
+                    operadoras=operadoras,
+                )
         if Usuario.query.filter_by(email=email).first():
             return render_template('usuario-form.html', erro='E-mail já cadastrado', modo='novo', form=request.form, operadoras=operadoras)
         acesso_insumos = bool(request.form.get('acesso_insumos'))
         acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
+        agora = _now_utc()
+        senha_hash = _hash_password(senha)
         u = Usuario(
             nome=nome,
             email=email,
-            senha=senha,
+            senha=senha_hash,
             perfil=perfil,
             acesso_insumos=acesso_insumos,
             acesso_tuss_rol=acesso_tuss_rol,
         )
+        u.must_reset_senha = True
+        u.senha_atualizada_em = agora
+        u.failed_login_attempts = 0
+        u.locked_until = None
+        u.last_logout_at = agora
         u.operadoras = operadoras_sel
         db.session.add(u)
-        db.session.commit()
+        try:
+            db.session.flush()
+            _append_password_history(u, senha_hash)
+            _register_audit('user.create', usuario=u, detalhes={'actor_usuario_id': session.get('user_id')})
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.error('Erro ao criar usuário: %s', exc)
+            return render_template('usuario-form.html', erro='Erro ao criar usuário. Tente novamente.', modo='novo', form=request.form, operadoras=operadoras)
         return redirect(url_for('gerenciar_usuarios'))
     return render_template('usuario-form.html', modo='novo', operadoras=operadoras)
 
@@ -6425,6 +6868,10 @@ def usuario_editar(uid):
         nome = request.form.get('nome') or u.nome
         email = request.form.get('email') or u.email
         perfil_novo = request.form.get('perfil') or u.perfil
+        original_perfil = u.perfil
+        original_insumos = u.acesso_insumos
+        original_tuss = u.acesso_tuss_rol
+        original_operadoras = sorted(op.id for op in u.operadoras)
         raw_operadoras = [s.strip() for s in request.form.getlist('operadora_ids') if s and s.strip()]
         operadora_ids: list[int] = []
         for raw in raw_operadoras:
@@ -6466,17 +6913,95 @@ def usuario_editar(uid):
             )
         acesso_insumos = bool(request.form.get('acesso_insumos'))
         acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
+        new_senha = (request.form.get('senha') or '').strip()
+        password_changed = False
+        agora = _now_utc()
+        if new_senha:
+            politica = _password_policy_error(new_senha)
+            if politica:
+                return render_template(
+                    'usuario-form.html',
+                    erro=politica,
+                    modo='editar',
+                    usuario=u,
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            if _password_was_used_recently(u, new_senha):
+                return render_template(
+                    'usuario-form.html',
+                    erro=f'Não reutilize as últimas {PASSWORD_HISTORY_SIZE} senhas.',
+                    modo='editar',
+                    usuario=u,
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            senha_hash = _hash_password(new_senha)
+            u.senha = senha_hash
+            u.senha_atualizada_em = agora
+            u.failed_login_attempts = 0
+            u.locked_until = None
+            u.last_logout_at = agora
+            u.must_reset_senha = not (session.get('user_id') == u.id)
+            _append_password_history(u, senha_hash)
+            password_changed = True
+
         u.nome = nome
         u.email = email
-        new_senha = request.form.get('senha')
-        if new_senha:
-            u.senha = new_senha
         u.perfil = perfil_novo
         u.operadoras = operadoras_sel
         u.acesso_insumos = acesso_insumos
         u.acesso_tuss_rol = acesso_tuss_rol
-        db.session.commit()
+
+        try:
+            if password_changed:
+                _register_audit(
+                    'password.reset',
+                    usuario=u,
+                    detalhes={
+                        'actor_usuario_id': session.get('user_id'),
+                        'self_service': session.get('user_id') == u.id,
+                    },
+                )
+            permissions_changed = (
+                original_perfil != u.perfil
+                or original_insumos != acesso_insumos
+                or original_tuss != acesso_tuss_rol
+                or original_operadoras != sorted(op.id for op in u.operadoras)
+            )
+            if permissions_changed:
+                _register_audit(
+                    'user.permissions_change',
+                    usuario=u,
+                    detalhes={
+                        'actor_usuario_id': session.get('user_id'),
+                        'perfil_antes': original_perfil,
+                        'perfil_depois': u.perfil,
+                        'acesso_insumos_antes': original_insumos,
+                        'acesso_insumos_depois': acesso_insumos,
+                        'acesso_tuss_antes': original_tuss,
+                        'acesso_tuss_depois': acesso_tuss_rol,
+                        'operadoras_antes': original_operadoras,
+                        'operadoras_depois': sorted(op.id for op in u.operadoras),
+                    },
+                )
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.error('Erro ao atualizar usuário %s: %s', u.email, exc)
+            return render_template(
+                'usuario-form.html',
+                erro='Erro ao atualizar usuário. Tente novamente.',
+                modo='editar',
+                usuario=u,
+                form=request.form,
+                operadoras=operadoras,
+            )
+
         if session.get('user_id') == u.id:
+            if password_changed:
+                session['login_time'] = agora.isoformat()
+                session['password_changed_at'] = agora.isoformat()
             nomes = [op.nome for op in u.operadoras]
             ids = [op.id for op in u.operadoras]
             session['operadora_ids'] = ids
@@ -6485,8 +7010,165 @@ def usuario_editar(uid):
             session['operadora_nome'] = ', '.join(nomes) if nomes else None
             session['feature_insumos'] = acesso_insumos or (session.get('perfil') == 'adm')
             session['feature_tuss_rol'] = acesso_tuss_rol or (session.get('perfil') == 'adm')
+            session['must_change_senha'] = bool(u.must_reset_senha)
         return redirect(url_for('gerenciar_usuarios'))
     return render_template('usuario-form.html', modo='editar', usuario=u, operadoras=operadoras)
+
+
+@app.route('/admin/audit-trail')
+@admin_required
+def admin_audit_trail():
+    page = max(request.args.get('page', default=1, type=int) or 1, 1)
+    per_page = request.args.get('per_page', default=50, type=int) or 50
+    per_page = max(10, min(per_page, 200))
+    evento = (request.args.get('evento') or '').strip() or None
+    email_q = (request.args.get('email') or '').strip()
+    ip_q = (request.args.get('ip') or '').strip()
+    inicio_str = (request.args.get('inicio') or '').strip()
+    fim_str = (request.args.get('fim') or '').strip()
+
+    inicio_dt = None
+    fim_dt = None
+    if inicio_str:
+        try:
+            inicio_dt = datetime.strptime(inicio_str, '%Y-%m-%d')
+        except ValueError:
+            flash('Data inicial inválida. Use o formato AAAA-MM-DD.', 'warning')
+            inicio_dt = None
+    if fim_str:
+        try:
+            fim_dt = datetime.strptime(fim_str, '%Y-%m-%d') + timedelta(days=1)
+        except ValueError:
+            flash('Data final inválida. Use o formato AAAA-MM-DD.', 'warning')
+            fim_dt = None
+
+    query = (
+        AuditLog.query
+        .outerjoin(Usuario, AuditLog.usuario_id == Usuario.id)
+        .options(joinedload(AuditLog.usuario))
+        .order_by(AuditLog.id.desc())
+    )
+
+    if evento:
+        query = query.filter(AuditLog.evento == evento)
+    if email_q:
+        like_value = f"%{email_q.lower()}%"
+        query = query.filter(
+            or_(
+                func.lower(AuditLog.email_alvo).like(like_value),
+                func.lower(Usuario.email).like(like_value),
+            )
+        )
+    if ip_q:
+        query = query.filter(AuditLog.ip.ilike(f"%{ip_q}%"))
+    if inicio_dt:
+        query = query.filter(AuditLog.criado_em >= inicio_dt)
+    if fim_dt:
+        query = query.filter(AuditLog.criado_em < fim_dt)
+
+    total = query.count()
+    pages = max(1, math.ceil(total / per_page)) if total else 1
+    if page > pages:
+        page = pages
+    offset = (page - 1) * per_page
+    logs = query.offset(offset).limit(per_page).all()
+
+    parsed_rows: list[tuple[AuditLog, dict | list | None, str | None, Optional[int]]] = []
+    actor_ids: set[int] = set()
+    for row in logs:
+        parsed_candidate = None
+        if row.detalhes:
+            try:
+                parsed_candidate = json.loads(row.detalhes)
+            except Exception:
+                parsed_candidate = None
+        parsed_value: dict | list | None = parsed_candidate if isinstance(parsed_candidate, (dict, list)) else None
+        raw_value = None if parsed_value is not None else row.detalhes
+        actor_ref: Optional[int] = None
+        if isinstance(parsed_value, dict):
+            candidate = parsed_value.get('actor_usuario_id')
+            if candidate is None:
+                candidate = parsed_value.get('actor_user_id')
+            if isinstance(candidate, int):
+                actor_ref = candidate
+                actor_ids.add(candidate)
+            elif isinstance(candidate, str):
+                try:
+                    parsed_int = int(candidate)
+                    actor_ref = parsed_int
+                    actor_ids.add(parsed_int)
+                except ValueError:
+                    pass
+        parsed_rows.append((row, parsed_value, raw_value, actor_ref))
+
+    actor_map: dict[int, Usuario] = {}
+    if actor_ids:
+        try:
+            actor_map = {
+                usuario.id: usuario
+                for usuario in Usuario.query.filter(Usuario.id.in_(actor_ids)).all()
+            }
+        except Exception:
+            actor_map = {}
+
+    entries = []
+    for row, parsed_value, raw_value, actor_ref in parsed_rows:
+        details_lines: list[str] = []
+        if isinstance(parsed_value, dict):
+            actor = actor_map.get(actor_ref) if actor_ref else None
+            if actor_ref:
+                if actor:
+                    details_lines.append(f"Ação executada por {actor.nome} ({actor.email})")
+                else:
+                    details_lines.append(f"Ação executada pelo usuário id {actor_ref}")
+            self_service = parsed_value.get('self_service')
+            if isinstance(self_service, bool):
+                details_lines.append('Autoatendimento pelo próprio usuário.' if self_service else 'Executado por outro usuário (administrativo).')
+            known_keys = {'actor_usuario_id', 'actor_user_id', 'self_service'}
+            for key in sorted(parsed_value.keys()):
+                if key in known_keys:
+                    continue
+                value = parsed_value[key]
+                if isinstance(value, (dict, list)):
+                    value_repr = json.dumps(value, ensure_ascii=False)
+                elif value is None:
+                    value_repr = '—'
+                else:
+                    value_repr = str(value)
+                details_lines.append(f"{key}: {value_repr}")
+        elif isinstance(parsed_value, list):
+            if parsed_value:
+                details_lines.append(json.dumps(parsed_value, ensure_ascii=False))
+
+        entries.append({
+            'record': row,
+            'parsed': parsed_value,
+            'raw': raw_value,
+            'details_lines': details_lines,
+            'usuario_nome': row.usuario.nome if row.usuario else None,
+            'usuario_email': row.usuario.email if row.usuario else None,
+        })
+
+    eventos_disponiveis = [
+        item[0] for item in db.session.query(AuditLog.evento).distinct().order_by(AuditLog.evento).all()
+    ]
+
+    return render_template(
+        'audit-logs.html',
+        logs=entries,
+        eventos=eventos_disponiveis,
+        page=page,
+        pages=pages,
+        total=total,
+        per_page=per_page,
+        filters={
+            'evento': evento or '',
+            'email': email_q,
+            'ip': ip_q,
+            'inicio': inicio_str,
+            'fim': fim_str,
+        },
+    )
 
 
 # --- 7. Operadoras (UI) ---

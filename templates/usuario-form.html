@@ -45,7 +45,15 @@
       </div>
       <div class="col-12 col-md-6">
         <label class="form-label" for="senha">Senha {% if modo=='editar' %}(deixe em branco para manter){% endif %}</label>
-        <input class="form-control" id="senha" type="password" name="senha" {% if modo!='editar' %}required{% endif %}>
+        <div class="input-group">
+          <input class="form-control" id="senha" type="password" name="senha" {% if modo!='editar' %}required{% endif %}>
+          <button class="btn btn-outline-secondary" type="button" data-toggle-password data-target="#senha" aria-label="Mostrar ou ocultar senha">
+            <i class="bi bi-eye"></i>
+          </button>
+        </div>
+        <div class="form-text mt-1">
+          Mínimo de {{ security_password_min_length }} caracteres com letras maiúsculas, minúsculas, números e símbolos. Não reutilizar as últimas {{ security_password_history_size }} senhas.
+        </div>
       </div>
       <div class="col-12 col-md-6">
         <label class="form-label" for="perfil">Perfil</label>

@@ -1,0 +1,124 @@
+{% extends 'base.html' %}
+{% block title %}Trilha de Auditoria{% endblock %}
+{% block page_title %}Trilha de Auditoria{% endblock %}
+{% block content %}
+<div class="mb-3">
+  <form class="row g-3 align-items-end" method="get">
+    <div class="col-12 col-md-3">
+      <label class="form-label" for="fEmail">Usuário / E-mail alvo</label>
+      <input class="form-control" id="fEmail" type="text" name="email" value="{{ filters.email }}">
+    </div>
+    <div class="col-12 col-md-2">
+      <label class="form-label" for="fEvento">Evento</label>
+      <select class="form-select" id="fEvento" name="evento">
+        <option value="">Todos</option>
+        {% for evt in eventos %}
+          <option value="{{ evt }}" {% if filters.evento == evt %}selected{% endif %}>{{ evt }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-12 col-md-2">
+      <label class="form-label" for="fIp">IP</label>
+      <input class="form-control" id="fIp" type="text" name="ip" value="{{ filters.ip }}">
+    </div>
+    <div class="col-12 col-md-2">
+      <label class="form-label" for="fInicio">De</label>
+      <input class="form-control" id="fInicio" type="date" name="inicio" value="{{ filters.inicio }}">
+    </div>
+    <div class="col-12 col-md-2">
+      <label class="form-label" for="fFim">Até</label>
+      <input class="form-control" id="fFim" type="date" name="fim" value="{{ filters.fim }}">
+    </div>
+    <div class="col-6 col-md-1">
+      <label class="form-label" for="fPerPage">Por página</label>
+      <input class="form-control" id="fPerPage" type="number" min="10" max="200" name="per_page" value="{{ per_page }}">
+    </div>
+    <div class="col-6 col-md-2 d-flex gap-2">
+      <button class="btn btn-primary flex-fill" type="submit">Filtrar</button>
+      <a class="btn btn-outline-secondary flex-fill" href="{{ url_for('admin_audit_trail') }}">Limpar</a>
+    </div>
+  </form>
+</div>
+
+<div class="table-responsive">
+  <table class="table table-clean align-middle mb-0">
+    <thead>
+      <tr>
+        <th class="text-nowrap">Data/Hora</th>
+        <th>Evento</th>
+        <th>Usuário</th>
+        <th>E-mail alvo</th>
+        <th>IP</th>
+        <th>Detalhes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in logs %}
+        {% set record = entry.record %}
+        <tr>
+          <td class="text-nowrap">{{ record.criado_em.strftime('%d/%m/%Y %H:%M:%S') }}</td>
+          <td><span class="badge text-bg-secondary">{{ record.evento }}</span></td>
+          <td>
+            {% if entry.usuario_nome or entry.usuario_email %}
+              <div>{{ entry.usuario_nome or '—' }}</div>
+              <div class="text-muted small">{{ entry.usuario_email or '—' }}</div>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td>{{ record.email_alvo or '—' }}</td>
+          <td>{{ record.ip or '—' }}</td>
+          <td style="min-width: 240px;">
+            {% if entry.details_lines %}
+              <ul class="small mb-0 ps-3">
+                {% for line in entry.details_lines %}
+                  <li>{{ line }}</li>
+                {% endfor %}
+              </ul>
+            {% elif entry.parsed %}
+              <pre class="small bg-light border rounded p-2 mb-0">{{ entry.parsed | tojson(indent=2) }}</pre>
+            {% elif entry.raw %}
+              <code class="small">{{ entry.raw }}</code>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr>
+          <td colspan="6" class="text-center text-muted py-4">Nenhum registro encontrado para os filtros informados.</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="d-flex justify-content-between align-items-center mt-3">
+  <div class="text-muted small">
+    Exibindo página {{ page }} de {{ pages }} — {{ total }} registros encontrados.
+  </div>
+  {% if pages > 1 %}
+    <nav aria-label="Paginação">
+      <ul class="pagination pagination-sm mb-0">
+        <li class="page-item {% if page <= 1 %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('admin_audit_trail', page=page-1 if page>1 else 1, per_page=per_page, evento=filters.evento, email=filters.email, ip=filters.ip, inicio=filters.inicio, fim=filters.fim) }}">Anterior</a>
+        </li>
+        {% for p in range(1, pages + 1) %}
+          {% if p == page or p <= 2 or p > pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <li class="page-item {% if p == page %}active{% endif %}">
+              <a class="page-link" href="{{ url_for('admin_audit_trail', page=p, per_page=per_page, evento=filters.evento, email=filters.email, ip=filters.ip, inicio=filters.inicio, fim=filters.fim) }}">{{ p }}</a>
+            </li>
+          {% elif p == 3 and page > 4 %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% elif p == pages - 2 and page < pages - 3 %}
+            <li class="page-item disabled"><span class="page-link">…</span></li>
+          {% endif %}
+        {% endfor %}
+        <li class="page-item {% if page >= pages %}disabled{% endif %}">
+          <a class="page-link" href="{{ url_for('admin_audit_trail', page=page+1 if page<pages else pages, per_page=per_page, evento=filters.evento, email=filters.email, ip=filters.ip, inicio=filters.inicio, fim=filters.fim) }}">Próxima</a>
+        </li>
+      </ul>
+    </nav>
+  {% endif %}
+</div>
+{% endblock %}
