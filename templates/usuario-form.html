@@ -7,18 +7,41 @@
   </div>
 
   {% if erro %}<div class="alert alert-danger">{{ erro }}</div>{% endif %}
+  {% set form_data = form if form is defined else {} %}
+  {% set operadoras_list = operadoras if operadoras is defined else [] %}
+  {% set nome_val = form_data.get('nome') if form_data.get('nome') is not none else (usuario.nome if usuario else '') %}
+  {% set email_val = form_data.get('email') if form_data.get('email') is not none else (usuario.email if usuario else '') %}
+  {% set perfil_val = form_data.get('perfil') if form_data.get('perfil') is not none else (usuario.perfil if usuario else '') %}
+  {% if form is defined %}
+    {% set acesso_insumos_val = 1 if form.get('acesso_insumos') else 0 %}
+    {% set acesso_tuss_val = 1 if form.get('acesso_tuss_rol') else 0 %}
+  {% elif usuario %}
+    {% set acesso_insumos_val = 1 if usuario.acesso_insumos else 0 %}
+    {% set acesso_tuss_val = 1 if usuario.acesso_tuss_rol else 0 %}
+  {% else %}
+    {% set acesso_insumos_val = 1 %}
+    {% set acesso_tuss_val = 1 %}
+  {% endif %}
+  {% set selected_operadoras = [] %}
+  {% if form is defined %}
+    {% set selected_operadoras = form.getlist('operadora_ids') %}
+  {% elif usuario %}
+    {% set selected_ns = namespace(values=[]) %}
+    {% for op in usuario.operadoras %}
+      {% set selected_ns.values = selected_ns.values + [op.id|string] %}
+    {% endfor %}
+    {% set selected_operadoras = selected_ns.values %}
+  {% endif %}
 
   <form method="post" class="card p-3">
     <div class="row g-3">
       <div class="col-12 col-md-6">
         <label class="form-label" for="nome">Nome</label>
-        <input class="form-control" id="nome" name="nome" required
-               value="{{ (usuario.nome if usuario else (form.get('nome') if form is defined else '')) }}">
+        <input class="form-control" id="nome" name="nome" required value="{{ nome_val }}">
       </div>
       <div class="col-12 col-md-6">
         <label class="form-label" for="email">E-mail</label>
-        <input class="form-control" id="email" type="email" name="email" required
-               value="{{ (usuario.email if usuario else (form.get('email') if form is defined else '')) }}">
+        <input class="form-control" id="email" type="email" name="email" required value="{{ email_val }}">
       </div>
       <div class="col-12 col-md-6">
         <label class="form-label" for="senha">Senha {% if modo=='editar' %}(deixe em branco para manter){% endif %}</label>
@@ -26,13 +49,50 @@
       </div>
       <div class="col-12 col-md-6">
         <label class="form-label" for="perfil">Perfil</label>
-        {% set atual = (usuario.perfil if usuario else (form.get('perfil') if form is defined else '')) %}
         <select class="form-select" id="perfil" name="perfil" required>
-          <option value="adm" {% if atual=='adm' %}selected{% endif %}>Administrador</option>
-          <option value="adm de contrato" {% if atual=='adm de contrato' %}selected{% endif %}>Adm de Contrato</option>
-          <option value="auditor" {% if atual=='auditor' %}selected{% endif %}>Auditor</option>
-          <option value="operadora" {% if atual=='operadora' %}selected{% endif %}>Operadora</option>
+          <option value="adm" {% if perfil_val=='adm' %}selected{% endif %}>Administrador</option>
+          <option value="adm de contrato" {% if perfil_val=='adm de contrato' %}selected{% endif %}>Adm de Contrato</option>
+          <option value="auditor" {% if perfil_val=='auditor' %}selected{% endif %}>Auditor</option>
+          <option value="operadora" {% if perfil_val=='operadora' %}selected{% endif %}>Operadora</option>
         </select>
+      </div>
+      <div class="col-12">
+        <label class="form-label d-block">Operadoras</label>
+        <div class="border rounded p-3 bg-light-subtle">
+          {% if operadoras_list %}
+            <div class="row g-2">
+              {% for op in operadoras_list %}
+                {% set option_val = op.id|string %}
+                <div class="col-12 col-md-6 col-lg-4">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="operadora-{{ op.id }}" name="operadora_ids" value="{{ op.id }}" {% if option_val in selected_operadoras %}checked{% endif %}>
+                    <label class="form-check-label" for="operadora-{{ op.id }}">{{ op.nome }}</label>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="text-secondary mb-0">Nenhuma operadora cadastrada.</p>
+          {% endif %}
+        </div>
+        <div class="form-text mt-1">Marque as operadoras disponíveis. Deixe sem seleção para liberar todas. Obrigatório para perfis Operadora e Adm de Contrato.</div>
+      </div>
+      <div class="col-12">
+        <label class="form-label d-block">Módulos habilitados</label>
+        <div class="border rounded p-3 bg-white">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="acessoInsumos" name="acesso_insumos" value="1" {% if acesso_insumos_val %}checked{% endif %}>
+            <label class="form-check-label" for="acessoInsumos">
+              Simpro &amp; Brasíndice
+            </label>
+          </div>
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="acessoTussRol" name="acesso_tuss_rol" value="1" {% if acesso_tuss_val %}checked{% endif %}>
+            <label class="form-check-label" for="acessoTussRol">
+              Consulta TUSS x ROL
+            </label>
+          </div>
+        </div>
       </div>
     </div>
     <div class="d-flex gap-2 mt-3">

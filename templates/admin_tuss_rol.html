@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% block title %}TUSS x ROL{% endblock %}
+{% block content %}
+<div class="page-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+  <h4 class="mb-0">Correlação TUSS x ROL ANS</h4>
+  <div class="d-flex gap-2">
+    <a class="btn btn-sm btn-outline-secondary btn-icon" href="{{ url_for('admin_tuss_rol') }}">
+      <i data-lucide="arrow-clockwise"></i> Atualizar
+    </a>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-12 col-lg-4">
+    <div class="card h-100 p-3">
+      <div class="section-title mb-1">Importar planilha</div>
+      <div class="soft mb-3">
+        Use um arquivo CSV ou XLSX com as colunas <code>CODIGO</code>, <code>DESCRIÇÃO</code> e <code>SE CONSTA</code> (Sim/Não).
+        Valores repetidos do código serão atualizados.
+      </div>
+      <form method="post" enctype="multipart/form-data" class="d-flex flex-column gap-3">
+        <div>
+          <label class="form-label" for="arquivoImport">Arquivo CSV ou XLSX</label>
+          <input class="form-control" type="file" id="arquivoImport" name="arquivo" accept=".csv,text/csv,.xlsx,.xlsm,.xltx,.xltm" required>
+        </div>
+        <button class="btn btn-primary btn-icon" type="submit">
+          <i data-lucide="upload"></i> Enviar e processar
+        </button>
+      </form>
+      <div class="alert alert-warning mt-3 mb-0" role="alert">
+        <strong>Atenção:</strong> a importação é cumulativa. Registros existentes são atualizados pelo código.
+      </div>
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-8">
+    <div class="card h-100 p-3">
+      <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap">
+        <div>
+          <div class="section-title mb-1">Resumo</div>
+          <div class="d-flex flex-wrap gap-3">
+            <div>
+              <div class="mini-label text-uppercase text-muted">Total de códigos</div>
+              <div class="fs-4 fw-semibold">{{ stats.total }}</div>
+            </div>
+            <div>
+              <div class="mini-label text-uppercase text-muted">No ROL</div>
+              <div class="fs-4 fw-semibold text-success">{{ stats.total_consta }}</div>
+            </div>
+            <div>
+              <div class="mini-label text-uppercase text-muted">Última atualização</div>
+              <div class="fw-semibold">
+                {% if stats.last_updated %}
+                  {{ stats.last_updated.strftime('%d/%m/%Y %H:%M') }}
+                {% else %}
+                  &mdash;
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+        {% if resumo_import %}
+        <div class="bg-light border rounded p-3 small">
+          <div class="fw-semibold mb-1">Resultado da última importação:</div>
+          <div>Processados: {{ resumo_import.processados }}</div>
+          <div>Novos: {{ resumo_import.criados }}</div>
+          <div>Atualizados: {{ resumo_import.atualizados }}</div>
+          <div>Erros: {{ resumo_import.erros }}</div>
+        </div>
+        {% endif %}
+      </div>
+      <hr>
+      <div class="mini-label text-uppercase text-muted mb-2">Amostra (até 50 códigos)</div>
+      <div class="table-responsive" style="max-height:320px;">
+        <table class="table table-sm align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th style="width:120px;">Código</th>
+              <th>Descrição</th>
+              <th style="width:120px;" class="text-center">Consta no ROL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in exemplos %}
+            <tr>
+              <td class="fw-semibold">{{ item.codigo }}</td>
+              <td>{{ item.descricao or '-' }}</td>
+              <td class="text-center">
+                {% if item.consta_rol %}
+                  <span class="badge text-bg-success">Sim</span>
+                {% else %}
+                  <span class="badge text-bg-secondary">Não</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="3" class="text-center text-muted py-4">Nenhuma correlação cadastrada.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

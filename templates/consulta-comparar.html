@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% set show_tuss_rol = session_feature_tuss_rol or session_perfil == 'adm' %}
 
 {% block title %}Consulta & Comparar{% endblock %}
 {% block page_title %}Consulta &amp; Comparar{% endblock %}
@@ -72,11 +73,37 @@
   width:120px; flex:0 0 120px; }
 
 /* Descrição em 1 linha com reticências */
-.ap-desc{ flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .ap-desc{ flex:1 1 auto; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* Texto auxiliar menor e em cinza (se usar) */
 .ap-muted{ color:var(--ap-muted); font-size:.8rem; }
 
+/* Combos de procedimento */
+.combo-card{border:1px solid var(--ap-border);border-radius:16px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,.06);overflow:hidden;}
+.combo-card-header{padding:1rem 1.25rem;border-bottom:1px solid var(--ap-border);display:flex;flex-wrap:wrap;align-items:center;gap:1rem;justify-content:space-between;}
+.combo-card-header h5{margin:0;font-weight:600;}
+.combo-card-body{padding:1.25rem;}
+.combo-builder{display:grid;grid-template-columns:1fr;gap:1rem;}
+@media(min-width:992px){.combo-builder{grid-template-columns:1.1fr .9fr;}}
+.combo-ghost{border:1px dashed var(--ap-border);border-radius:12px;padding:1rem;background:var(--ap-bg-soft);}
+.combo-items-list{display:flex;flex-direction:column;gap:.75rem;margin-top:.75rem;}
+.combo-item{border:1px solid var(--ap-border);border-radius:12px;padding:.75rem 1rem;background:#fff;display:flex;flex-direction:column;gap:.35rem;}
+.combo-item-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;}
+.combo-item-meta{font-size:.8rem;color:var(--ap-muted);display:flex;flex-wrap:wrap;gap:.4rem;}
+.combo-summary-box{border:1px solid rgba(13,148,136,.35);background:rgba(13,148,136,.08);border-radius:12px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.35rem;}
+.combo-badge{background:rgba(13,148,136,.12);color:#0f766e;border-radius:999px;padding:.2rem .6rem;font-size:.75rem;font-weight:500;}
+.combo-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem;}
+.combo-saved-list{display:flex;flex-direction:column;gap:.6rem;}
+.combo-saved-card{border:1px solid var(--ap-border);border-radius:12px;padding:.8rem 1rem;background:#fff;display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start;}
+.combo-saved-card:hover{border-color:#0d9488;box-shadow:0 4px 16px rgba(13,148,136,.18);}
+.combo-empty{padding:1rem;border:1px dashed var(--ap-border);border-radius:12px;background:var(--ap-bg-soft);color:var(--ap-muted);}
+.combo-pill{border:1px solid rgba(15,23,42,.12);border-radius:999px;padding:.15rem .5rem;font-size:.75rem;background:#fff;color:#0f172a;}
+.combo-suggest{position:relative;}
+.combo-suggest-list{position:absolute;top:100%;left:0;right:0;margin-top:.3rem;background:#fff;border:1px solid var(--ap-border);border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.18);max-height:260px;overflow:auto;z-index:1070;}
+.combo-suggest-item{padding:.45rem .75rem;display:flex;flex-direction:column;gap:.1rem;cursor:pointer;}
+.combo-suggest-item strong{font-size:.9rem;}
+.combo-suggest-item small{font-size:.75rem;color:var(--ap-muted);}
+.combo-suggest-item:hover,.combo-suggest-item.active{background:rgba(13,148,136,.12);}
 </style>
 {% endblock %}
 
@@ -242,6 +269,9 @@
       <div class="d-flex gap-2">
         <button id="btnCopyResults"  type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="clipboard-copy"></i> Copiar</button>
         <button id="btnExportCSV"   type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="download"></i> Exportar CSV</button>
+        <button id="btnRadarOportunidades" type="button" class="btn btn-sm btn-outline-success btn-icon">
+          <i data-lucide="radar"></i> Radar de oportunidades
+        </button>
       </div>
     </div>
 
@@ -251,6 +281,9 @@
           <tr>
             <th style="width:130px;">Código</th>
             <th>Descrição</th>
+            {% if show_tuss_rol %}
+            <th class="text-center">ROL ANS</th>
+            {% endif %}
             {% for c in display_cols %}<th class="text-end">{{ c }}</th>{% endfor %}
             <th class="text-end">Mín</th>
             <th class="text-end">Média</th>
@@ -262,8 +295,29 @@
           {% for r in (rows or []) %}
             {% set vals = (r['values'] if r and (r['values'] is defined) else []) %}
             <tr>
-              <td><a href="#" class="js-open-detalhe" data-codigo="{{ r['codigo'] }}">{{ r['codigo'] }}</a></td>
+              <td>
+                <div class="d-flex align-items-center gap-2">
+                  <a href="#" class="js-open-detalhe" data-codigo="{{ r['codigo'] }}">{{ r['codigo'] }}</a>
+                  <button type="button" class="btn btn-sm btn-outline-success btn-icon js-add-combo" data-codigo="{{ r['codigo'] }}" data-descricao="{{ r['descricao']|e }}" title="Adicionar ao combo">
+                    <i data-lucide="plus"></i>
+                  </button>
+                </div>
+              </td>
               <td>{{ r['descricao'] }}</td>
+              {% if show_tuss_rol %}
+                {% set rol = r.get('rol') %}
+                <td class="text-center">
+                  {% if rol %}
+                    {% if rol.consta %}
+                      <span class="badge text-bg-success" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Sim</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Não</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted">-</span>
+                  {% endif %}
+                </td>
+              {% endif %}
               {% for i in range(display_len) %}
                 {% set v = (vals[i] if i < (vals|length) else None) %}
                 <td class="text-end">{{ v|brl if v is not none else '-' }}</td>
@@ -284,7 +338,8 @@
           {% endfor %}
           {% if not rows %}
             <tr>
-              <td colspan="{{ 7 + display_len if is_cbhpm else 6 + display_len }}">
+              {% set total_cols = 6 + display_len + (1 if show_tuss_rol else 0) %}
+              <td colspan="{{ total_cols }}">
                 <div class="empty"><i data-lucide="search-x"></i> Sem resultados para os filtros atuais.</div>
               </td>
             </tr>
@@ -297,23 +352,28 @@
 
 {# ================= Simulador ================= #}
 <div class="card p-3">
-  <div class="d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
     <div>
       <div class="section-title">Simulador</div>
       <div class="soft">CBHPM e Diárias/Taxas/Pacotes</div>
     </div>
-    <ul class="nav nav-pills">
-      <li class="nav-item">
-        <button class="nav-link active btn-icon" data-bs-toggle="pill" data-bs-target="#tab-cbhpm" type="button">
-          <i data-lucide="stethoscope"></i> CBHPM
-        </button>
-      </li>
-      <li class="nav-item">
-        <button class="nav-link btn-icon" data-bs-toggle="pill" data-bs-target="#tab-dtp" type="button">
-          <i data-lucide="folder-cog"></i> Diárias/Taxas/Pacotes
-        </button>
-      </li>
-    </ul>
+    <div class="d-flex align-items-center gap-2">
+      <button type="button" class="btn btn-outline-success btn-sm btn-icon" id="btnOpenComboModal">
+        <i data-lucide="puzzle"></i> Combos de procedimento
+      </button>
+      <ul class="nav nav-pills">
+        <li class="nav-item">
+          <button class="nav-link active btn-icon" data-bs-toggle="pill" data-bs-target="#tab-cbhpm" type="button">
+            <i data-lucide="stethoscope"></i> CBHPM
+          </button>
+        </li>
+        <li class="nav-item">
+          <button class="nav-link btn-icon" data-bs-toggle="pill" data-bs-target="#tab-dtp" type="button">
+            <i data-lucide="folder-cog"></i> Diárias/Taxas/Pacotes
+          </button>
+        </li>
+      </ul>
+    </div>
   </div>
 
   <div class="d-flex flex-wrap gap-2 align-items-center mt-2" id="cbhpmScenarioControls">
@@ -479,6 +539,185 @@
   </div>
 </div>
 
+{# ================= Radar de Oportunidades ================= #}
+<div class="modal fade" id="radarModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Radar de oportunidades</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3 d-flex flex-wrap gap-2 align-items-center">
+          <div class="soft small">Itens com maior potencial de negociação considerando amplitude de preços, média vs. teto e variações por combo.</div>
+          <div class="ms-auto d-flex gap-2 flex-wrap">
+            <div class="input-group input-group-sm" style="max-width:260px;">
+              <span class="input-group-text"><i data-lucide="search"></i></span>
+              <input type="search" class="form-control" id="radarSearch" placeholder="Filtrar por código ou descrição">
+            </div>
+            <select class="form-select form-select-sm" id="radarOrdenacao" style="max-width:220px;">
+              <option value="amplitude_desc">Maior amplitude de preço</option>
+              <option value="media_desc">Média mais alta</option>
+              <option value="potencial_neg_desc">Economia potencial</option>
+            </select>
+          </div>
+        </div>
+        <div id="radarResumo" class="combo-summary-box mb-3" hidden></div>
+        <div id="radarLista" class="d-flex flex-column gap-3"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="soft small me-auto">Dica: clique em “explorar” para empurrar o item diretamente para filtros/simulador.</div>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{# ================= Modal Combos ================= #}
+<div class="modal fade" id="comboModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Montar combos de procedimento</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="combo-card" id="comboProcedimentoCard">
+          <div class="combo-card-header">
+            <div>
+              <h5 class="mb-1">Combo ativo</h5>
+              <div class="soft small">Monte pacotes rápidos, compare totais e salve combinações recorrentes para o simulador.</div>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+              <span class="combo-pill" id="comboActiveStats">0 itens • Total —</span>
+              <button type="button" class="btn btn-outline-primary btn-sm btn-icon" id="comboImportFromClipboard">
+                <i data-lucide="clipboard-plus"></i> Colar itens
+              </button>
+              <button type="button" class="btn btn-outline-secondary btn-sm btn-icon" id="comboToggleTips" aria-expanded="false">
+                <i data-lucide="sparkles"></i> Inspirações
+              </button>
+            </div>
+          </div>
+          <div class="combo-card-body">
+            <div class="combo-builder">
+              <div>
+                <div class="combo-ghost">
+                  <div class="d-flex justify-content-between align-items-start gap-2">
+                    <div>
+                      <div class="fw-semibold">Combo ativo</div>
+                      <div class="soft small">Nomeie o combo e adicione itens com código, descrição, quantidade e valor de referência.</div>
+                    </div>
+                    <div class="d-flex flex-column gap-2 align-items-end">
+                      <input type="text" class="form-control form-control-sm" id="comboName" placeholder="Nome do combo (ex.: Hemograma completo)" style="min-width:220px;">
+                      <div class="form-text text-end small">Salve para reutilizar em futuras comparações.</div>
+                    </div>
+                  </div>
+
+                  <form class="row g-2 mt-3" id="comboItemForm" autocomplete="off">
+                    <div class="col-12 col-md-3">
+                      <label class="form-label small text-muted mb-1">Código</label>
+                      <div class="combo-suggest">
+                        <input type="text" class="form-control form-control-sm" id="comboItemCodigo" placeholder="Ex.: 30101018">
+                        <div class="combo-suggest-list" id="comboCodeSuggestions" hidden></div>
+                      </div>
+                    </div>
+                    <div class="col-12 col-md-4">
+                      <label class="form-label small text-muted mb-1">Descrição</label>
+                      <input type="text" class="form-control form-control-sm" id="comboItemDescricao" placeholder="Visita hospitalar">
+                    </div>
+                    <div class="col-6 col-md-2">
+                      <label class="form-label small text-muted mb-1">Quantidade</label>
+                      <input type="number" min="1" step="1" class="form-control form-control-sm" id="comboItemQuantidade" value="1">
+                    </div>
+                    <div class="col-6 col-md-2">
+                      <label class="form-label small text-muted mb-1">Valor ref. (R$)</label>
+                      <input type="text" class="form-control form-control-sm" id="comboItemValor" placeholder="120,00">
+                    </div>
+                    <div class="col-12 col-md-1 d-grid">
+                      <label class="form-label small text-muted mb-1">&nbsp;</label>
+                      <button type="submit" class="btn btn-sm btn-primary btn-icon" id="comboItemAdd">
+                        <i data-lucide="plus-circle"></i> Add
+                      </button>
+                    </div>
+                  </form>
+
+                  <div class="combo-actions">
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="comboClearItems">
+                      <i data-lucide="trash-2"></i> Limpar combo
+                    </button>
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="comboSave">
+                      <i data-lucide="bookmark-plus"></i> Salvar combo
+                    </button>
+                    <button type="button" class="btn btn-outline-success btn-sm" id="comboApplyToFilters">
+                      <i data-lucide="sliders-horizontal"></i> Aplicar nos filtros
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="comboCopyResumo">
+                      <i data-lucide="clipboard-list"></i> Copiar resumo
+                    </button>
+                  </div>
+
+                  <div class="combo-items-list" id="comboItemsList">
+                    <div class="combo-empty">Ainda sem itens. Adicione um procedimento para começar o combo.</div>
+                  </div>
+
+                  <div class="combo-summary-box mt-3" id="comboSummaryBox" hidden>
+                    <div class="d-flex justify-content-between">
+                      <span>Total estimado</span>
+                      <strong id="comboSummaryTotal">R$ 0,00</strong>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                      <span>Média por item</span>
+                      <span id="comboSummaryMedia">—</span>
+                    </div>
+                    <div class="d-flex justify-content-between">
+                      <span>Quantidade total</span>
+                      <span id="comboSummaryQuantidade">—</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="alert alert-info mt-3 d-none" id="comboTips">
+                  <div class="d-flex gap-2 align-items-start">
+                    <i data-lucide="wand-2"></i>
+                    <div class="small">
+                      <strong>Inspirações de combo</strong>
+                      <ul class="mb-0 mt-2 ps-3">
+                        <li>Pacote diagnóstico: hemograma + raio-x + consulta follow-up.</li>
+                        <li>Acompanhamento crônico: consulta + telemonitoramento + exames trimestrais.</li>
+                        <li>Internação curta: diária enfermaria + honorário + medicação base.</li>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div class="h-100 combo-ghost">
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div>
+                      <div class="fw-semibold">Favoritos &amp; histórico</div>
+                      <div class="soft small">Carregue combos prontos, duplique ou remova os que não usa mais.</div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger" id="comboClearSaved">
+                      <i data-lucide="trash"></i> Limpar todos
+                    </button>
+                  </div>
+                  <div class="combo-saved-list" id="comboSavedList">
+                    <div class="combo-empty">Sem combos salvos no momento.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {# ================= Modal de detalhe ================= #}
 <div class="modal fade" id="detalheModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-xl modal-dialog-scrollable">
@@ -503,6 +742,65 @@ const PROCEDIMENTO_SUGGEST_URL = '/api/procedimentos/suggest';
 const VERSOES_POR_CODIGO_URL = {{ url_for('api_versoes_por_codigo')|tojson }};
 const cbhpmDtpSearchCache = new Map();
 const cbhpmDtpMeta = new Map();
+const HAS_TUSS_ROL = {{ show_tuss_rol|tojson }};
+{% if show_tuss_rol %}
+const tussRolCache = new Map();
+
+function fetchRolStatus(codigo){
+  const key = (codigo || '').trim().toUpperCase();
+  if(!key) return Promise.resolve(null);
+  if(tussRolCache.has(key)) return Promise.resolve(tussRolCache.get(key));
+  return fetch(`/api/tuss-rol/${encodeURIComponent(key)}`)
+    .then(res=>{
+      if(res.status === 404){
+        tussRolCache.set(key, null);
+        return null;
+      }
+      if(!res.ok) throw new Error('HTTP '+res.status);
+      return res.json();
+    })
+    .then(data=>{
+      if(!data) return null;
+      const payload = { consta: !!data.consta, descricao: data.descricao || '' };
+      tussRolCache.set(key, payload);
+      return payload;
+    })
+    .catch(()=>null);
+}
+
+function renderRolStatus(slotEl, codigo){
+  if(!slotEl) return;
+  slotEl.innerHTML = '<div class="soft text-muted">Consultando presença no ROL...</div>';
+  fetchRolStatus(codigo).then(info=>{
+    if(!slotEl.isConnected) return;
+    slotEl.innerHTML = '';
+    if(!info){
+      const msg = document.createElement('div');
+      msg.className = 'soft text-muted';
+      msg.textContent = 'Sem correlação cadastrada no ROL.';
+      slotEl.appendChild(msg);
+      return;
+    }
+    const badge = document.createElement('span');
+    badge.className = 'badge ' + (info.consta ? 'text-bg-success' : 'text-bg-secondary');
+    badge.textContent = info.consta ? 'Sim' : 'Não';
+    const label = document.createElement('span');
+    label.className = 'ms-2 fw-semibold';
+    label.textContent = info.consta ? 'Consta no ROL da ANS' : 'Fora do ROL da ANS';
+    slotEl.append(badge, label);
+    if(info.descricao){
+      const desc = document.createElement('div');
+      desc.className = 'text-muted small mt-1';
+      desc.textContent = info.descricao;
+      slotEl.appendChild(desc);
+    }
+  });
+}
+{% else %}
+const tussRolCache = null;
+function fetchRolStatus(){ return Promise.resolve(null); }
+function renderRolStatus(slotEl){ if(slotEl) slotEl.remove(); }
+{% endif %}
 
 const renderDtpSelected = () => {
   const wrap = document.getElementById('cbhpm-dtp-selected');
@@ -545,6 +843,986 @@ const esc = (value)=> String(value ?? '').replace(/[&<>"']/g, (ch)=>({'&':'&amp;
 const toCSV = (rows)=>rows.map(r=>r.map(v=>{const s=(v??'').toString();return /[",;\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;}).join(';')).join('\n');
 const download = (filename, text)=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/csv;charset=utf-8;'})); a.download=filename; document.body.appendChild(a); a.click(); a.remove(); };
 const SCENARIO_STORAGE_KEY = 'cbhpmSavedScenarios.v1';
+
+/* ===== Radar de oportunidades ===== */
+const radarState = {
+  raw: [],
+  filtered: [],
+  modal: null,
+};
+
+function toNumberSafe(value){
+  if(value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function collectRadarFromDom(){
+  const body = document.getElementById('results-body');
+  if(!body) return [];
+  return Array.from(body.querySelectorAll('tr')).map(tr => {
+    if(tr.querySelector('.empty')){
+      return null;
+    }
+    const cells = Array.from(tr.cells);
+    if(cells.length < 5){
+      return null;
+    }
+    const codigo = cells[0]?.querySelector('a,button')?.textContent?.trim() || cells[0]?.textContent?.trim() || '';
+    const descricao = cells[1]?.textContent?.trim() || '';
+    const minIdx = cells.length - 4;
+    const mediaIdx = cells.length - 3;
+    const maxIdx = cells.length - 2;
+    const minVal = parseCurrencyText(cells[minIdx]?.textContent);
+    const mediaVal = parseCurrencyText(cells[mediaIdx]?.textContent);
+    const maxVal = parseCurrencyText(cells[maxIdx]?.textContent);
+    const valores = [];
+    for(let i=2;i<minIdx;i++){
+      const num = parseCurrencyText(cells[i]?.textContent);
+      if(num !== null){
+        valores.push(num);
+      }
+    }
+    const origem = cells[0]?.querySelector('.badge')?.textContent?.trim() || '';
+    const countIdx = cells.length - 1;
+    const count = parseInt((cells[countIdx]?.textContent || '').replace(/\D+/g,''), 10);
+    return {
+      codigo,
+      descricao,
+      origem,
+      min: minVal,
+      max: maxVal,
+      avg: mediaVal,
+      values: valores,
+      count: Number.isFinite(count) ? count : null,
+    };
+  }).filter(Boolean);
+}
+
+function parseCurrencyText(text){
+  if(!text) return null;
+  const cleaned = text.replace(/[^\d,-]/g,'').replace(/\./g,'').replace(',', '.').trim();
+  if(!cleaned) return null;
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : null;
+}
+
+function prepareRadarItems(source){
+  return (Array.isArray(source) ? source : []).map(row => {
+    const codigo = row?.codigo || row?.tuss || '';
+    const descricao = row?.descricao || '';
+    const valores = Array.isArray(row?.values) ? row.values.map(toNumberSafe).filter(Number.isFinite) : [];
+    const minVal = toNumberSafe(row?.min ?? (valores.length ? Math.min(...valores) : null));
+    const maxVal = toNumberSafe(row?.max ?? (valores.length ? Math.max(...valores) : null));
+    const mediaVal = toNumberSafe(row?.avg ?? (valores.length ? (valores.reduce((acc, cur)=>acc+cur,0)/valores.length) : null));
+    if(!codigo){
+      return null;
+    }
+    const amplitude = (maxVal !== null && minVal !== null) ? maxVal - minVal : null;
+    const economyPotential = (mediaVal !== null && minVal !== null) ? mediaVal - minVal : null;
+    const spreadPct = (mediaVal && amplitude !== null) ? (amplitude / mediaVal) * 100 : null;
+    return {
+      codigo,
+      descricao,
+      origem: row?.origem || '',
+      valores,
+      min: minVal,
+      max: maxVal,
+      media: mediaVal,
+      amplitude,
+      spreadPct,
+      economyPotential,
+      count: row?.count || (row?.values ? row.values.length : null),
+    };
+  }).filter(Boolean);
+}
+
+function describeOpportunity(item){
+  if(item.amplitude !== null && item.amplitude > 0 && item.economyPotential !== null){
+    if(item.amplitude > (item.media || 0)){
+      return 'Dispersão alta: renegociar ou padronizar fornecedores.';
+    }
+    if(item.economyPotential > 0){
+      return 'Há margem para trazer o preço médio para o piso do mercado.';
+    }
+  }
+  return 'Combine com similares e histórico para definir estratégia.';
+}
+
+function renderRadar(){
+  const list = document.getElementById('radarLista');
+  const resumo = document.getElementById('radarResumo');
+  if(!list){
+    return;
+  }
+  const items = radarState.filtered;
+  if(!items.length){
+    list.innerHTML = '<div class="combo-empty">Nenhum dado disponível para o radar. Execute uma busca ou ajuste os filtros.</div>';
+    if(resumo){ resumo.hidden = true; }
+    return;
+  }
+  const totalAmplitude = items.reduce((acc, item)=> acc + (item.amplitude || 0), 0);
+  const totalOportunidade = items.reduce((acc, item)=> acc + Math.max(item.economyPotential || 0, 0), 0);
+  if(resumo){
+    resumo.hidden = false;
+    resumo.innerHTML = `
+      <div class="d-flex flex-wrap gap-3">
+        <div><strong>${items.length}</strong> itens analisados</div>
+        <div>Amplitude somada: ${brl(totalAmplitude)}</div>
+        <div>Economia potencial (média → piso): ${brl(totalOportunidade)}</div>
+      </div>
+    `;
+  }
+  list.innerHTML = items.map(item => {
+    const amplitudeBadge = item.amplitude !== null ? `<span class="badge bg-warning-subtle text-warning">Amplitude ${brl(item.amplitude)}</span>` : '';
+    const potentialBadge = item.economyPotential !== null ? `<span class="badge bg-success-subtle text-success">Potencial ${brl(item.economyPotential)}</span>` : '';
+    const spreadBadge = item.spreadPct !== null ? `<span class="badge bg-info-subtle text-info">Spread ${formatDiffPercent(item.spreadPct)}</span>` : '';
+    return `
+      <div class="border rounded-4 p-3 bg-white shadow-sm">
+        <div class="d-flex justify-content-between gap-3 align-items-start">
+          <div>
+            <div class="fw-semibold">${esc(item.codigo)} · ${esc(item.descricao || '')}</div>
+            <div class="text-muted small">Origem: ${esc(item.origem || '—')}</div>
+            <div class="d-flex flex-wrap gap-1 mt-2">
+              ${amplitudeBadge}
+              ${potentialBadge}
+              ${spreadBadge}
+            </div>
+          </div>
+          <div class="text-end small">
+            <div>Mín: ${item.min !== null ? brl(item.min) : '—'}</div>
+            <div>Média: ${item.media !== null ? brl(item.media) : '—'}</div>
+            <div>Máx: ${item.max !== null ? brl(item.max) : '—'}</div>
+          </div>
+        </div>
+        <p class="small text-muted mt-3 mb-3">${esc(describeOpportunity(item))}</p>
+        <div class="d-flex gap-2 flex-wrap">
+          <button type="button" class="btn btn-sm btn-outline-primary js-radar-detalhe" data-codigo="${esc(item.codigo)}">
+            <i data-lucide="eye"></i> Detalhar
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-success js-radar-simulador" data-codigo="${esc(item.codigo)}">
+            <i data-lucide="sliders"></i> Aplicar no simulador
+          </button>
+        </div>
+      </div>
+    `;
+  }).join('');
+  if(window.lucide){ lucide.createIcons(list); }
+}
+
+function applyRadarFilters(){
+  const q = (document.getElementById('radarSearch')?.value || '').trim().toLowerCase();
+  const sort = document.getElementById('radarOrdenacao')?.value || 'amplitude_desc';
+  let items = radarState.raw.slice();
+  if(q){
+    items = items.filter(item => item.codigo.toLowerCase().includes(q) || (item.descricao || '').toLowerCase().includes(q));
+  }
+  items.sort((a, b)=>{
+    switch(sort){
+      case 'media_desc':
+        return (b.media || 0) - (a.media || 0);
+      case 'potencial_neg_desc':
+        return (b.economyPotential || 0) - (a.economyPotential || 0);
+      case 'amplitude_desc':
+      default:
+        return (b.amplitude || 0) - (a.amplitude || 0);
+    }
+  });
+  radarState.filtered = items.slice(0, 20);
+  renderRadar();
+}
+
+function showRadarModal(){
+  if(!radarState.modal && window.bootstrap && bootstrap.Modal){
+    const modalEl = document.getElementById('radarModal');
+    if(modalEl){
+      radarState.modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    }
+  }
+  applyRadarFilters();
+  radarState.modal?.show();
+}
+
+function initRadar(){
+  radarState.raw = prepareRadarItems(collectRadarFromDom());
+  radarState.filtered = radarState.raw.slice();
+  document.getElementById('radarSearch')?.addEventListener('input', applyRadarFilters);
+  document.getElementById('radarOrdenacao')?.addEventListener('change', applyRadarFilters);
+  const list = document.getElementById('radarLista');
+  if(list){
+    list.addEventListener('click', evt=>{
+      const detalheBtn = evt.target.closest('.js-radar-detalhe');
+      if(detalheBtn){
+        const codigo = detalheBtn.getAttribute('data-codigo');
+        if(codigo){
+          showRadarModal(); // keep open
+          if(typeof openDetalhe === 'function'){
+            openDetalhe(codigo);
+          }
+        }
+        return;
+      }
+      const aplicarBtn = evt.target.closest('.js-radar-simulador');
+      if(aplicarBtn){
+        const codigo = aplicarBtn.getAttribute('data-codigo');
+        if(codigo){
+          const input = document.getElementById('cbhpm-codigo');
+          if(input){
+            input.value = codigo;
+            input.focus();
+          }
+          const pacote = document.getElementById('cbhpm-pacote');
+          if(pacote && !pacote.value.includes(codigo)){
+            pacote.value = `${codigo}\n${pacote.value}`.trim();
+            pacote.dispatchEvent(new Event('input'));
+          }
+          if(window.showToast){
+            showToast(`Código ${codigo} aplicado ao simulador.`, 'success');
+          }
+        }
+        radarState.modal?.hide();
+      }
+    });
+  }
+  document.getElementById('btnRadarOportunidades')?.addEventListener('click', ()=>{
+    showRadarModal();
+  });
+}
+
+/* ===== Combos de procedimento ===== */
+(function(){
+  const STORAGE_KEY = 'consultaCompararCombos.v1';
+  let comboActive = { id: null, name: '', items: [] };
+  let comboSaved = [];
+
+  const modalEl = document.getElementById('comboModal');
+  const contextForm = document.getElementById('consultaForm');
+  const card = document.getElementById('comboProcedimentoCard');
+  if(!modalEl || !card) return;
+  let comboModalInstance = null;
+
+  function getModalInstance(){
+    if(!window.bootstrap || !bootstrap.Modal) return null;
+    if(comboModalInstance){
+      return comboModalInstance;
+    }
+    comboModalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+    return comboModalInstance;
+  }
+
+  const refs = {
+    nameInput: document.getElementById('comboName'),
+    itemForm: document.getElementById('comboItemForm'),
+    codigoInput: document.getElementById('comboItemCodigo'),
+    codigoSuggest: document.getElementById('comboCodeSuggestions'),
+    descricaoInput: document.getElementById('comboItemDescricao'),
+    quantidadeInput: document.getElementById('comboItemQuantidade'),
+    valorInput: document.getElementById('comboItemValor'),
+    list: document.getElementById('comboItemsList'),
+    summaryBox: document.getElementById('comboSummaryBox'),
+    summaryTotal: document.getElementById('comboSummaryTotal'),
+    summaryMedia: document.getElementById('comboSummaryMedia'),
+    summaryQtd: document.getElementById('comboSummaryQuantidade'),
+    statsPill: document.getElementById('comboActiveStats'),
+    saveBtn: document.getElementById('comboSave'),
+    clearBtn: document.getElementById('comboClearItems'),
+    copyBtn: document.getElementById('comboCopyResumo'),
+    applyBtn: document.getElementById('comboApplyToFilters'),
+    importBtn: document.getElementById('comboImportFromClipboard'),
+    tipsBtn: document.getElementById('comboToggleTips'),
+    tipsBox: document.getElementById('comboTips'),
+    savedList: document.getElementById('comboSavedList'),
+    clearSavedBtn: document.getElementById('comboClearSaved'),
+  };
+
+  const comboSuggestState = {
+    results: [],
+    active: -1,
+    controller: null,
+    timer: null,
+  };
+
+  function comboContext(){
+    const tabela = contextForm?.querySelector('[name="tabela_nome"]')?.value || '';
+    const uf = contextForm?.querySelector('[name="uf"]')?.value || '';
+    return { tabela, uf };
+  }
+
+  function clearSuggestions(){
+    comboSuggestState.results = [];
+    comboSuggestState.active = -1;
+    clearTimeout(comboSuggestState.timer);
+    comboSuggestState.timer = null;
+    if(comboSuggestState.controller){
+      comboSuggestState.controller.abort();
+      comboSuggestState.controller = null;
+    }
+    if(refs.codigoSuggest){
+      refs.codigoSuggest.innerHTML = '';
+      refs.codigoSuggest.hidden = true;
+    }
+  }
+
+  function renderSuggestions(){
+    const listEl = refs.codigoSuggest;
+    if(!listEl) return;
+    if(!comboSuggestState.results.length){
+      listEl.innerHTML = '';
+      listEl.hidden = true;
+      return;
+    }
+    listEl.innerHTML = comboSuggestState.results.map((item, idx)=>`
+      <div class="combo-suggest-item ${idx===comboSuggestState.active?'active':''}" data-index="${idx}">
+        <strong>${esc(item.codigo || '')}</strong>
+        <small>${esc(item.descricao || '')}</small>
+        ${item.extra ? `<small>${esc(item.extra)}</small>` : ''}
+      </div>
+    `).join('');
+    listEl.hidden = false;
+  }
+
+  async function fetchSuggestions(query){
+    const q = (query || '').trim();
+    if(q.length < 2){
+      clearSuggestions();
+      return;
+    }
+    if(comboSuggestState.controller){
+      comboSuggestState.controller.abort();
+    }
+    const controller = new AbortController();
+    comboSuggestState.controller = controller;
+    const params = new URLSearchParams({ q, limit: '25' });
+    const ctx = comboContext();
+    if(ctx.tabela) params.set('tabela_nome', ctx.tabela);
+    if(ctx.uf) params.set('uf', ctx.uf);
+
+    try{
+      const resp = await fetch(`${PROCEDIMENTO_SUGGEST_URL}?${params.toString()}`, { signal: controller.signal });
+      if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const items = Array.isArray(data?.items) ? data.items : [];
+      comboSuggestState.results = items.map(item => ({
+        codigo: item.codigo ?? item.id ?? '',
+        descricao: item.descricao ?? item.nome ?? '',
+        extra: item.grupo ?? item.caminho ?? '',
+        valor: item.valor ?? null,
+      })).filter(item => item.codigo);
+      comboSuggestState.active = comboSuggestState.results.length ? 0 : -1;
+      renderSuggestions();
+      comboSuggestState.controller = null;
+    }catch(err){
+      if(err?.name === 'AbortError') return;
+      console.warn('combo suggest fail:', err);
+      clearSuggestions();
+    }
+  }
+
+  function scheduleSuggestions(query){
+    clearTimeout(comboSuggestState.timer);
+    comboSuggestState.timer = setTimeout(()=> fetchSuggestions(query), 200);
+  }
+
+  function applySuggestion(item){
+    if(!item) return;
+    if(refs.codigoInput) refs.codigoInput.value = item.codigo || '';
+    if(refs.descricaoInput){
+      const current = (refs.descricaoInput.value || '').trim();
+      if(!current){
+        refs.descricaoInput.value = item.descricao || '';
+      }
+    }
+    if(refs.valorInput && item.valor != null){
+      const num = Number(item.valor);
+      if(Number.isFinite(num)){
+        const formatted = num.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+        refs.valorInput.value = formatted;
+      }
+    }
+    clearSuggestions();
+    refs.descricaoInput?.focus();
+  }
+
+  function generateId(){
+    return 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  function parseCurrencyInput(value){
+    if(value === null || value === undefined) return null;
+    const raw = String(value).trim();
+    if(!raw) return null;
+    const normalized = raw.replace(/\s+/g, '').replace(/\./g, '').replace(',', '.');
+    const num = Number(normalized);
+    if(Number.isFinite(num)) return num;
+    const fallback = Number(raw.replace(/[^\d,-]/g, '').replace(',', '.'));
+    return Number.isFinite(fallback) ? fallback : null;
+  }
+
+  function formatDateTime(time){
+    if(!time) return '';
+    try{
+      const date = new Date(time);
+      if(Number.isNaN(date.getTime())) return '';
+      return date.toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    }catch(_err){
+      return '';
+    }
+  }
+
+  function normalizeItem(entry){
+    if(!entry) entry = {};
+    const codigo = typeof entry.codigo === 'string' ? entry.codigo.trim() : (entry.codigo != null ? String(entry.codigo).trim() : '');
+    const descricao = typeof entry.descricao === 'string' ? entry.descricao.trim() : '';
+    const quantidadeRaw = Number(entry.quantidade);
+    const quantidade = Number.isFinite(quantidadeRaw) && quantidadeRaw > 0 ? Math.round(quantidadeRaw) : 1;
+    const valorParsed = parseCurrencyInput(entry.valor);
+    const key = typeof entry.key === 'string' ? entry.key : generateId();
+    const valor = valorParsed !== null && valorParsed >= 0 ? valorParsed : null;
+    const total = valor !== null ? valor * quantidade : null;
+    return { key, codigo, descricao, quantidade, valor, total };
+  }
+
+  function normalizeCombo(data){
+    if(!data) data = {};
+    const items = Array.isArray(data.items) ? data.items.map(normalizeItem) : [];
+    return {
+      id: typeof data.id === 'string' ? data.id : generateId(),
+      name: typeof data.name === 'string' ? data.name : '',
+      items,
+      created_at: data.created_at || Date.now(),
+      updated_at: data.updated_at || Date.now(),
+    };
+  }
+
+  function loadStorage(){
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(!raw) return;
+      const parsed = JSON.parse(raw);
+      const savedRaw = Array.isArray(parsed?.saved) ? parsed.saved : [];
+      comboSaved = savedRaw.map(normalizeCombo);
+      if(parsed?.last){
+        const last = normalizeCombo(parsed.last);
+        comboActive = { id: last.id, name: last.name, items: last.items };
+      }
+    }catch(err){
+      console.warn('Falha ao carregar combos salvos:', err);
+    }
+  }
+
+  function persistStorage(){
+    try{
+      const payload = {
+        saved: comboSaved.map(combo => ({
+          id: combo.id,
+          name: combo.name,
+          items: combo.items,
+          created_at: combo.created_at,
+          updated_at: combo.updated_at,
+        })),
+        last: {
+          id: comboActive.id,
+          name: comboActive.name,
+          items: comboActive.items,
+          updated_at: Date.now(),
+        },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    }catch(err){
+      console.warn('Não foi possível persistir combos:', err);
+    }
+  }
+
+  function updateStats(){
+    const totalQtd = comboActive.items.reduce((acc, item)=> acc + item.quantidade, 0);
+    const totalVal = comboActive.items.reduce((acc, item)=> acc + (item.total ?? 0), 0);
+    const pricedCount = comboActive.items.filter(item => item.total !== null).length;
+    const totalText = pricedCount ? brl(totalVal) : '—';
+    if(refs.statsPill){
+      refs.statsPill.textContent = `${comboActive.items.length} itens • Total ${totalText}`;
+    }
+  }
+
+  function renderItems(){
+    if(!refs.list) return;
+    if(!comboActive.items.length){
+      refs.list.innerHTML = '<div class="combo-empty">Ainda sem itens. Adicione um procedimento para começar o combo.</div>';
+      if(refs.summaryBox){
+        refs.summaryBox.hidden = true;
+      }
+      updateStats();
+      if(window.lucide) lucide.createIcons();
+      return;
+    }
+    const html = comboActive.items.map(item=>{
+      const valorText = item.valor !== null ? brl(item.valor) : '—';
+      const totalText = item.total !== null ? brl(item.total) : '—';
+      const metaParts = [];
+      if(item.codigo){
+        metaParts.push(`<span class="combo-pill">Código ${esc(item.codigo)}</span>`);
+      }
+      metaParts.push(`<span class="combo-pill">Qtd ${item.quantidade}</span>`);
+      metaParts.push(`<span class="combo-pill">${item.valor !== null ? `Valor ${valorText}` : 'Sem valor'}</span>`);
+      const subtotalRow = item.total !== null
+        ? `<div class="small text-muted">Subtotal ${totalText}</div>`
+        : '';
+      return `
+        <div class="combo-item" data-key="${esc(item.key)}">
+          <div class="combo-item-heading">
+            <div>
+              <div class="fw-semibold">${esc(item.descricao || 'Procedimento sem descrição')}</div>
+              <div class="combo-item-meta">${metaParts.join(' ')}</div>
+            </div>
+            <div class="btn-group btn-group-sm flex-shrink-0">
+              <button type="button" class="btn btn-outline-secondary" data-action="edit" data-key="${esc(item.key)}"><i data-lucide="pencil"></i></button>
+              <button type="button" class="btn btn-outline-danger" data-action="remove" data-key="${esc(item.key)}"><i data-lucide="trash-2"></i></button>
+            </div>
+          </div>
+          ${subtotalRow}
+        </div>
+      `;
+    }).join('');
+    refs.list.innerHTML = html;
+    updateStats();
+    updateSummary();
+    if(window.lucide) lucide.createIcons();
+  }
+
+  function updateSummary(){
+    if(!refs.summaryBox) return;
+    if(!comboActive.items.length){
+      refs.summaryBox.hidden = true;
+      return;
+    }
+    const totalQtd = comboActive.items.reduce((acc, item)=> acc + item.quantidade, 0);
+    const pricedItems = comboActive.items.filter(item => item.total !== null);
+    const totalVal = pricedItems.reduce((acc, item)=> acc + (item.total ?? 0), 0);
+    const media = totalQtd > 0 && totalVal > 0 ? totalVal / totalQtd : null;
+    refs.summaryBox.hidden = false;
+    refs.summaryTotal.textContent = pricedItems.length ? brl(totalVal) : '—';
+    refs.summaryMedia.textContent = media !== null ? brl(media) : '—';
+    refs.summaryQtd.textContent = totalQtd;
+  }
+
+  function renderSaved(){
+    if(!refs.savedList) return;
+    if(!comboSaved.length){
+      refs.savedList.innerHTML = '<div class="combo-empty">Sem combos salvos no momento.</div>';
+      if(window.lucide) lucide.createIcons();
+      return;
+    }
+    const html = comboSaved.map(combo=>{
+      const totalQtd = combo.items.reduce((acc,item)=>acc+item.quantidade,0);
+      const priced = combo.items.filter(item=>item.total!==null);
+      const totalVal = priced.reduce((acc,item)=>acc+(item.total??0),0);
+      const totalText = priced.length ? brl(totalVal) : '—';
+      const updated = formatDateTime(combo.updated_at);
+      return `
+        <div class="combo-saved-card" data-id="${esc(combo.id)}">
+          <div>
+            <div class="fw-semibold">${esc(combo.name || 'Combo sem nome')}</div>
+            <div class="combo-item-meta">
+              <span>${combo.items.length} itens</span>
+              <span>Total ${totalText}</span>
+              <span>Qtd ${totalQtd}</span>
+              ${updated ? `<span>Atualizado ${esc(updated)}</span>` : ''}
+            </div>
+          </div>
+          <div class="btn-group btn-group-sm">
+            <button type="button" class="btn btn-outline-success" data-action="load" data-id="${esc(combo.id)}"><i data-lucide="play"></i></button>
+            <button type="button" class="btn btn-outline-secondary" data-action="duplicate" data-id="${esc(combo.id)}"><i data-lucide="copy"></i></button>
+            <button type="button" class="btn btn-outline-danger" data-action="delete" data-id="${esc(combo.id)}"><i data-lucide="trash"></i></button>
+          </div>
+        </div>
+      `;
+    }).join('');
+    refs.savedList.innerHTML = html;
+    if(window.lucide) lucide.createIcons();
+  }
+
+  function pushItem(entry, options){
+    const opts = Object.assign({ defer:false, skipToast:false }, options || {});
+    const item = normalizeItem(entry);
+    comboActive.items.push(item);
+    if(!opts.defer){
+      persistStorage();
+      renderItems();
+      if(!opts.skipToast && window.showToast){
+        showToast('Item adicionado ao combo.', 'info');
+      }
+    }
+    return item;
+  }
+
+  function resetItemForm(){
+    if(refs.codigoInput) refs.codigoInput.value = '';
+    if(refs.descricaoInput) refs.descricaoInput.value = '';
+    if(refs.quantidadeInput) refs.quantidadeInput.value = '1';
+    if(refs.valorInput) refs.valorInput.value = '';
+    if(refs.codigoInput) refs.codigoInput.focus();
+    clearSuggestions();
+  }
+
+  function addItemFromForm(){
+    const codigo = refs.codigoInput?.value || '';
+    const descricao = refs.descricaoInput?.value || '';
+    const quantidade = refs.quantidadeInput?.value || '1';
+    const valor = refs.valorInput?.value || '';
+    pushItem({ codigo, descricao, quantidade, valor }, { skipToast:true });
+    resetItemForm();
+  }
+
+  function removeItem(key){
+    const idx = comboActive.items.findIndex(item => item.key === key);
+    if(idx === -1) return;
+    comboActive.items.splice(idx, 1);
+    persistStorage();
+    renderItems();
+  }
+
+  function editItem(key){
+    const item = comboActive.items.find(entry => entry.key === key);
+    if(!item) return;
+    removeItem(key);
+    if(refs.codigoInput) refs.codigoInput.value = item.codigo || '';
+    if(refs.descricaoInput) refs.descricaoInput.value = item.descricao || '';
+    if(refs.quantidadeInput) refs.quantidadeInput.value = item.quantidade;
+    if(refs.valorInput) refs.valorInput.value = item.valor !== null ? item.valor.toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2}) : '';
+    refs.codigoInput?.focus();
+  }
+
+  function loadCombo(id, duplicate=false){
+    clearSuggestions();
+    const combo = comboSaved.find(entry => entry.id === id);
+    if(!combo) return;
+    const clone = normalizeCombo(combo);
+    comboActive = {
+      id: duplicate ? null : clone.id,
+      name: duplicate ? `${clone.name} (cópia)` : clone.name,
+      items: clone.items.map(normalizeItem),
+    };
+    if(refs.nameInput) refs.nameInput.value = comboActive.name;
+    persistStorage();
+    renderItems();
+    updateStats();
+  }
+
+  function saveActiveCombo(){
+    if(!comboActive.items.length){
+      alert('Adicione ao menos um item antes de salvar o combo.');
+      return;
+    }
+    const name = (refs.nameInput?.value || '').trim();
+    if(!name){
+      alert('Informe um nome para identificar o combo.');
+      return;
+    }
+    const now = Date.now();
+    if(comboActive.id){
+      const existing = comboSaved.find(entry => entry.id === comboActive.id);
+      if(existing){
+        existing.name = name;
+        existing.items = comboActive.items.map(normalizeItem);
+        existing.updated_at = now;
+      }else{
+        comboSaved.unshift({
+          id: comboActive.id,
+          name,
+          items: comboActive.items.map(normalizeItem),
+          created_at: now,
+          updated_at: now,
+        });
+      }
+    }else{
+      const id = generateId();
+      comboActive.id = id;
+      comboSaved.unshift({
+        id,
+        name,
+        items: comboActive.items.map(normalizeItem),
+        created_at: now,
+        updated_at: now,
+      });
+    }
+    comboActive.name = name;
+    persistStorage();
+    renderSaved();
+    renderItems();
+    if(window.showToast){
+      showToast('Combo salvo nos favoritos.', 'success');
+    }
+  }
+
+  function clearActiveCombo(){
+    comboActive = { id: null, name: '', items: [] };
+    if(refs.nameInput) refs.nameInput.value = '';
+    persistStorage();
+    renderItems();
+    clearSuggestions();
+  }
+
+  function copyResumo(){
+    if(!comboActive.items.length){
+      alert('Nenhum item para copiar.');
+      return;
+    }
+    const priced = comboActive.items.filter(item => item.total !== null);
+    const totalVal = priced.reduce((acc,item)=>acc+(item.total??0),0);
+    const header = `${comboActive.name || 'Combo sem nome'} (${comboActive.items.length} itens${priced.length ? ` · Total ${brl(totalVal)}` : ''})`;
+    const lines = comboActive.items.map((item, idx)=>{
+      const pieces = [];
+      pieces.push(`${idx+1}.`);
+      if(item.codigo) pieces.push(item.codigo);
+      if(item.descricao) pieces.push('-', item.descricao);
+      pieces.push(`x${item.quantidade}`);
+      if(item.valor !== null) pieces.push('@', brl(item.valor));
+      if(item.total !== null) pieces.push('→', brl(item.total));
+      return pieces.join(' ');
+    });
+    const text = [header, ...lines].join('\n');
+    if(navigator.clipboard?.writeText){
+      navigator.clipboard.writeText(text).then(()=>{
+        if(window.showToast){
+          showToast('Resumo copiado.', 'success');
+        }else{
+          alert('Resumo copiado.');
+        }
+      }).catch(()=> alert('Não foi possível copiar o resumo.'));
+    }else{
+      alert('Clipboard não disponível neste navegador.');
+    }
+  }
+
+  function applyToFilters(){
+    if(!comboActive.items.length){
+      alert('Monte o combo antes de aplicar nos filtros.');
+      return;
+    }
+    const uniqueCodes = [...new Set(comboActive.items.map(item => item.codigo).filter(Boolean))];
+    if(!uniqueCodes.length){
+      alert('Nenhum código informado no combo.');
+      return;
+    }
+    const pacoteField = document.getElementById('cbhpm-pacote');
+    if(pacoteField){
+      pacoteField.value = uniqueCodes.join('\n');
+      pacoteField.dispatchEvent(new Event('input'));
+    }
+    const pickerInput = document.getElementById('cbhpmInput');
+    if(pickerInput){
+      pickerInput.focus();
+    }
+    if(window.showToast){
+      showToast('Combo aplicado ao pacote da simulação.', 'success');
+    }else{
+      alert('Combo aplicado ao pacote.');
+    }
+  }
+
+  function importFromClipboard(){
+    if(!navigator.clipboard?.readText){
+      alert('Clipboard API indisponível para importar.');
+      return;
+    }
+    navigator.clipboard.readText().then(text=>{
+      if(!text){
+        alert('Área de transferência vazia.');
+        return;
+      }
+      const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      if(!lines.length){
+        alert('Nada para importar.');
+        return;
+      }
+      let imported = 0;
+      lines.forEach(line=>{
+        const codeMatch = line.match(/(^|\s)(\d{4,})/);
+        const codigo = codeMatch ? codeMatch[2].trim() : '';
+        const quantidadeMatch = line.match(/x\s*(\d+)/i) || line.match(/(\d+)\s*(?:un|it|qty)/i);
+        const quantidade = quantidadeMatch ? quantidadeMatch[1] : '1';
+        const valorMatch = line.match(/(\d{1,3}(?:\.\d{3})*(?:,\d{2})|\d+,\d{2})/);
+        const valor = valorMatch ? valorMatch[1] : '';
+        const descricao = codigo ? line.replace(codigo, '').replace(/x\s*\d+/i, '').replace(valor || '', '').trim() : line;
+        pushItem({ codigo, descricao, quantidade, valor }, { defer:true, skipToast:true });
+        imported += 1;
+      });
+      if(imported){
+        persistStorage();
+        renderItems();
+        clearSuggestions();
+        if(window.showToast){
+          showToast(`${imported} item(s) importados do clipboard.`, 'info');
+        }
+      }else{
+        alert('Não foi possível interpretar os itens copiados.');
+      }
+    }).catch(()=> alert('Falha ao ler da área de transferência.'));
+  }
+
+  function toggleTips(){
+    if(!refs.tipsBox) return;
+    const hidden = refs.tipsBox.classList.contains('d-none');
+    if(hidden){
+      refs.tipsBox.classList.remove('d-none');
+      refs.tipsBtn?.setAttribute('aria-expanded', 'true');
+    }else{
+      refs.tipsBox.classList.add('d-none');
+      refs.tipsBtn?.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function clearSaved(){
+    if(!comboSaved.length) return;
+    if(!confirm('Remover todos os combos salvos?')){
+      return;
+    }
+    comboSaved = [];
+    persistStorage();
+    renderSaved();
+  }
+
+  function handleSavedAction(evt){
+    const btn = evt.target.closest('button[data-action]');
+    if(!btn) return;
+    const action = btn.getAttribute('data-action');
+    const id = btn.getAttribute('data-id');
+    if(!id) return;
+    if(action === 'load'){
+      loadCombo(id, false);
+    }else if(action === 'duplicate'){
+      loadCombo(id, true);
+    }else if(action === 'delete'){
+      comboSaved = comboSaved.filter(entry => entry.id !== id);
+      persistStorage();
+      renderSaved();
+    }
+  }
+
+  refs.codigoSuggest?.addEventListener('mousedown', evt => {
+    const itemEl = evt.target.closest('.combo-suggest-item');
+    if(!itemEl) return;
+    evt.preventDefault();
+    const idx = Number(itemEl.dataset.index || -1);
+    if(idx >= 0 && idx < comboSuggestState.results.length){
+      applySuggestion(comboSuggestState.results[idx]);
+    }
+  });
+
+  if(refs.codigoInput){
+    refs.codigoInput.addEventListener('input', evt => {
+      scheduleSuggestions(evt.target.value);
+    });
+    refs.codigoInput.addEventListener('focus', evt => {
+      const value = (evt.target.value || '').trim();
+      if(value.length >= 2){
+        scheduleSuggestions(value);
+      }
+    });
+    refs.codigoInput.addEventListener('keydown', evt => {
+      if(refs.codigoSuggest?.hidden) return;
+      if(evt.key === 'ArrowDown'){
+        evt.preventDefault();
+        comboSuggestState.active = Math.min(comboSuggestState.active + 1, comboSuggestState.results.length - 1);
+        renderSuggestions();
+      }else if(evt.key === 'ArrowUp'){
+        evt.preventDefault();
+        comboSuggestState.active = Math.max(comboSuggestState.active - 1, 0);
+        renderSuggestions();
+      }else if(evt.key === 'Enter'){
+        if(comboSuggestState.active >= 0 && comboSuggestState.active < comboSuggestState.results.length){
+          evt.preventDefault();
+          applySuggestion(comboSuggestState.results[comboSuggestState.active]);
+        }
+      }else if(evt.key === 'Escape'){
+        clearSuggestions();
+      }
+    });
+    refs.codigoInput.addEventListener('blur', () => {
+      setTimeout(()=> clearSuggestions(), 150);
+    });
+  }
+
+  modalEl.addEventListener('click', evt => {
+    const listEl = refs.codigoSuggest;
+    if(!listEl || listEl.hidden) return;
+    if(!listEl.contains(evt.target) && evt.target !== refs.codigoInput){
+      clearSuggestions();
+    }
+  });
+
+  modalEl.addEventListener('hidden.bs.modal', () => {
+    clearSuggestions();
+  });
+
+  modalEl.addEventListener('shown.bs.modal', () => {
+    refs.codigoInput?.focus();
+  });
+
+  window.comboBuilder = window.comboBuilder || {};
+  window.comboBuilder.open = function(){
+    const modalInst = getModalInstance();
+    clearSuggestions();
+    if(modalInst){
+      modalInst.show();
+    }else if(modalEl){
+      modalEl.classList.add('show');
+    }
+  };
+  window.comboBuilder.addItem = function(entry, options){
+    if(!entry) return null;
+    const opts = Object.assign({ skipToast:false, openModal:true }, options || {});
+    if(opts.openModal !== false){
+      const modalInst = getModalInstance();
+      if(modalInst){
+        modalInst.show();
+      }else if(modalEl){
+        modalEl.classList.add('show');
+      }
+    }
+    const item = pushItem(entry, { skipToast: opts.skipToast });
+    clearSuggestions();
+    if(!window.showToast && !opts.skipToast){
+      alert('Item adicionado ao combo.');
+    }
+    return item;
+  };
+
+  loadStorage();
+  if(refs.nameInput) refs.nameInput.value = comboActive.name || '';
+  renderItems();
+  renderSaved();
+
+  if(refs.itemForm){
+    refs.itemForm.addEventListener('submit', evt=>{
+      evt.preventDefault();
+      addItemFromForm();
+    });
+  }
+  refs.list?.addEventListener('click', evt=>{
+    const btn = evt.target.closest('button[data-action]');
+    if(!btn) return;
+    const key = btn.getAttribute('data-key');
+    if(!key) return;
+    const action = btn.getAttribute('data-action');
+    if(action === 'remove'){
+      removeItem(key);
+    }else if(action === 'edit'){
+      editItem(key);
+    }
+  });
+  refs.saveBtn?.addEventListener('click', saveActiveCombo);
+  refs.clearBtn?.addEventListener('click', clearActiveCombo);
+  refs.copyBtn?.addEventListener('click', copyResumo);
+  refs.applyBtn?.addEventListener('click', applyToFilters);
+  refs.importBtn?.addEventListener('click', importFromClipboard);
+  refs.tipsBtn?.addEventListener('click', toggleTips);
+  refs.clearSavedBtn?.addEventListener('click', clearSaved);
+  refs.savedList?.addEventListener('click', handleSavedAction);
+  refs.nameInput?.addEventListener('input', ()=>{
+    comboActive.name = refs.nameInput.value;
+    persistStorage();
+  });
+})();
 
 function loadSavedScenarios(){
   try{
@@ -732,6 +2010,15 @@ function openDetalhe(codigo){
   const modalBody=modalEl.querySelector('.modal-body');
   modalBody.innerHTML='<div class="text-center text-muted py-4">Carregando...</div>';
   new bootstrap.Modal(modalEl).show();
+  const setModalContent = (html)=>{
+    modalBody.innerHTML = html;
+    if(HAS_TUSS_ROL){
+      const rolSlot = document.createElement('div');
+      rolSlot.className = 'mb-3';
+      modalBody.prepend(rolSlot);
+      renderRolStatus(rolSlot, codigo);
+    }
+  };
 
   if(isCBHPM){
     const params=new URLSearchParams();
@@ -742,7 +2029,11 @@ function openDetalhe(codigo){
     fetch('/api/cbhpm/detalhe?'+params.toString())
       .then(r=>r.json()).then(data=>{
         const items=(data&&data.items)?data.items:[];
-        if(!items.length){ modalBody.innerHTML='<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>'; if(window.lucide)lucide.createIcons(); return; }
+        if(!items.length){
+          setModalContent('<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>');
+          if(window.lucide)lucide.createIcons();
+          return;
+        }
         let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
         html+='<thead class="table-light"><tr><th style="width:160px">Versão</th><th class="text-end">Valor</th></tr></thead><tbody>';
         items.forEach(it=>{ html+='<tr><td>'+ (it.versao||'-') +'</td><td class="text-end">'+ brl(it.valor) +'</td></tr>'; });
@@ -750,16 +2041,23 @@ function openDetalhe(codigo){
         if(data.summary){
           html+='<div class="mt-3 small text-muted">Mín: <strong>'+brl(data.summary.min)+'</strong> · Média: <strong>'+brl(data.summary.avg)+'</strong> · Máx: <strong>'+brl(data.summary.max)+'</strong> · N: <strong>'+ (data.summary.count??0) +'</strong></div>';
         }
-        modalBody.innerHTML=html;
+        setModalContent(html);
+        if(window.lucide)lucide.createIcons();
       })
-      .catch(()=>{ modalBody.innerHTML='<div class="alert alert-danger">Erro ao carregar detalhes.</div>'; });
+      .catch(()=>{
+        setModalContent('<div class="alert alert-danger">Erro ao carregar detalhes.</div>');
+      });
   }else{
     const params=new URLSearchParams(); if(tabelaNome)params.set('tabela_nome',tabelaNome); params.set('codigo',codigo); if(ufSel)params.set('uf',ufSel);
     params.set('sort','valor'); params.set('order','asc'); params.set('page','1'); params.set('page_size','200');
     fetch('/api/procedimentos/detalhe?'+params.toString())
       .then(r=>r.json()).then(data=>{
         const items=(data&&data.items)?data.items:[];
-        if(!items.length){ modalBody.innerHTML='<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>'; if(window.lucide)lucide.createIcons(); return; }
+        if(!items.length){
+          setModalContent('<div class="empty"><i data-lucide="file-x"></i> Sem dados para este código.</div>');
+          if(window.lucide)lucide.createIcons();
+          return;
+        }
         let html='<div class="table-responsive"><table class="table table-sm table-striped align-middle mb-0">';
         html+='<thead class="table-light"><tr><th style="width:160px">Prestador</th><th class="text-center" style="width:80px">UF</th><th class="text-end" style="width:140px">Valor</th></tr></thead><tbody>';
         items.forEach(it=>{ html+='<tr><td>'+ (it.prestador||'-') +'</td><td class="text-center">'+ (it.uf||'-') +'</td><td class="text-end">'+ brl(it.valor) +'</td></tr>'; });
@@ -767,9 +2065,12 @@ function openDetalhe(codigo){
         if(data.summary){
           html+='<div class="mt-3 small text-muted">Mín: <strong>'+brl(data.summary.min)+'</strong> · Média: <strong>'+brl(data.summary.avg)+'</strong> · Máx: <strong>'+brl(data.summary.max)+'</strong> · N: <strong>'+ (data.summary.count??0) +'</strong></div>';
         }
-        modalBody.innerHTML=html;
+        setModalContent(html);
+        if(window.lucide)lucide.createIcons();
       })
-      .catch(()=>{ modalBody.innerHTML='<div class="alert alert-danger">Erro ao carregar detalhes.</div>'; });
+      .catch(()=>{
+        setModalContent('<div class="alert alert-danger">Erro ao carregar detalhes.</div>');
+      });
   }
 }
 
@@ -910,7 +2211,11 @@ function simularCBHPM(){
              + '</div>';
 
         html+='<div class="table-responsive mt-2" style="max-height:70vh"><table class="table table-sm table-striped align-middle mb-0">';
-        html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th><th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-center">Status</th><th class="text-end">Excedente</th></tr></thead><tbody>';
+        html+='<thead class="table-light"><tr><th style="width:110px">Código</th><th>Descrição</th>';
+        {% if show_tuss_rol %}
+        html+='<th class="text-center" style="width:110px">ROL ANS</th>';
+        {% endif %}
+        html+='<th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-center">Status</th><th class="text-end">Excedente</th></tr></thead><tbody>';
 
         const activeCodes = new Set();
         const tableItems = prepareItemsForView(data.itens, state);
@@ -918,6 +2223,20 @@ function simularCBHPM(){
           const isDtp = (it.origem === 'dtp');
           const descricao = (it.descricao||'-');
           const descHtml = isDtp ? `${descricao} <span class="badge bg-info-subtle text-info ms-1">DTP</span>` : descricao;
+          {% if show_tuss_rol %}
+          const rolData = (!isDtp && (it.rol || it.tuss_rol)) ? (it.rol || it.tuss_rol) : null;
+          let rolHtml = '-';
+          if(isDtp){
+            rolHtml = '-';
+          }else if(rolData){
+            const badgeClass = rolData.consta ? 'bg-success-subtle text-success' : 'bg-secondary-subtle text-secondary';
+            const label = rolData.consta ? 'Sim' : 'Não';
+            const tooltip = rolData.descricao ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolData.descricao)}"` : '';
+            rolHtml = `<span class="badge ${badgeClass}"${tooltip}>${label}</span>`;
+          }else{
+            rolHtml = '<span class="text-muted">—</span>';
+          }
+          {% endif %}
           const porte = isDtp ? '-' : brl(it.total_porte);
           const filme = isDtp ? '-' : brl(it.total_filme);
           const uco = isDtp ? '-' : brl(it.total_uco);
@@ -962,6 +2281,9 @@ function simularCBHPM(){
       html+='<tr class="'+rowClass+'">'
          +  '<td>'+ (it.codigo||'-') +'</td>'
              +  '<td>'+ descHtml +'</td>'
+             {% if show_tuss_rol %}
+             +  '<td class="text-center">'+ rolHtml +'</td>'
+             {% endif %}
              +  '<td class="text-end">'+ porte +'</td>'
              +  '<td class="text-end">'+ filme +'</td>'
              +  '<td class="text-end">'+ uco +'</td>'
@@ -1068,6 +2390,16 @@ function simularCBHPM(){
         : (tetoStatus === 'ULTRAPASSA'
             ? (excedenteSingle !== '-' ? `Excedente ${excedenteSingle}${excedPctSingle?' ('+excedPctSingle+')':''}` : 'Ultrapassa o teto')
             : 'Dentro do limite');
+      {% if show_tuss_rol %}
+      const rolInfoSingle = data.rol || data.tuss_rol || null;
+      let rolBadgeSingle = '<span class="text-muted">Sem correlação ROL</span>';
+      if(rolInfoSingle){
+        const badgeClass = rolInfoSingle.consta ? 'bg-success-subtle text-success' : 'bg-secondary-subtle text-secondary';
+        const label = rolInfoSingle.consta ? 'Sim' : 'Não';
+        const tooltip = rolInfoSingle.descricao ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolInfoSingle.descricao)}"` : '';
+        rolBadgeSingle = `<span class="badge ${badgeClass}"${tooltip}>${label}</span>`;
+      }
+      {% endif %}
 
       let html='';
       if(tetoAlertas.length){
@@ -1094,6 +2426,9 @@ function simularCBHPM(){
       }
       html+='</div></div>';
       html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong> · Redutor via entrada: <strong>'+ pctLabel +'</strong> · Teto: '+ statusBadgeSingle +'</div>';
+      {% if show_tuss_rol %}
+      html+='<div class="soft mt-1">ROL ANS: '+ rolBadgeSingle +'</div>';
+      {% endif %}
       if(excedenteSingle !== '-' && hasTetoInfo){
         html+='<div class="soft text-danger">Excedente calculado: <strong>'+excedenteSingle+'</strong>'+ (excedPctSingle?` (<strong>${excedPctSingle}</strong>)`:'') +'</div>';
       }
@@ -2156,6 +3491,7 @@ function saveBlobAsFile(blob, filename){
 
 /* ===== Bindings ===== */
 document.addEventListener('DOMContentLoaded', ()=>{
+  initRadar();
   const versoesHelper = initChecklistFilter({
     containerId: 'versoesChecklist',
     inputId: 'filtroVersoes',
@@ -2193,7 +3529,25 @@ document.addEventListener('DOMContentLoaded', ()=>{
   document.getElementById('btnMarkAllVersoes')?.addEventListener('click',()=>toggleAllVersoes(true));
   document.getElementById('btnClearVersoes')?.addEventListener('click',()=>toggleAllVersoes(false));
 
+  document.getElementById('btnOpenComboModal')?.addEventListener('click', ()=>{
+    if(window.comboBuilder?.open){
+      window.comboBuilder.open();
+    }
+  });
+
   document.addEventListener('click', (ev)=>{
+    const addBtn = ev.target.closest('.js-add-combo');
+    if(addBtn){
+      ev.preventDefault();
+      const codigo = (addBtn.getAttribute('data-codigo') || '').trim();
+      const descricao = addBtn.getAttribute('data-descricao') || '';
+      if(window.comboBuilder?.addItem){
+        window.comboBuilder.addItem({ codigo, descricao, quantidade: 1 });
+      }else{
+        alert('Construtor de combos indisponível nesta visualização.');
+      }
+      return;
+    }
     const btn=ev.target.closest('.js-open-detalhe');
     if(btn){ ev.preventDefault(); openDetalhe(btn.getAttribute('data-codigo')); }
   });

@@ -75,6 +75,12 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
 # Inicializa o SQLAlchemy para interagir com o banco de dados
 db = SQLAlchemy(app)
 
+usuario_operadoras = db.Table(
+    'usuario_operadoras',
+    db.Column('usuario_id', db.Integer, db.ForeignKey('usuarios.id'), primary_key=True),
+    db.Column('operadora_id', db.Integer, db.ForeignKey('operadoras.id'), primary_key=True),
+)
+
 
 # --- 1.1 Autorização/Session helpers ---
 def login_required(f):
@@ -94,6 +100,26 @@ def admin_required(f):
             return redirect(url_for('consulta_comparar'))
         return f(*args, **kwargs)
     return wrapper
+
+
+def _feature_enabled(feature_key: str) -> bool:
+    if session.get('perfil') == 'adm':
+        return True
+    flag = session.get(f'feature_{feature_key}')
+    if flag is None:
+        return False
+    return bool(flag)
+
+
+def feature_required(feature_key: str):
+    def decorator(f):
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            if not _feature_enabled(feature_key):
+                abort(403)
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 def _safe_flash(message: str, category: str = 'info') -> None:
@@ -162,6 +188,12 @@ def inject_session():
         "session_last_simulation_url": last.get('url_fragment'),
         "session_last_simulation_label": last.get('label'),
         "session_sim_history": history,
+        "session_operadora_nome": session.get('operadora_nome'),
+        "session_operadora_id": session.get('operadora_id'),
+        "session_operadora_nomes": session.get('operadora_nomes') or [],
+        "session_operadora_ids": session.get('operadora_ids') or [],
+        "session_feature_insumos": (session.get('feature_insumos') if session.get('feature_insumos') is not None else (session.get('perfil') == 'adm')),
+        "session_feature_tuss_rol": (session.get('feature_tuss_rol') if session.get('feature_tuss_rol') is not None else (session.get('perfil') == 'adm')),
     }
 
 
@@ -175,6 +207,14 @@ class Usuario(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     senha = db.Column(db.String(255), nullable=False) # Em um projeto real, usaríamos hash!
     perfil = db.Column(db.String(50), nullable=False)
+    operadoras = db.relationship(
+        'Operadora',
+        secondary='usuario_operadoras',
+        lazy='joined',
+        backref=db.backref('usuarios', lazy='dynamic')
+    )
+    acesso_insumos = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
+    acesso_tuss_rol = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
 
 class Operadora(db.Model):
     __tablename__ = 'operadoras'
@@ -246,6 +286,25 @@ class CBHPMItem(db.Model):
     subtotal = db.Column(db.Numeric(12, 2), nullable=True)
     # vínculo
     id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+
+
+class TussRolCorrelacao(db.Model):
+    __tablename__ = 'tuss_rol_correlacoes'
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(30), unique=True, nullable=False)
+    descricao = db.Column(db.String(500), nullable=True)
+    consta_rol = db.Column(db.Boolean, nullable=False, default=False)
+    atualizado_em = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.Index('idx_tuss_rol_codigo', 'codigo'),
+        db.Index('idx_tuss_rol_flag', 'consta_rol'),
+    )
 
 
 class CbhpmTeto(db.Model):
@@ -541,6 +600,7 @@ class SimproItemNormalized(db.Model):
     id = db.Column(db.BigInteger, primary_key=True)
     arquivo = db.Column(db.String(255), nullable=False)
     linha_num = db.Column(db.Integer, nullable=False)
+    codigo_interno = db.Column(db.String(20), nullable=True)
     codigo = db.Column(db.String(20), index=True, nullable=False)
     codigo_alt = db.Column(db.String(20), index=True, nullable=True)
     descricao = db.Column(db.String(255), index=True, nullable=False)
@@ -559,6 +619,9 @@ class SimproItemNormalized(db.Model):
     situacao = db.Column(db.String(40), nullable=True)
     versao = db.Column(db.String(100), nullable=True)
     uf_referencia = db.Column(db.String(64), nullable=True)
+    tuss_prefix = db.Column(db.String(4), nullable=True)
+    tuss_numero = db.Column(db.String(16), nullable=True)
+    status_final = db.Column(db.String(8), nullable=True)
     imported_at = db.Column(
         db.DateTime,
         nullable=False,
@@ -566,11 +629,302 @@ class SimproItemNormalized(db.Model):
     )
 
     __table_args__ = (
+        db.Index('idx_simpro_item_norm_cod_interno', 'codigo_interno'),
         db.Index('idx_simpro_item_norm_desc', 'descricao'),
         db.Index('idx_simpro_item_norm_ean', 'ean'),
         db.Index('idx_simpro_item_norm_anvisa', 'anvisa'),
         db.Index('idx_simpro_item_norm_versao', 'versao'),
+        db.Index('idx_simpro_item_norm_tuss_numero', 'tuss_numero'),
     )
+
+
+def _strip_json_comments(text: str) -> str:
+    result_chars: list[str] = []
+    in_string = False
+    escape = False
+    idx = 0
+    length = len(text)
+    while idx < length:
+        ch = text[idx]
+        if in_string:
+            result_chars.append(ch)
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            idx += 1
+            continue
+        if ch == '"':
+            in_string = True
+            result_chars.append(ch)
+            idx += 1
+            continue
+        if ch == '/' and idx + 1 < length:
+            nxt = text[idx + 1]
+            if nxt == '/':
+                idx += 2
+                while idx < length and text[idx] not in ('\n', '\r'):
+                    idx += 1
+                continue
+            if nxt == '*':
+                idx += 2
+                while idx + 1 < length and not (text[idx] == '*' and text[idx + 1] == '/'):
+                    idx += 1
+                idx += 2
+                continue
+        result_chars.append(ch)
+        idx += 1
+    return ''.join(result_chars)
+
+
+def _load_json_relaxed(text: str) -> dict:
+    cleaned = _strip_json_comments(text)
+    return json.loads(cleaned)
+
+
+_SIMPRO_FIELD_MAP_DEFAULT: dict[str, str] = {
+    'codigo': 'codigo',
+    'codigo_alt': 'codigo_alt',
+    'codigo_interno': 'codigo_interno',
+    'codigo_alternativo': 'codigo_alt',
+    'descricao': 'descricao',
+    'descricao_completa': 'descricao',
+    'data_ref': 'data_ref',
+    'data_vigencia': 'data_ref',
+    'tipo_reg': 'tipo_reg',
+    'tipo_registro': 'tipo_reg',
+    'preco1': 'preco1',
+    'preco_pf': 'preco1',
+    'preco2': 'preco2',
+    'preco_pmc': 'preco2',
+    'preco3': 'preco3',
+    'preco_ph': 'preco3',
+    'preco4': 'preco4',
+    'preco_outro': 'preco4',
+    'unidade': 'unidade',
+    'unidade_comercial': 'unidade',
+    'qtd_unidade': 'qtd_unidade',
+    'fabricante': 'fabricante',
+    'registro_anvisa': 'anvisa',
+    'anvisa': 'anvisa',
+    'validade_anvisa': 'validade_anvisa',
+    'ean': 'ean',
+    'situacao': 'situacao',
+    'versao': 'versao',
+    'tuss_prefix': 'tuss_prefix',
+    'tuss_numero': 'tuss_numero',
+    'status_final': 'status_final',
+    'tuss': 'codigo',
+}
+
+_SIMPRO_ALLOWED_COLUMNS: set[str] = {column.name for column in SimproItemNormalized.__table__.columns}
+_TERNARY_CONCAT_RE = re.compile(
+    r'^\s*([A-Za-z_][A-Za-z0-9_]*)\s*&&\s*([A-Za-z_][A-Za-z0-9_]*)\s*\?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\+\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(null|[A-Za-z_][A-Za-z0-9_]*)\s*$',
+    re.IGNORECASE,
+)
+_TUSS_INLINE_RE = re.compile(r'(?:[#\-\+\s]?)([NS][A-Z])\s*([0-9]{6,12})', re.IGNORECASE)
+
+
+def _extract_tuss_parts(text: str | None) -> tuple[str, str, int, int] | None:
+    if not text:
+        return None
+    for match in _TUSS_INLINE_RE.finditer(str(text)):
+        prefix = match.group(1).upper()
+        if prefix[0] not in {'N', 'S'}:
+            continue
+        numero = match.group(2)
+        return prefix, numero, match.start(1), match.end(2)
+    return None
+
+
+def _resolve_simpro_field_map(map_config: dict | None) -> dict[str, str]:
+    field_map = dict(_SIMPRO_FIELD_MAP_DEFAULT)
+    overrides = (map_config or {}).get('field_map')
+    if isinstance(overrides, dict):
+        for source, target in overrides.items():
+            if not isinstance(source, str) or not isinstance(target, str):
+                continue
+            source_key = source.strip()
+            target_key = target.strip()
+            if not source_key or not target_key:
+                continue
+            if target_key not in _SIMPRO_ALLOWED_COLUMNS:
+                continue
+            field_map[source_key] = target_key
+    return field_map
+
+
+def _evaluate_postprocess_expr(expr: str, record: dict[str, object | None]) -> object | None:
+    expr = (expr or '').strip()
+    if not expr or expr.lower() == 'null':
+        return None
+    match = _TERNARY_CONCAT_RE.match(expr)
+    if match:
+        left_key, right_key, true_left_key, true_right_key, false_branch = match.groups()
+        left_val = record.get(left_key)
+        right_val = record.get(right_key)
+        if left_val and right_val:
+            left_true = record.get(true_left_key)
+            right_true = record.get(true_right_key)
+            left_text = (str(left_true).strip() if left_true is not None else '')
+            right_text = (str(right_true).strip() if right_true is not None else '')
+            combined = left_text + right_text
+            return combined or None
+        if false_branch.lower() == 'null':
+            return None
+        return record.get(false_branch)
+    return record.get(expr)
+
+
+def _apply_simpro_postprocess(record: dict[str, object | None], postprocess_cfg: dict | None) -> None:
+    if not isinstance(postprocess_cfg, dict):
+        return
+
+    extracts = postprocess_cfg.get('extract') or []
+    for spec in extracts:
+        if not isinstance(spec, dict):
+            continue
+        source_field = spec.get('from')
+        regex_pattern = spec.get('regex')
+        fields_map = spec.get('fields') or {}
+        if not source_field or not regex_pattern or not isinstance(fields_map, dict):
+            continue
+        value = record.get(source_field)
+        if not isinstance(value, str):
+            for field_name in fields_map:
+                record.setdefault(field_name, None)
+            continue
+        try:
+            pattern = re.compile(regex_pattern)
+        except re.error:
+            continue
+        match = pattern.search(value)
+        for field_name, group_index in fields_map.items():
+            record.setdefault(field_name, None)
+            try:
+                idx = int(group_index)
+            except (TypeError, ValueError):
+                continue
+            if not match:
+                continue
+            try:
+                captured = match.group(idx)
+            except IndexError:
+                captured = None
+            if isinstance(captured, str):
+                captured = captured.strip() or None
+            record[field_name] = captured
+
+    derives = postprocess_cfg.get('derive') or []
+    for spec in derives:
+        if not isinstance(spec, dict):
+            continue
+        target_field = spec.get('name')
+        expr = spec.get('expr')
+        if not target_field or not isinstance(expr, str):
+            continue
+        record[target_field] = _evaluate_postprocess_expr(expr, record)
+
+    cleanup_fields = postprocess_cfg.get('cleanup') or []
+    for field_name in cleanup_fields:
+        if isinstance(field_name, str):
+            record.pop(field_name, None)
+
+
+def _enrich_tuss_from_ean(record: dict[str, object | None]) -> None:
+    raw = record.get('ean')
+    if raw is None:
+        return
+    text = str(raw).strip()
+    if not text:
+        record['ean'] = None
+        return
+
+    extracted = _extract_tuss_parts(text)
+    if not extracted:
+        record['ean'] = text
+        return
+
+    prefix, numero, prefix_start, _ = extracted
+    base = text[:prefix_start].rstrip('#-+ ').strip()
+    if not base:
+        for sep in ('#', '+'):
+            if sep in text:
+                base = text.split(sep, 1)[0].strip()
+                if base:
+                    break
+
+    record['ean'] = base or None
+    if not record.get('tuss_prefix'):
+        record['tuss_prefix'] = prefix
+    if not record.get('tuss_numero'):
+        record['tuss_numero'] = numero
+
+
+def _ensure_tuss_from_line(record: dict[str, object | None], line: str) -> None:
+    if record.get('tuss_numero'):
+        return
+    extracted = _extract_tuss_parts(line)
+    if not extracted:
+        return
+    prefix, numero, _, _ = extracted
+    if not record.get('tuss_prefix'):
+        record['tuss_prefix'] = prefix
+    record['tuss_numero'] = numero
+
+
+def _ensure_tuss_field(record: dict[str, object | None]) -> None:
+    if record.get('tuss'):
+        return
+    prefix_raw = record.get('tuss_prefix')
+    numero_raw = record.get('tuss_numero')
+    if not prefix_raw or not numero_raw:
+        return
+    prefix = str(prefix_raw).strip().upper()
+    numero = ''.join(ch for ch in str(numero_raw).strip() if ch.isdigit())
+    if prefix and numero:
+        record['tuss_prefix'] = prefix
+        record['tuss_numero'] = numero
+        record['tuss'] = f'{prefix}{numero}'
+
+
+def _format_tuss_display(value: str | None, numero: str | None = None) -> str | None:
+    numero_text = ''.join(ch for ch in str(numero).strip() if ch.isdigit()) if numero is not None else ''
+    if numero_text:
+        return numero_text
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if '#' in text:
+        candidate = text.split('#')[-1]
+        digits = ''.join(ch for ch in candidate if ch.isdigit())
+        if digits:
+            return digits
+    digits = ''.join(ch for ch in text if ch.isdigit())
+    return digits or text
+
+
+def _build_simpro_payload(record: dict[str, object | None], field_map: dict[str, str]) -> dict[str, object | None]:
+    payload: dict[str, object | None] = {}
+    for source, target in field_map.items():
+        if target not in _SIMPRO_ALLOWED_COLUMNS:
+            continue
+        if source not in record:
+            continue
+        value = record[source]
+        if target == 'codigo':
+            value = _format_tuss_display(value, record.get('tuss_numero'))
+        payload[target] = value
+
+    if payload.get('codigo') in (None, '') and record.get('tuss_numero'):
+        payload['codigo'] = record.get('tuss_numero')
+    if payload.get('codigo') in (None, '') and record.get('codigo_interno'):
+        payload['codigo'] = record.get('codigo_interno')
+    return payload
 
 
 class InsumoContextoClinico(db.Model):
@@ -963,16 +1317,21 @@ def _stage_simpro_fixed(
     arquivo_label: str,
 ) -> tuple[int, str]:
     encodings = _build_encoding_list(encoding)
+    skip_header = bool(map_config.get('skip_header'))
     inserted = 0
     for enc in encodings:
         try:
             rows: list[dict] = []
             with file_path.open('r', encoding=enc, newline='') as handle:
-                for idx, raw_line in enumerate(handle, start=1):
+                logical_idx = 0
+                for raw_idx, raw_line in enumerate(handle, start=1):
+                    if skip_header and raw_idx == 1:
+                        continue
                     line = raw_line.rstrip('\r\n')
+                    logical_idx += 1
                     rows.append({
                         'arquivo': arquivo_label,
-                        'linha_num': idx,
+                        'linha_num': logical_idx,
                         'linha': line,
                     })
             if rows:
@@ -1006,33 +1365,20 @@ def _sanitize_numeric(value: str) -> str:
     return ''.join(ch for ch in value if ch.isdigit() or ch in ',.-')
 
 
-def _auto_scale_decimal(value: Decimal | None, *, max_integer_digits: int = 8, min_fraction_digits: int = 2) -> Decimal | None:
+def _auto_scale_decimal(value: Decimal | None, *, min_fraction_digits: int = 2) -> Decimal | None:
     if value is None:
         return None
     if not isinstance(value, Decimal):
-        value = Decimal(str(value))
-
-    sign = -1 if value < 0 else 1
-    magnitude = value.copy_abs()
-    if not magnitude:
-        return value.quantize(Decimal('0.01'))
-
-    digits_tuple = magnitude.normalize().as_tuple()
-    digits_len = len(digits_tuple.digits)
-    exponent = digits_tuple.exponent
-    integer_digits = digits_len + exponent
-    if integer_digits < 0:
-        integer_digits = 0
-
-    scale_power = max(integer_digits - max_integer_digits, 0)
-    if scale_power > 0:
-        magnitude = magnitude / (Decimal(10) ** scale_power)
-
-    while magnitude >= Decimal('1000'):
-        magnitude = magnitude / Decimal('10')
+        try:
+            value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
 
     quantize_pattern = '0.' + ('0' * max(min_fraction_digits, 4))
-    return (magnitude * sign).quantize(Decimal(quantize_pattern))
+    try:
+        return value.quantize(Decimal(quantize_pattern))
+    except (InvalidOperation, ValueError):
+        return value
 
 
 def _materialize_simpro_items(
@@ -1046,7 +1392,16 @@ def _materialize_simpro_items(
     if not columns_cfg:
         raise click.ClickException('Mapa SIMPRO precisa definir "columns".')
 
-    decimal_divisor = Decimal(str(map_config.get('decimal_divisor') or '1'))
+    try:
+        decimal_divisor = Decimal(str(map_config.get('decimal_divisor') or '1'))
+    except (InvalidOperation, ValueError):
+        decimal_divisor = Decimal('1')
+    if not decimal_divisor:
+        decimal_divisor = Decimal('1')
+
+    postprocess_cfg = map_config.get('postprocess') if isinstance(map_config.get('postprocess'), dict) else None
+    field_map = _resolve_simpro_field_map(map_config)
+
     rows = (
         SimproFixedStage.query
         .filter_by(arquivo=arquivo_label)
@@ -1066,28 +1421,45 @@ def _materialize_simpro_items(
             'imported_at': stage.imported_at,
         }
         for cfg in columns_cfg:
+            if not isinstance(cfg, dict):
+                continue
             name = (cfg.get('name') or '').strip()
             if not name:
                 continue
             start = max(int(cfg.get('start', 1)) - 1, 0)
             length = max(int(cfg.get('length', 0)), 0)
+            if length <= 0:
+                record[name] = None
+                continue
             raw_value = line[start:start + length]
             if cfg.get('strip') and isinstance(cfg['strip'], (list, tuple)):
                 for ch in cfg['strip']:
                     raw_value = raw_value.replace(str(ch), '')
+            if cfg.get('rtrim'):
+                raw_value = raw_value.rstrip()
             value = raw_value.strip()
             if not value:
                 record[name] = None
                 continue
 
-            value_type = (cfg.get('type') or '').lower()
+            value_type = (cfg.get('type') or '').strip().lower()
             if value_type == 'decimal':
                 coerced = _coerce_decimal(_sanitize_numeric(value))
                 if coerced is None:
                     record[name] = None
                 else:
-                    divisor = Decimal(str(cfg.get('divide_by') or decimal_divisor)) or Decimal('1')
+                    divisor_raw = cfg.get('divide_by', decimal_divisor)
+                    try:
+                        divisor = Decimal(str(divisor_raw or '1'))
+                    except (InvalidOperation, ValueError):
+                        divisor = Decimal('1')
+                    if not divisor:
+                        divisor = Decimal('1')
                     scaled = Decimal(coerced) / divisor
+                    if scaled >= Decimal('10000000'):
+                        adjusted = scaled / Decimal('1000000')
+                        if adjusted >= Decimal('0.01'):
+                            scaled = adjusted
                     record[name] = _auto_scale_decimal(scaled)
             elif value_type == 'date':
                 record[name] = _parse_fixed_date(value, cfg.get('date_fmt'))
@@ -1099,7 +1471,22 @@ def _materialize_simpro_items(
                     record[name] = None
             else:
                 record[name] = value
-        parsed_rows.append(record)
+
+        _apply_simpro_postprocess(record, postprocess_cfg)
+        _enrich_tuss_from_ean(record)
+        _ensure_tuss_from_line(record, line)
+        _ensure_tuss_field(record)
+
+        payload = {
+            'id': stage.id,
+            'arquivo': stage.arquivo,
+            'linha_num': stage.linha_num,
+            'versao': versao,
+            'uf_referencia': uf_default,
+            'imported_at': stage.imported_at,
+        }
+        payload.update(_build_simpro_payload(record, field_map))
+        parsed_rows.append(payload)
 
     if not parsed_rows:
         return 0
@@ -1318,6 +1705,18 @@ def _combine_uf_codes(*values: str | None) -> list[str]:
     return combined
 
 
+def _sql_clamp_decimal(expr: str, *, integer_digits: int = 8, scale: int = 4) -> str:
+    max_value = f"{'9' * integer_digits}.{ '9' * scale}"
+    return (
+        "CASE\n"
+        f"    WHEN {expr} IS NULL THEN NULL\n"
+        f"    WHEN {expr} > {max_value} THEN {max_value}\n"
+        f"    WHEN {expr} < -{max_value} THEN -{max_value}\n"
+        f"    ELSE {expr}\n"
+        "END"
+    )
+
+
 def _sync_bras_insumo_index(
     arquivo_label: str | None,
     *,
@@ -1339,6 +1738,11 @@ def _sync_bras_insumo_index(
         params_base['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
 
+    preco_expr = "COALESCE(n.preco_pmc_unit, n.preco_pmc_pacote, n.preco_pfb_unit, n.preco_pfb_pacote)"
+    preco_sql = _sql_clamp_decimal(preco_expr)
+    aliquota_expr = "COALESCE(n.aliquota_ou_ipi, :aliquota_default)"
+    aliquota_sql = _sql_clamp_decimal(aliquota_expr, integer_digits=4, scale=4)
+
     upsert_template = text(
         """
         INSERT INTO insumos_index (
@@ -1352,8 +1756,8 @@ def _sync_bras_insumo_index(
             n.produto_codigo AS tuss,
             n.apresentacao_codigo AS tiss,
             TRIM(CONCAT_WS(' • ', NULLIF(n.produto_nome, ''), NULLIF(n.apresentacao_descricao, ''))) AS descricao,
-            COALESCE(n.preco_pmc_unit, n.preco_pmc_pacote, n.preco_pfb_unit, n.preco_pfb_pacote) AS preco,
-            COALESCE(n.aliquota_ou_ipi, :aliquota_default) AS aliquota,
+            {preco_sql} AS preco,
+            {aliquota_sql} AS aliquota,
             n.laboratorio_nome AS fabricante,
             n.registro_anvisa AS anvisa,
             COALESCE(n.edicao, n.arquivo) AS versao_tabela,
@@ -1374,7 +1778,7 @@ def _sync_bras_insumo_index(
             data_atualizacao = VALUES(data_atualizacao),
             uf_referencia = VALUES(uf_referencia),
             updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause)
+        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
     )
 
     db.session.execute(upsert_template, params_base)
@@ -1402,6 +1806,10 @@ def _sync_simpro_insumo_index(
         params_base['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
 
+    preco_expr = "COALESCE(n.preco2, n.preco1, n.preco3, n.preco4)"
+    preco_sql = _sql_clamp_decimal(preco_expr)
+    aliquota_sql = _sql_clamp_decimal(":aliquota_default", integer_digits=4, scale=4)
+
     upsert_template = text(
         """
         INSERT INTO insumos_index (
@@ -1412,11 +1820,15 @@ def _sync_simpro_insumo_index(
         SELECT
             'SIMPRO' AS origem,
             n.id AS item_id,
-            n.codigo AS tuss,
+            COALESCE(
+                NULLIF(n.tuss_numero, ''),
+                NULLIF(REGEXP_REPLACE(COALESCE(n.codigo, ''), '[^0-9]', ''), ''),
+                n.codigo
+            ) AS tuss,
             n.codigo_alt AS tiss,
             n.descricao AS descricao,
-            COALESCE(n.preco2, n.preco1, n.preco3, n.preco4) AS preco,
-            :aliquota_default AS aliquota,
+            {preco_sql} AS preco,
+            {aliquota_sql} AS aliquota,
             n.fabricante AS fabricante,
             n.anvisa AS anvisa,
             COALESCE(n.versao, n.arquivo) AS versao_tabela,
@@ -1437,7 +1849,7 @@ def _sync_simpro_insumo_index(
             data_atualizacao = VALUES(data_atualizacao),
             uf_referencia = VALUES(uf_referencia),
             updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause)
+        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
     )
 
     db.session.execute(upsert_template, params_base)
@@ -1702,6 +2114,18 @@ def _decimal_to_string(value: Decimal | None, precision: int = 4) -> str | None:
     if '.' in as_str:
         as_str = as_str.rstrip('0').rstrip('.')
     return as_str
+
+
+def _decimal_to_float(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError, InvalidOperation):
+        try:
+            return float(Decimal(str(value)))
+        except Exception:
+            return None
 
 def _ensure_teto_preview_dir() -> Path:
     directory = TETO_PREVIEW_DIR
@@ -2440,10 +2864,10 @@ def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
         'tuss': row.produto_codigo,
         'tiss': row.apresentacao_codigo,
         'descricao': descricao or None,
-        'preco': _decimal_to_string(base_preco),
-        'preco_pmc': _decimal_to_string(preco_pmc),
-        'preco_pfb': _decimal_to_string(preco_pfb),
-        'aliquota': _decimal_to_string(aliquota_decimal),
+        'preco': _decimal_to_float(base_preco),
+        'preco_pmc': _decimal_to_float(preco_pmc),
+        'preco_pfb': _decimal_to_float(preco_pfb),
+        'aliquota': _decimal_to_float(aliquota_decimal),
         'fabricante': row.laboratorio_nome,
         'anvisa': row.registro_anvisa,
         'versao_tabela': row.periodo or row.etag_versao,
@@ -2456,16 +2880,19 @@ def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
 def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
     preco_fav = row.preco2 or row.preco1 or row.preco3 or row.preco4
     aliquota_decimal = _aliquota_bp_to_decimal(row.aliquota_bp)
+    tuss_digits = _format_tuss_display(row.codigo, getattr(row, 'tuss_numero', None))
     return {
         'origem': 'SIMPRO',
         'item_id': row.item_id,
-        'tuss': row.codigo,
+        'tuss': tuss_digits,
+        'tuss_numero': tuss_digits,
+        'tuss_raw': row.codigo,
         'tiss': row.codigo_alt,
         'descricao': row.descricao,
-        'preco': _decimal_to_string(preco_fav),
+        'preco': _decimal_to_float(preco_fav),
         'preco_pmc': None,
-        'preco_pfb': _decimal_to_string(preco_fav),
-        'aliquota': _decimal_to_string(aliquota_decimal),
+        'preco_pfb': _decimal_to_float(preco_fav),
+        'aliquota': _decimal_to_float(aliquota_decimal),
         'fabricante': row.fabricante,
         'anvisa': row.anvisa,
         'versao_tabela': row.periodo or row.etag_versao,
@@ -2613,6 +3040,7 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
     uf_display = ', '.join(uf_codes) if uf_codes else item.uf_referencia
     preco_pmc_value: Decimal | None = preco_pmc if preco_pmc is not None else item.preco
     preco_pfb_value: Decimal | None = preco_pfb if preco_pfb is not None else item.preco
+    preco_display_value: Decimal | None = item.preco
 
     if item.origem == 'BRAS':
         bras_row = BrasItemNormalized.query.get(item.item_id)
@@ -2637,13 +3065,26 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
                     except (InvalidOperation, ValueError):
                         pass
 
+    elif item.origem == 'SIMPRO':
+        simpro_row = SimproItemNormalized.query.get(item.item_id)
+        if simpro_row:
+            preco_candidates = [simpro_row.preco2, simpro_row.preco1, simpro_row.preco3, simpro_row.preco4]
+            preco_effective = next((p for p in preco_candidates if p is not None), None)
+            if preco_effective is not None:
+                preco_pmc_value = preco_effective
+                preco_pfb_value = preco_effective
+                preco_display_value = preco_effective
+
+    tuss_display = _format_tuss_display(item.tuss)
     return {
         'origem': item.origem,
         'item_id': item.item_id,
-        'tuss': item.tuss,
+        'tuss': tuss_display,
+        'tuss_numero': tuss_display,
+        'tuss_raw': item.tuss,
         'tiss': item.tiss,
         'descricao': item.descricao,
-        'preco': _decimal_to_string(item.preco),
+        'preco': _decimal_to_string(preco_display_value),
         'preco_pmc': _decimal_to_string(preco_pmc_value),
         'preco_pfb': _decimal_to_string(preco_pfb_value),
         'aliquota': _decimal_to_string(item.aliquota),
@@ -2665,7 +3106,7 @@ def _serialize_insumo_detail(
     catalog_entry: CatalogoBrasindice | CatalogoSimpro | None = None,
     selected_uf: str | None = None,
 ) -> dict:
-    index_aliquota = _decimal_to_string(index_entry.aliquota) if index_entry else None
+    index_aliquota = _decimal_to_float(index_entry.aliquota) if index_entry else None
     index_uf = index_entry.uf_referencia if index_entry else None
     index_data = index_entry.data_atualizacao.isoformat() if isinstance(getattr(index_entry, 'data_atualizacao', None), date) else None
     index_created = index_entry.updated_at.isoformat() if isinstance(getattr(index_entry, 'updated_at', None), datetime) else None
@@ -2681,7 +3122,7 @@ def _serialize_insumo_detail(
     if catalog_entry is not None:
         aliquota_bp = getattr(catalog_entry, 'aliquota_bp', None)
         if aliquota_bp is not None:
-            catalog_aliquota = _decimal_to_string(_aliquota_bp_to_decimal(aliquota_bp))
+            catalog_aliquota = _decimal_to_float(_aliquota_bp_to_decimal(aliquota_bp))
         catalog_uf = getattr(catalog_entry, 'uf', None)
         catalog_periodo = getattr(catalog_entry, 'periodo', None) or getattr(catalog_entry, 'etag_versao', None)
         imported_at = getattr(catalog_entry, 'imported_at', None)
@@ -2718,10 +3159,10 @@ def _serialize_insumo_detail(
             'tiss': item.apresentacao_codigo,
             'anvisa': item.registro_anvisa,
             'descricao': descricao,
-            'preco': _decimal_to_string(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
-            'preco_pmc': _decimal_to_string(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
-            'preco_pfb': _decimal_to_string(_first_defined(catalog_preco_pfb, item.preco_pfb_unit, item.preco_pfb_pacote)),
-            'aliquota': _first_defined(catalog_aliquota, _decimal_to_string(item.aliquota_ou_ipi), index_aliquota),
+            'preco': _decimal_to_float(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pmc': _decimal_to_float(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, item.preco_pfb_unit, item.preco_pfb_pacote)),
+            'aliquota': _first_defined(catalog_aliquota, _decimal_to_float(item.aliquota_ou_ipi), index_aliquota),
             'fabricante': item.laboratorio_nome,
             'versao_tabela': _first_defined(catalog_periodo, item.edicao, item.arquivo),
             'data_atualizacao': _first_defined(catalog_data_ref, index_data),
@@ -2731,9 +3172,9 @@ def _serialize_insumo_detail(
             'uf_referencia_codes': uf_codes,
             'arquivo': item.arquivo,
             'linha_num': item.linha_num,
-            'preco_pmc_pacote': _decimal_to_string(item.preco_pmc_pacote),
-            'preco_pfb_pacote': _decimal_to_string(item.preco_pfb_pacote),
-            'preco_pfb_unit': _decimal_to_string(item.preco_pfb_unit),
+            'preco_pmc_pacote': _decimal_to_float(item.preco_pmc_pacote),
+            'preco_pfb_pacote': _decimal_to_float(item.preco_pfb_pacote),
+            'preco_pfb_unit': _decimal_to_float(item.preco_pfb_unit),
             'quantidade_embalagem': item.quantidade_embalagem,
         }
 
@@ -2742,16 +3183,19 @@ def _serialize_insumo_detail(
         preco_effective = next((p for p in preco_candidates if p is not None), None)
         uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
         uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
+        tuss_digits = _format_tuss_display(item.codigo, getattr(item, 'tuss_numero', None))
         return {
             'origem': 'SIMPRO',
             'item_id': item.id,
-            'tuss': item.codigo,
+            'tuss': tuss_digits,
+            'tuss_numero': tuss_digits,
+            'tuss_raw': item.codigo,
             'tiss': item.codigo_alt,
             'anvisa': item.anvisa,
             'descricao': item.descricao,
-            'preco': _decimal_to_string(_first_defined(catalog_preco_pfb, preco_effective)),
+            'preco': _decimal_to_float(_first_defined(catalog_preco_pfb, preco_effective)),
             'preco_pmc': None,
-            'preco_pfb': _decimal_to_string(_first_defined(catalog_preco_pfb, preco_effective)),
+            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, preco_effective)),
             'aliquota': _first_defined(catalog_aliquota, index_aliquota),
             'fabricante': item.fabricante,
             'versao_tabela': _first_defined(catalog_periodo, item.versao, item.arquivo),
@@ -2768,17 +3212,20 @@ def _serialize_insumo_detail(
     if isinstance(item, SimproItem):  # fallback legacy
         uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
         uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
+        tuss_digits = _format_tuss_display(item.tuss)
         return {
             'origem': origem,
             'item_id': item.id,
-            'tuss': item.tuss,
+            'tuss': tuss_digits,
+            'tuss_numero': tuss_digits,
+            'tuss_raw': item.tuss,
             'tiss': item.tiss,
             'anvisa': item.anvisa,
             'descricao': item.descricao,
-            'preco': _decimal_to_string(item.preco),
-            'preco_pmc': _decimal_to_string(item.preco),
-            'preco_pfb': _decimal_to_string(item.preco),
-            'aliquota': _decimal_to_string(item.aliquota),
+            'preco': _decimal_to_float(item.preco),
+            'preco_pmc': _decimal_to_float(item.preco),
+            'preco_pfb': _decimal_to_float(item.preco),
+            'aliquota': _decimal_to_float(item.aliquota),
             'fabricante': item.fabricante,
             'versao_tabela': item.versao_tabela,
             'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
@@ -3514,6 +3961,14 @@ def login():
             session['user_id'] = usuario.id
             session['perfil']  = usuario.perfil
             session['nome']    = usuario.nome
+            nomes = [op.nome for op in usuario.operadoras]
+            ids = [op.id for op in usuario.operadoras]
+            session['operadora_ids'] = ids
+            session['operadora_id'] = ids[0] if ids else None
+            session['operadora_nomes'] = nomes
+            session['operadora_nome'] = ', '.join(nomes) if nomes else None
+            session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+            session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
             return redirect(url_for('dashboard'))
 
         # falha: mantém layout limpo
@@ -3656,6 +4111,7 @@ def consulta_comparar():
             if not selected_prestadores and prestadores_usados:
                 columns = sorted(list(prestadores_usados))
 
+        rol_map = _fetch_tuss_rol_map(list(data.keys()))
         for codigo in sorted(data.keys()):
             item = data[codigo]
             values = [item["values"].get(p) for p in columns]
@@ -3663,11 +4119,16 @@ def consulta_comparar():
             min_v = min(numeric) if numeric else None
             max_v = max(numeric) if numeric else None
             avg_v = (sum(numeric) / len(numeric)) if numeric else None
+            rol_info = rol_map.get(codigo)
             rows.append({
                 "codigo": codigo,
                 "descricao": item["descricao"],
                 "values": values,
-                "min": min_v, "max": max_v, "avg": avg_v, "count": len(numeric)
+                "min": min_v,
+                "max": max_v,
+                "avg": avg_v,
+                "count": len(numeric),
+                "rol": rol_info,
             })
 
     porte_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='porte').order_by(Tabela.nome).all()]
@@ -4043,11 +4504,15 @@ def _compute_simulacao_cbhpm(data):
         if cbhpm_results:
             codes_to_check = [entry['payload'].get('codigo') for entry in cbhpm_results]
             teto_map = _get_teto_map(codes_to_check)
+            rol_map = _fetch_tuss_rol_map(codes_to_check)
             for entry in cbhpm_results:
                 payload_entry = entry['payload']
                 codigo_item = (payload_entry.get('codigo') or '').strip().upper()
                 if not codigo_item:
                     continue
+                rol_info = rol_map.get(payload_entry.get('codigo')) or rol_map.get(codigo_item) or None
+                if rol_info:
+                    payload_entry['rol'] = rol_info
                 teto_row = teto_map.get(codigo_item)
                 if not teto_row:
                     continue
@@ -4178,6 +4643,10 @@ def _compute_simulacao_cbhpm(data):
     })
 
     if codigo:
+        rol_lookup = _fetch_tuss_rol_map([codigo])
+        rol_single = rol_lookup.get(codigo) or next(iter(rol_lookup.values()), None)
+        if rol_single:
+            resp['rol'] = rol_single
         teto_row = _get_teto_map([codigo]).get(codigo.strip().upper())
         if teto_row:
             teto_val = _as_decimal(teto_row.valor_total)
@@ -5068,6 +5537,64 @@ def api_cbhpm_detalhe():
     return jsonify({'items': items, 'summary': summary})
 
 
+@app.route('/api/tuss-rol')
+@login_required
+@feature_required('tuss_rol')
+def api_tuss_rol_lookup():
+    raw_codigos = []
+    raw_codigos.extend(request.args.getlist('codigo'))
+    raw_codigos.extend(request.args.getlist('codigos'))
+    codigos_extra = (request.args.get('codes') or '').strip()
+    if codigos_extra:
+        raw_codigos.extend([c.strip() for c in codigos_extra.split(',') if c.strip()])
+
+    normalized = [_normalize_tuss_codigo(c) for c in raw_codigos if _normalize_tuss_codigo(c)]
+    normalized = list(dict.fromkeys(normalized))
+
+    if normalized:
+        records = (
+            TussRolCorrelacao.query
+            .filter(TussRolCorrelacao.codigo.in_(normalized))
+            .all()
+        )
+    else:
+        try:
+            limit = int(request.args.get('limit', 200) or 200)
+        except ValueError:
+            limit = 200
+        limit = max(1, min(limit, 500))
+        records = (
+            TussRolCorrelacao.query
+            .order_by(TussRolCorrelacao.codigo.asc())
+            .limit(limit)
+            .all()
+        )
+
+    items = [{
+        'codigo': rec.codigo,
+        'descricao': rec.descricao,
+        'consta': bool(rec.consta_rol),
+    } for rec in records]
+    return jsonify({'items': items})
+
+
+@app.route('/api/tuss-rol/<codigo>')
+@login_required
+@feature_required('tuss_rol')
+def api_tuss_rol_item(codigo: str):
+    codigo_norm = _normalize_tuss_codigo(codigo)
+    if not codigo_norm:
+        abort(400, description='Código inválido.')
+    registro = TussRolCorrelacao.query.filter_by(codigo=codigo_norm).first()
+    if not registro:
+        return jsonify({'codigo': codigo_norm, 'consta': False, 'descricao': None}), 404
+    return jsonify({
+        'codigo': registro.codigo,
+        'descricao': registro.descricao,
+        'consta': bool(registro.consta_rol),
+    })
+
+
 @app.route('/gerenciar-usuarios')
 @admin_required
 def gerenciar_usuarios():
@@ -5243,6 +5770,249 @@ def admin_tetos_delete(codigo: str):
     db.session.commit()
     flash(f'Teto {codigo_norm} removido com sucesso.', 'success')
     return redirect(url_for('admin_tetos'))
+
+
+@app.route('/admin/tuss-rol', methods=['GET', 'POST'])
+@admin_required
+def admin_tuss_rol():
+    stats = {
+        'total': db.session.query(func.count(TussRolCorrelacao.id)).scalar() or 0,
+        'total_consta': db.session.query(func.count(TussRolCorrelacao.id)).filter(TussRolCorrelacao.consta_rol.is_(True)).scalar() or 0,
+        'last_updated': db.session.query(func.max(TussRolCorrelacao.atualizado_em)).scalar(),
+    }
+    erros_import: list[str] = []
+    resumo_import: dict[str, int] | None = None
+
+    if request.method == 'POST':
+        upload = request.files.get('arquivo')
+        if not upload or not upload.filename:
+            flash('Selecione um arquivo CSV ou XLSX para importar.', 'danger')
+            return redirect(url_for('admin_tuss_rol'))
+
+        raw_bytes = upload.read() or b''
+        if not raw_bytes:
+            flash('Arquivo vazio. Nenhum dado processado.', 'warning')
+            return redirect(url_for('admin_tuss_rol'))
+
+        suffix = (Path(upload.filename).suffix or '').lower()
+
+        def _read_rows_from_upload(data: bytes, ext: str):
+            if ext in {'.xlsx', '.xlsm', '.xltx', '.xltm'}:
+                try:
+                    from openpyxl import load_workbook
+                except ImportError as exc:
+                    raise ValueError('Biblioteca openpyxl não disponível para ler arquivos XLSX.') from exc
+                workbook = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+                try:
+                    sheet = workbook.active
+                    rows = list(sheet.iter_rows(values_only=True))
+                finally:
+                    workbook.close()
+                if not rows:
+                    raise ValueError('Arquivo XLSX sem conteúdo.')
+                headers = [str(cell or '').strip() for cell in rows[0]]
+                data_rows = []
+                for row in rows[1:]:
+                    values = [str(cell) if cell is not None else '' for cell in row]
+                    data_rows.append(values)
+                return headers, data_rows
+
+            # fallback CSV / texto
+            try:
+                text_data = data.decode('utf-8-sig')
+            except UnicodeDecodeError:
+                text_data = data.decode('latin-1', errors='ignore')
+
+            sio = io.StringIO(text_data)
+            try:
+                sample = sio.read(2048)
+                sio.seek(0)
+                dialect = csv.Sniffer().sniff(sample, delimiters=';,')
+            except Exception:
+                sio.seek(0)
+                dialect = csv.excel
+
+            reader = csv.reader(sio, dialect)
+            headers = next(reader, [])
+            if not headers:
+                raise ValueError('Cabeçalho não encontrado no arquivo.')
+            data_rows = [[cell for cell in row] for row in reader]
+            return headers, data_rows
+
+        try:
+            headers, data_rows = _read_rows_from_upload(raw_bytes, suffix)
+        except ValueError as exc:
+            flash(str(exc), 'danger')
+            return redirect(url_for('admin_tuss_rol'))
+
+        header_map = {_norm_header(h): idx for idx, h in enumerate(headers)}
+        codigo_idx = header_map.get('codigo')
+        desc_idx = header_map.get('descricao')
+        consta_idx = header_map.get('seconsta') or header_map.get('consta')
+        if codigo_idx is None or desc_idx is None or consta_idx is None:
+            flash('As colunas esperadas "CODIGO", "DESCRIÇÃO" e "SE CONSTA" não foram encontradas.', 'danger')
+            return redirect(url_for('admin_tuss_rol'))
+
+        registros: dict[str, dict] = {}
+        for offset, row in enumerate(data_rows, start=2):
+            if not row or all(not (cell or '').strip() for cell in row):
+                continue
+            try:
+                codigo_raw = row[codigo_idx] if codigo_idx < len(row) else ''
+                descricao_raw = row[desc_idx] if desc_idx < len(row) else ''
+                consta_raw = row[consta_idx] if consta_idx < len(row) else ''
+            except IndexError:
+                erros_import.append(f'Linha {offset}: formato incorreto.')
+                continue
+
+            codigo_norm = _normalize_tuss_codigo(codigo_raw)
+            if not codigo_norm:
+                erros_import.append(f'Linha {offset}: código vazio.')
+                continue
+            consta_val = _parse_sim_nao(consta_raw)
+            if consta_val is None:
+                erros_import.append(f'Linha {offset}: valor inválido em "Se Consta" ({consta_raw!r}).')
+                continue
+            descricao_val = (descricao_raw or '').strip()
+            registros[codigo_norm] = {
+                'codigo': codigo_norm,
+                'descricao': descricao_val,
+                'consta': consta_val,
+            }
+
+        if not registros:
+            flash('Nenhum registro válido encontrado no arquivo.', 'warning')
+            return redirect(url_for('admin_tuss_rol'))
+
+        codigos = list(registros.keys())
+        existentes = {
+            item.codigo: item
+            for item in TussRolCorrelacao.query.filter(TussRolCorrelacao.codigo.in_(codigos)).all()
+        }
+
+        criados = 0
+        atualizados = 0
+        try:
+            for codigo, payload in registros.items():
+                row = existentes.get(codigo)
+                if row:
+                    alterou = False
+                    if (row.descricao or '') != payload['descricao']:
+                        row.descricao = payload['descricao']
+                        alterou = True
+                    if bool(row.consta_rol) != bool(payload['consta']):
+                        row.consta_rol = bool(payload['consta'])
+                        alterou = True
+                    if alterou:
+                        atualizados += 1
+                else:
+                    db.session.add(TussRolCorrelacao(
+                        codigo=payload['codigo'],
+                        descricao=payload['descricao'],
+                        consta_rol=bool(payload['consta']),
+                    ))
+                    criados += 1
+            db.session.commit()
+            resumo_import = {
+                'processados': len(registros),
+                'criados': criados,
+                'atualizados': atualizados,
+                'erros': len(erros_import),
+            }
+            if criados or atualizados:
+                flash(f'Importação concluída: {len(registros)} registro(s), {criados} novo(s), {atualizados} atualizado(s).', 'success')
+            else:
+                flash('Arquivo processado, mas nenhum registro foi alterado.', 'info')
+        except Exception as exc:
+            db.session.rollback()
+            flash(f'Erro ao salvar importação: {exc}', 'danger')
+            app.logger.exception('Falha ao importar TUSS/ROL')
+            return redirect(url_for('admin_tuss_rol'))
+
+        if erros_import:
+            for msg in erros_import[:20]:
+                flash(msg, 'warning')
+
+        stats = {
+            'total': db.session.query(func.count(TussRolCorrelacao.id)).scalar() or 0,
+            'total_consta': db.session.query(func.count(TussRolCorrelacao.id)).filter(TussRolCorrelacao.consta_rol.is_(True)).scalar() or 0,
+            'last_updated': db.session.query(func.max(TussRolCorrelacao.atualizado_em)).scalar(),
+        }
+
+    exemplos = (
+        TussRolCorrelacao.query
+        .order_by(TussRolCorrelacao.codigo.asc())
+        .limit(50)
+        .all()
+    )
+    return render_template(
+        'admin_tuss_rol.html',
+        stats=stats,
+        exemplos=exemplos,
+        resumo_import=resumo_import,
+    )
+
+
+@app.route('/tuss-rol', methods=['GET', 'POST'])
+@login_required
+@feature_required('tuss_rol')
+def tuss_rol_consulta():
+    raw_input = ''
+    if request.method == 'POST':
+        raw_input = request.form.get('codigos') or ''
+    else:
+        raw_input = request.args.get('codigos') or request.args.get('q') or ''
+
+    separator_pattern = r'[;\n\r,]+'
+    requested_codes: list[str] = []
+    for part in re.split(separator_pattern, raw_input):
+        original = (part or '').strip()
+        if not original:
+            continue
+        normalized = _normalize_tuss_codigo(original)
+        if not normalized:
+            continue
+        if normalized not in requested_codes:
+            requested_codes.append(normalized)
+
+    results: list[dict] = []
+    summary = {
+        'total': 0,
+        'consta': 0,
+        'nao_consta': 0,
+        'nao_encontrado': 0,
+    }
+    rol_map = _fetch_tuss_rol_map(requested_codes) if requested_codes else {}
+    for code in requested_codes:
+        entry = rol_map.get(code)
+        if entry:
+            results.append({
+                'codigo': code,
+                'descricao': entry.get('descricao') or '',
+                'consta': bool(entry.get('consta')),
+                'status': 'consta' if entry.get('consta') else 'nao_consta',
+            })
+            summary['total'] += 1
+            if entry.get('consta'):
+                summary['consta'] += 1
+            else:
+                summary['nao_consta'] += 1
+        else:
+            results.append({
+                'codigo': code,
+                'descricao': '',
+                'consta': None,
+                'status': 'nao_encontrado',
+            })
+            summary['total'] += 1
+            summary['nao_encontrado'] += 1
+
+    return render_template(
+        'tuss-rol-consulta.html',
+        entrada=raw_input,
+        resultados=results,
+        resumo=summary,
+    )
 
 
 @app.route('/cbhpm/regras')
@@ -5487,6 +6257,57 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                     db.session.commit()
                 except Exception:
                     db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN id_operadora INT NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        "ALTER TABLE usuarios ADD CONSTRAINT fk_usuarios_operadora FOREIGN KEY (id_operadora) REFERENCES operadoras(id)"
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN acesso_insumos TINYINT(1) NOT NULL DEFAULT 1"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN acesso_tuss_rol TINYINT(1) NOT NULL DEFAULT 1"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        """
+                        CREATE TABLE IF NOT EXISTS usuario_operadoras (
+                            usuario_id INT NOT NULL,
+                            operadora_id INT NOT NULL,
+                            PRIMARY KEY (usuario_id, operadora_id),
+                            CONSTRAINT fk_usuario_operadoras_usuario FOREIGN KEY (usuario_id) REFERENCES usuarios(id) ON DELETE CASCADE,
+                            CONSTRAINT fk_usuario_operadoras_operadora FOREIGN KEY (operadora_id) REFERENCES operadoras(id) ON DELETE CASCADE
+                        )
+                        """
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        """
+                        INSERT INTO usuario_operadoras (usuario_id, operadora_id)
+                        SELECT u.id, u.id_operadora
+                        FROM usuarios u
+                        LEFT JOIN usuario_operadoras rel
+                          ON rel.usuario_id = u.id AND rel.operadora_id = u.id_operadora
+                        WHERE u.id_operadora IS NOT NULL AND rel.usuario_id IS NULL
+                        """
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
                 # Garante criação da tabela CBHPM (se ainda não existir)
                 db.create_all()
                 # Semeia um usuário admin padrão se não existir nenhum usuário
@@ -5532,36 +6353,140 @@ ensure_db()
 @app.route('/usuarios/novo', methods=['GET', 'POST'])
 @admin_required
 def usuario_novo():
+    operadoras = Operadora.query.order_by(Operadora.nome).all()
     if request.method == 'POST':
         nome = request.form.get('nome')
         email = request.form.get('email')
         senha = request.form.get('senha')
         perfil = request.form.get('perfil')
         if not all([nome, email, senha, perfil]):
-            return render_template('usuario-form.html', erro='Preencha todos os campos', modo='novo', form=request.form)
+            return render_template('usuario-form.html', erro='Preencha todos os campos', modo='novo', form=request.form, operadoras=operadoras)
+        raw_operadoras = [s.strip() for s in request.form.getlist('operadora_ids') if s and s.strip()]
+        operadora_ids: list[int] = []
+        for raw in raw_operadoras:
+            try:
+                oid = int(raw)
+            except ValueError:
+                return render_template(
+                    'usuario-form.html',
+                    erro='Operadora selecionada é inválida.',
+                    modo='novo',
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            if oid not in operadora_ids:
+                operadora_ids.append(oid)
+        operadoras_sel: list[Operadora] = []
+        if operadora_ids:
+            operadoras_sel = Operadora.query.filter(Operadora.id.in_(operadora_ids)).all()
+            if len(operadoras_sel) != len(operadora_ids):
+                return render_template(
+                    'usuario-form.html',
+                    erro='Operadora selecionada é inválida.',
+                    modo='novo',
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            op_map = {op.id: op for op in operadoras_sel}
+            operadoras_sel = [op_map[oid] for oid in operadora_ids if oid in op_map]
+        if perfil in ('operadora', 'adm de contrato') and not operadoras_sel:
+            return render_template(
+                'usuario-form.html',
+                erro='Selecione ao menos uma operadora para usuários dos perfis Operadora ou Adm de Contrato.',
+                modo='novo',
+                form=request.form,
+                operadoras=operadoras,
+            )
         if Usuario.query.filter_by(email=email).first():
-            return render_template('usuario-form.html', erro='E-mail já cadastrado', modo='novo', form=request.form)
-        u = Usuario(nome=nome, email=email, senha=senha, perfil=perfil)
+            return render_template('usuario-form.html', erro='E-mail já cadastrado', modo='novo', form=request.form, operadoras=operadoras)
+        acesso_insumos = bool(request.form.get('acesso_insumos'))
+        acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
+        u = Usuario(
+            nome=nome,
+            email=email,
+            senha=senha,
+            perfil=perfil,
+            acesso_insumos=acesso_insumos,
+            acesso_tuss_rol=acesso_tuss_rol,
+        )
+        u.operadoras = operadoras_sel
         db.session.add(u)
         db.session.commit()
         return redirect(url_for('gerenciar_usuarios'))
-    return render_template('usuario-form.html', modo='novo')
+    return render_template('usuario-form.html', modo='novo', operadoras=operadoras)
 
 
 @app.route('/usuarios/<int:uid>/editar', methods=['GET', 'POST'])
 @admin_required
 def usuario_editar(uid):
     u = Usuario.query.get_or_404(uid)
+    operadoras = Operadora.query.order_by(Operadora.nome).all()
     if request.method == 'POST':
-        u.nome = request.form.get('nome') or u.nome
-        u.email = request.form.get('email') or u.email
+        nome = request.form.get('nome') or u.nome
+        email = request.form.get('email') or u.email
+        perfil_novo = request.form.get('perfil') or u.perfil
+        raw_operadoras = [s.strip() for s in request.form.getlist('operadora_ids') if s and s.strip()]
+        operadora_ids: list[int] = []
+        for raw in raw_operadoras:
+            try:
+                oid = int(raw)
+            except ValueError:
+                return render_template(
+                    'usuario-form.html',
+                    erro='Operadora selecionada é inválida.',
+                    modo='editar',
+                    usuario=u,
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            if oid not in operadora_ids:
+                operadora_ids.append(oid)
+        operadoras_sel: list[Operadora] = []
+        if operadora_ids:
+            operadoras_sel = Operadora.query.filter(Operadora.id.in_(operadora_ids)).all()
+            if len(operadoras_sel) != len(operadora_ids):
+                return render_template(
+                    'usuario-form.html',
+                    erro='Operadora selecionada é inválida.',
+                    modo='editar',
+                    usuario=u,
+                    form=request.form,
+                    operadoras=operadoras,
+                )
+            op_map = {op.id: op for op in operadoras_sel}
+            operadoras_sel = [op_map[oid] for oid in operadora_ids if oid in op_map]
+        if perfil_novo in ('operadora', 'adm de contrato') and not operadoras_sel:
+            return render_template(
+                'usuario-form.html',
+                erro='Selecione ao menos uma operadora para usuários dos perfis Operadora ou Adm de Contrato.',
+                modo='editar',
+                usuario=u,
+                form=request.form,
+                operadoras=operadoras,
+            )
+        acesso_insumos = bool(request.form.get('acesso_insumos'))
+        acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
+        u.nome = nome
+        u.email = email
         new_senha = request.form.get('senha')
         if new_senha:
             u.senha = new_senha
-        u.perfil = request.form.get('perfil') or u.perfil
+        u.perfil = perfil_novo
+        u.operadoras = operadoras_sel
+        u.acesso_insumos = acesso_insumos
+        u.acesso_tuss_rol = acesso_tuss_rol
         db.session.commit()
+        if session.get('user_id') == u.id:
+            nomes = [op.nome for op in u.operadoras]
+            ids = [op.id for op in u.operadoras]
+            session['operadora_ids'] = ids
+            session['operadora_id'] = ids[0] if ids else None
+            session['operadora_nomes'] = nomes
+            session['operadora_nome'] = ', '.join(nomes) if nomes else None
+            session['feature_insumos'] = acesso_insumos or (session.get('perfil') == 'adm')
+            session['feature_tuss_rol'] = acesso_tuss_rol or (session.get('perfil') == 'adm')
         return redirect(url_for('gerenciar_usuarios'))
-    return render_template('usuario-form.html', modo='editar', usuario=u)
+    return render_template('usuario-form.html', modo='editar', usuario=u, operadoras=operadoras)
 
 
 # --- 7. Operadoras (UI) ---
@@ -5666,6 +6591,55 @@ def _stringify_for_output(value):
     if isinstance(value, dict):
         return {k: _stringify_for_output(v) for k, v in value.items()}
     return value
+
+
+def _normalize_tuss_codigo(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    code = str(raw).strip()
+    if not code:
+        return None
+    return code.upper()
+
+
+def _fetch_tuss_rol_map(codigos: Sequence[str] | None) -> dict[str, dict]:
+    codigos = codigos or []
+    normalized: dict[str, str] = {}
+    for c in codigos:
+        norm = _normalize_tuss_codigo(c)
+        if not norm:
+            continue
+        normalized.setdefault(norm, c)
+    if not normalized:
+        return {}
+    records = (
+        TussRolCorrelacao.query
+        .filter(TussRolCorrelacao.codigo.in_(normalized.keys()))
+        .all()
+    )
+    result: dict[str, dict] = {}
+    for item in records:
+        key = normalized.get(item.codigo, item.codigo)
+        result[key] = {
+            'codigo': item.codigo,
+            'descricao': item.descricao,
+            'consta': bool(item.consta_rol),
+        }
+    return result
+
+
+def _parse_sim_nao(raw_value: str | None) -> bool | None:
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    value_norm = unicodedata.normalize('NFKD', value).encode('ascii', 'ignore').decode().upper()
+    if value_norm in {'SIM', 'S', '1', 'TRUE', 'T', 'YES', 'Y'}:
+        return True
+    if value_norm in {'NAO', 'N', '0', 'FALSE', 'F', 'NO'}:
+        return False
+    return None
 
 
 def _aliquota_bp_to_decimal(raw) -> Decimal | None:
@@ -5865,6 +6839,247 @@ def _serialize_contexto_clinico(
         'narrativa': entry.narrativa,
         'origem': entry.origem,
     }
+
+
+def _suggest_similar_items(
+    origem: str,
+    item_model: BrasItemNormalized | SimproItemNormalized | SimproItem,
+    *,
+    limit: int = 5,
+) -> list[dict]:
+    item_id = getattr(item_model, 'id', None)
+    if item_id is None:
+        return []
+
+    safe_limit = max(1, int(limit or 5))
+
+    def _extract_digits(value: str | None) -> str:
+        if not value:
+            return ''
+        return ''.join(ch for ch in str(value) if ch.isdigit())
+
+    def _normalize_description(text: str | None) -> str:
+        if not text:
+            return ''
+        normalized = unicodedata.normalize('NFKD', text)
+        normalized = re.sub(r'[^A-Za-z0-9 ]+', ' ', normalized)
+        return normalized.upper()
+
+    ranked: dict[int, dict[str, object]] = {}
+
+    def _register(rows: Sequence[InsumoIndex], base_score: int, reason: str | None = None) -> None:
+        for row in rows:
+            if row is None or row.item_id == item_id:
+                continue
+            current = ranked.get(row.item_id)
+            score = base_score
+            if current is None:
+                ranked[row.item_id] = {
+                    'row': row,
+                    'score': score,
+                    'updated_at': getattr(row, 'updated_at', None),
+                    'reasons': set([reason] if reason else []),
+                }
+            else:
+                if score > current['score']:
+                    current['score'] = score
+                if reason:
+                    current.setdefault('reasons', set()).add(reason)
+
+    # --- Strong matches: EAN -------------------------------------------------
+    ean = getattr(item_model, 'ean', None)
+    ean = (ean or '').strip()
+    if ean:
+        model_cls = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
+        ean_ids = [
+            row_id for (row_id,) in (
+                db.session.query(model_cls.id)
+                .filter(model_cls.ean == ean)
+                .limit(50)
+                .all()
+            )
+        ]
+        if ean_ids:
+            ean_rows = (
+                InsumoIndex.query
+                .filter(
+                    InsumoIndex.origem == origem,
+                    InsumoIndex.item_id != item_id,
+                    InsumoIndex.item_id.in_(ean_ids),
+                )
+                .all()
+            )
+            _register(ean_rows, 500, 'EAN idêntico')
+
+    # --- ANVISA --------------------------------------------------------------
+    anvisa = None
+    if hasattr(item_model, 'anvisa'):
+        anvisa = (item_model.anvisa or '').strip()
+    elif hasattr(item_model, 'registro_anvisa'):
+        anvisa = (item_model.registro_anvisa or '').strip()
+    if anvisa:
+        anvisa_rows = (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == origem,
+                InsumoIndex.item_id != item_id,
+                InsumoIndex.anvisa == anvisa,
+            )
+            .limit(safe_limit * 4)
+            .all()
+        )
+        _register(anvisa_rows, 360, 'Registro ANVISA compartilhado')
+
+    # --- Code prefixes (TUSS / TISS) ----------------------------------------
+    tuss_value = None
+    if hasattr(item_model, 'codigo'):
+        tuss_value = item_model.codigo
+    elif hasattr(item_model, 'produto_codigo'):
+        tuss_value = item_model.produto_codigo
+    elif hasattr(item_model, 'tuss'):
+        tuss_value = item_model.tuss
+    tuss_digits = _extract_digits(tuss_value)
+    tuss_prefix = tuss_digits[:5] if len(tuss_digits) >= 5 else tuss_digits[:4]
+    if tuss_prefix and len(tuss_prefix) >= 3:
+        tuss_rows = (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == origem,
+                InsumoIndex.item_id != item_id,
+                func.replace(func.replace(func.coalesce(InsumoIndex.tuss, ''), '.', ''), '-', '').like(f"{tuss_prefix}%"),
+            )
+            .limit(safe_limit * 4)
+            .all()
+        )
+        label = f'Prefixo TUSS {tuss_prefix}'
+        _register(tuss_rows, 240, label)
+
+    tiss_value = None
+    if hasattr(item_model, 'codigo_alt'):
+        tiss_value = item_model.codigo_alt
+    elif hasattr(item_model, 'apresentacao_codigo'):
+        tiss_value = item_model.apresentacao_codigo
+    elif hasattr(item_model, 'tiss'):
+        tiss_value = item_model.tiss
+    tiss_digits = _extract_digits(tiss_value)
+    tiss_prefix = tiss_digits[:5] if len(tiss_digits) >= 5 else tiss_digits[:4]
+    if tiss_prefix and len(tiss_prefix) >= 3:
+        tiss_rows = (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == origem,
+                InsumoIndex.item_id != item_id,
+                func.replace(func.replace(func.coalesce(InsumoIndex.tiss, ''), '.', ''), '-', '').like(f"{tiss_prefix}%"),
+            )
+            .limit(safe_limit * 3)
+            .all()
+        )
+        label = f'Prefixo TISS {tiss_prefix}'
+        _register(tiss_rows, 220, label)
+
+    # --- Substitutos (contexto clínico) --------------------------------------
+    substituto_codes: set[str] = set()
+    contexto_rows = (
+        InsumoContextoClinico.query
+        .with_entities(InsumoContextoClinico.substitutos_raw)
+        .filter_by(origem=origem, item_id=item_id)
+        .all()
+    )
+    for (raw_codes,) in contexto_rows:
+        for token in _split_substitutos(raw_codes):
+            cleaned = token.strip()
+            if cleaned:
+                substituto_codes.add(cleaned)
+
+    substituto_filters: list = []
+    for code in substituto_codes:
+        normalized = code.strip().upper()
+        digits = _extract_digits(code)
+        if normalized:
+            substituto_filters.append(func.upper(func.coalesce(InsumoIndex.tuss, '')) == normalized)
+            substituto_filters.append(func.upper(func.coalesce(InsumoIndex.tiss, '')) == normalized)
+        if digits and digits != normalized:
+            substituto_filters.append(func.upper(func.coalesce(InsumoIndex.tuss, '')) == digits)
+            substituto_filters.append(func.upper(func.coalesce(InsumoIndex.tiss, '')) == digits)
+
+    if substituto_filters:
+        substituto_rows = (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == origem,
+                InsumoIndex.item_id != item_id,
+                or_(*substituto_filters),
+            )
+            .limit(safe_limit * 3)
+            .all()
+        )
+        _register(substituto_rows, 440, 'Marcado como substituto clínico')
+
+    # --- Description tokens --------------------------------------------------
+    descricao_source = getattr(item_model, 'descricao', None)
+    if not descricao_source and isinstance(item_model, BrasItemNormalized):
+        descricao_source = ' '.join(
+            part for part in [item_model.produto_nome, item_model.apresentacao_descricao] if part
+        )
+    description_norm = _normalize_description(descricao_source)
+    tokens: list[str] = []
+    if description_norm:
+        seen = set()
+        stopwords = {'COM', 'DE', 'PARA', 'COMPOS', 'SEM', 'CAPS', 'CAPSULAS', 'TABLETE', 'ML', 'MG', 'G'}
+        for token in description_norm.split():
+            if len(token) < 4:
+                continue
+            if token.isdigit():
+                continue
+            if token in stopwords:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+            if len(tokens) >= 6:
+                break
+
+    if tokens:
+        token_filters = [func.upper(func.coalesce(InsumoIndex.descricao, '')).like(f"%{token}%") for token in tokens]
+        token_rows = (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == origem,
+                InsumoIndex.item_id != item_id,
+                or_(*token_filters),
+            )
+            .limit(safe_limit * 5)
+            .all()
+        )
+        for token in tokens:
+            token_rows_token = [
+                row for row in token_rows
+                if row.descricao and token in row.descricao.upper()
+            ]
+            if token_rows_token:
+                _register(token_rows_token, 160, f'Termo relevante: {token}')
+
+    if not ranked:
+        return []
+
+    def _sort_key(entry: dict) -> tuple:
+        row: InsumoIndex = entry['row']  # type: ignore[assignment]
+        descr = (row.descricao or '').strip().upper()
+        updated_at = entry.get('updated_at')
+        return (-entry['score'], descr, updated_at or datetime.min, row.item_id)
+
+    sorted_rows = sorted(ranked.values(), key=_sort_key)
+    sliced = sorted_rows[:safe_limit]
+    results: list[dict] = []
+    for entry in sliced:
+        payload = _serialize_insumo_index(entry['row'])
+        reasons = entry.get('reasons')
+        if reasons:
+            payload['justificativas'] = sorted(reason for reason in reasons if reason)
+        payload['similaridade_score'] = entry['score']
+        results.append(payload)
+    return results
 
 
 def _lookup_porte_valor(operadora_id, uf, nome_hint, porte_codigo):
@@ -6750,6 +7965,7 @@ def tabela_itens(tid):
 
 @app.route('/insumos/search')
 @login_required
+@feature_required('insumos')
 def insumos_search():
     page = _parse_positive_int(request.args.get('page'), 1, maximum=500)
     per_page = _parse_positive_int(request.args.get('per_page'), 50, maximum=500)
@@ -6761,6 +7977,7 @@ def insumos_search():
 
 @app.route('/insumos/<origem>/<int:item_id>')
 @login_required
+@feature_required('insumos')
 def insumo_detail(origem: str, item_id: int):
     origem = (origem or '').upper()
     if origem not in {'BRAS', 'SIMPRO'}:
@@ -6835,6 +8052,8 @@ def insumo_detail(origem: str, item_id: int):
     detail_payload['historico'] = historico
     detail_payload['uf_filtro'] = uf_param or None
 
+    detail_payload['similares'] = _suggest_similar_items(origem, item)
+
     if session.get('perfil') == 'adm':
         contexto_rows = (
             InsumoContextoClinico.query
@@ -6852,6 +8071,7 @@ def insumo_detail(origem: str, item_id: int):
 
 @app.route('/insumos/<origem>/<int:item_id>/contexto', methods=['POST'])
 @admin_required
+@feature_required('insumos')
 def insumo_contexto_create(origem: str, item_id: int):
     origem = (origem or '').upper()
     if origem not in {'BRAS', 'SIMPRO'}:
@@ -6926,6 +8146,7 @@ def insumo_contexto_create(origem: str, item_id: int):
 
 @app.route('/insumos')
 @login_required
+@feature_required('insumos')
 def insumos_dashboard():
     bras_summary = _insumo_summary(BrasItemNormalized)
     simpro_summary = _insumo_summary(SimproItemNormalized)
@@ -7246,6 +8467,7 @@ def _spawn_async_import(job_id: str) -> None:
 
 @app.route('/insumos/aliquotas', methods=['GET', 'POST'])
 @admin_required
+@feature_required('insumos')
 def insumos_aliquotas():
     highlight_uf = (request.args.get('highlight') or '').strip().upper()
     today = date.today()
@@ -7387,6 +8609,7 @@ def insumos_aliquotas():
 
 @app.route('/insumos/export/xlsx')
 @login_required
+@feature_required('insumos')
 def insumos_export_xlsx():
     filters = _extract_insumo_filters(request.args)
     limit = _parse_positive_int(request.args.get('limit'), 5000, maximum=20000)
@@ -7464,21 +8687,33 @@ def insumos_export_xlsx():
 
 @app.route('/insumos/import', methods=['POST'])
 @admin_required
+@feature_required('insumos')
 def insumos_import():
     return_to = (request.form.get('return_to') or '').strip()
     redirect_endpoint = 'gerenciar_tabelas' if return_to == 'gerenciar_tabelas' else 'insumos_dashboard'
     def _go_back():
         return redirect(url_for(redirect_endpoint))
 
+    is_ajax = request.headers.get('X-Requested-With', '').lower() == 'xmlhttprequest'
+
+    def _fail(message: str, category: str = 'danger', status_code: int = 400):
+        if is_ajax:
+            return jsonify({
+                'status': 'error',
+                'message': message,
+                'redirect': url_for(redirect_endpoint),
+                'inline': False,
+            }), status_code
+        _safe_flash(message, category)
+        return _go_back()
+
     origem = (request.form.get('origem') or '').upper()
     if origem not in {'BRAS', 'SIMPRO'}:
-        _safe_flash('Origem inválida para importação.', 'danger')
-        return _go_back()
+        return _fail('Origem inválida para importação.')
 
     upload = request.files.get('arquivo')
     if not upload or not upload.filename:
-        _safe_flash('Selecione um arquivo TXT/CSV para importar.', 'danger')
-        return _go_back()
+        return _fail('Selecione um arquivo TXT/CSV para importar.')
 
     fmt = (request.form.get('format') or 'delimited').lower()
     delimiter = request.form.get('delimiter') or ';'
@@ -7497,8 +8732,7 @@ def insumos_import():
         if not candidate:
             continue
         if candidate not in BR_UFS:
-            _safe_flash(f'UF inválida informada: {candidate}', 'danger')
-            return _go_back()
+            return _fail(f'UF inválida informada: {candidate}')
         if candidate not in seen_ufs:
             uf_values.append(candidate)
             seen_ufs.add(candidate)
@@ -7509,26 +8743,32 @@ def insumos_import():
     if aliquota_input:
         aliquota_str = _coerce_decimal(aliquota_input)
         if aliquota_str is None:
-            _safe_flash('Informe uma alíquota válida (use números, ponto ou vírgula).', 'danger')
-            return _go_back()
+            return _fail('Informe uma alíquota válida (use números, ponto ou vírgula).')
         aliquota_value = Decimal(aliquota_str)
 
     if not versao:
-        _safe_flash('Informe a versão de referência da tabela.', 'danger')
-        return _go_back()
+        return _fail('Informe a versão de referência da tabela.')
 
     map_upload = request.files.get('map_config')
     map_config: dict = {}
     if map_upload and map_upload.filename:
         try:
-            payload = map_upload.read().decode('utf-8')
-            map_config = json.loads(payload) if payload else {}
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            _safe_flash(f'Erro ao ler o mapa: {exc}', 'danger')
-            return _go_back()
+            raw_bytes = map_upload.read()
+            text = None
+            for codec in ('utf-8', 'latin-1', 'cp1252'):
+                try:
+                    text = raw_bytes.decode(codec)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if text is None:
+                raise UnicodeDecodeError('map', b'', 0, 1, 'não foi possível decodificar o arquivo de mapeamento')
+            text = text.strip()
+            map_config = _load_json_relaxed(text) if text else {}
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            return _fail(f'Erro ao ler o mapa: {exc}')
         if not isinstance(map_config, dict):
-            _safe_flash('Arquivo de mapeamento deve conter um objeto JSON.', 'danger')
-            return _go_back()
+            return _fail('Arquivo de mapeamento deve conter um objeto JSON.')
 
     lines_terminated = request.form.get('lines_terminated') or '\n'
     if quotechar is not None and not str(quotechar).strip():
@@ -7537,8 +8777,7 @@ def insumos_import():
 
     if origem == 'BRAS':
         if fmt == 'fixed' and not map_config.get('columns'):
-            _safe_flash('Envie um arquivo de mapeamento contendo "columns" para largura fixa.', 'danger')
-            return _go_back()
+            return _fail('Envie um arquivo de mapeamento contendo "columns" para largura fixa.')
 
         line_cfg = map_config.get('lines_terminated') or map_config.get('line_terminator')
         if line_cfg:
@@ -7563,11 +8802,9 @@ def insumos_import():
                 quotechar = None
     else:
         if fmt != 'fixed':
-            _safe_flash('Importação SIMPRO suporta apenas arquivos de largura fixa.', 'danger')
-            return _go_back()
+            return _fail('Importação SIMPRO suporta apenas arquivos de largura fixa.')
         if not map_config:
-            _safe_flash('Envie um arquivo de mapeamento para importação de largura fixa.', 'danger')
-            return _go_back()
+            return _fail('Envie um arquivo de mapeamento para importação de largura fixa.')
 
     delimiter_value = _normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter
 
@@ -7585,9 +8822,9 @@ def insumos_import():
         upload.stream.seek(0)
         upload.save(data_path)
     except Exception as exc:  # noqa: BLE001
-        _safe_flash(f'Falha ao salvar o arquivo de importação: {exc}', 'danger')
+        message = f'Falha ao salvar o arquivo de importação: {exc}'
         shutil.rmtree(job_dir, ignore_errors=True)
-        return _go_back()
+        return _fail(message)
 
     params_payload = {
         'fmt': fmt,
@@ -7625,30 +8862,64 @@ def insumos_import():
         db.session.commit()
     except Exception as exc:  # noqa: BLE001
         db.session.rollback()
-        _safe_flash(f'Falha ao registrar a importação: {exc}', 'danger')
+        message = f'Falha ao registrar a importação: {exc}'
         shutil.rmtree(job_dir, ignore_errors=True)
-        return _go_back()
+        return _fail(message)
 
     job_id = job.id
+    app.logger.info(
+        'Import job criado: id=%s origem=%s arquivo=%s versao=%s uf=%s',
+        job_id,
+        origem,
+        upload.filename,
+        versao,
+        ','.join(uf_values) or uf_value or '-',
+    )
     inline_env = (os.getenv('INSUMO_IMPORT_RUN_INLINE') or '').strip().lower()
     inline = inline_env in {'1', 'true', 'yes', 'on'}
+    redirect_url = url_for(redirect_endpoint)
+    prefix = job_id[:8]
+
     if inline:
         _run_import_job(job_id)
-    else:
-        _spawn_async_import(job_id)
+        job = ImportJob.query.get(job_id)
+        success = bool(job and job.status == ImportJobStatus.SUCCESS.value)
+        if success:
+            linhas = job.linhas_materializadas or job.total_linhas or 0
+            linhas_txt = f'{linhas} linha{"s" if linhas != 1 else ""}' if linhas else 'Sem linhas materializadas'
+            message = f'Importação {origem} concluída (protocolo {prefix}). {linhas_txt}.'
+            if not is_ajax:
+                _safe_flash(message, 'success')
+                return _go_back()
+            return jsonify({'status': 'ok', 'job_id': job_id, 'prefix': prefix, 'message': message, 'inline': True, 'redirect': redirect_url})
 
-    prefix = job_id[:8]
-    status_msg = 'processada imediatamente' if inline else 'agendada em segundo plano'
-    _safe_flash(
-        f'Importação {origem} {status_msg} (protocolo {prefix}). Acompanhe o status em "Importações em andamento".',
-        'info',
+        error_message = (job.message if job else None) or 'Erro não informado.'
+        if not is_ajax:
+            _safe_flash(f'Importação {origem} falhou (protocolo {prefix}). {error_message}', 'danger')
+            return _go_back()
+        return jsonify({
+            'status': 'error',
+            'job_id': job_id,
+            'prefix': prefix,
+            'message': f'Importação {origem} falhou (protocolo {prefix}). {error_message}',
+            'inline': True,
+            'redirect': redirect_url,
+        }), 500
+
+    _spawn_async_import(job_id)
+    info_message = (
+        f'Importação {origem} agendada em segundo plano (protocolo {prefix}). '
+        'Acompanhe o status em "Importações em andamento".'
     )
-
-    return _go_back()
+    if not is_ajax:
+        _safe_flash(info_message, 'info')
+        return _go_back()
+    return jsonify({'status': 'ok', 'job_id': job_id, 'prefix': prefix, 'message': info_message, 'inline': False, 'redirect': redirect_url})
 
 
 @app.route('/insumos/import/jobs')
 @admin_required
+@feature_required('insumos')
 def insumos_import_jobs_list():
     limit = _parse_positive_int(request.args.get('limit'), 20, maximum=100)
     jobs = (
@@ -7662,6 +8933,7 @@ def insumos_import_jobs_list():
 
 @app.route('/insumos/import/jobs/<job_id>')
 @admin_required
+@feature_required('insumos')
 def insumos_import_job_detail(job_id: str):
     job = ImportJob.query.get_or_404(job_id)
     return jsonify(_serialize_import_job(job))

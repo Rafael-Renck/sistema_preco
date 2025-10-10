@@ -10,7 +10,7 @@
   <div class="table-responsive">
     <table class="table table-hover align-middle mb-0">
       <thead class="table-light">
-        <tr><th>ID</th><th>Nome</th><th>E-mail</th><th>Nível</th><th class="text-end">Ações</th></tr>
+        <tr><th>ID</th><th>Nome</th><th>E-mail</th><th>Nível</th><th>Operadora</th><th class="text-end">Ações</th></tr>
       </thead>
       <tbody>
         {% for u in usuarios %}
@@ -25,12 +25,14 @@
             {% elif u.perfil == 'operadora' %}{% set cls = 'text-bg-success' %}{% endif %}
             <span class="badge {{ cls }}">{{ u.perfil }}</span>
           </td>
+          {% set operadora_nomes = u.operadoras | map(attribute='nome') | list %}
+          <td>{{ operadora_nomes|join(', ') if operadora_nomes else 'Todas' }}</td>
           <td class="text-end">
             <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('usuario_editar', uid=u.id) }}">Editar</a>
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="5" class="text-center text-secondary py-4">Nenhum usuário cadastrado</td></tr>
+        <tr><td colspan="6" class="text-center text-secondary py-4">Nenhum usuário cadastrado</td></tr>
         {% endfor %}
       </tbody>
     </table>

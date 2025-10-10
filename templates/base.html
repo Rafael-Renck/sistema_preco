@@ -83,6 +83,8 @@
         </a>
 
         {% set is_admin = (session_perfil == 'adm') %}
+        {% set has_insumos = (session_feature_insumos or is_admin) %}
+        {% set has_tuss_nav = (session_feature_tuss_rol or is_admin) %}
         <div class="side-group">
           <div class="side-title">{{ 'Gerencias' if is_admin else 'Menu' }}</div>
           <a class="side-item {% if request.endpoint=='dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">
@@ -91,10 +93,17 @@
           <a class="side-item {% if request.endpoint=='consulta_comparar' %}active{% endif %}" href="{{ url_for('consulta_comparar') }}">
             <i class="bi bi-search"></i><span>Consulta &amp; Comparar</span>
           </a>
+          {% if has_tuss_nav %}
+            <a class="side-item {% if request.endpoint=='tuss_rol_consulta' %}active{% endif %}" href="{{ url_for('tuss_rol_consulta') }}">
+              <i class="bi bi-clipboard-check"></i><span>TUSS x ROL</span>
+            </a>
+          {% endif %}
           {% set insumos_active = request.endpoint and request.endpoint.startswith('insumos_') %}
-          <a class="side-item {% if insumos_active %}active{% endif %}" href="{{ url_for('insumos_dashboard') }}">
-            <i class="bi bi-box-arrow-in-down"></i><span>Simpro &amp; Brasíndice</span>
-          </a>
+          {% if has_insumos %}
+            <a class="side-item {% if insumos_active %}active{% endif %}" href="{{ url_for('insumos_dashboard') }}">
+              <i class="bi bi-box-arrow-in-down"></i><span>Simpro &amp; Brasíndice</span>
+            </a>
+          {% endif %}
         </div>
 
         {% if is_admin %}
@@ -103,7 +112,9 @@
           <a class="side-item {% if request.endpoint=='gerenciar_operadoras' %}active{% endif %}" href="{{ url_for('gerenciar_operadoras') }}"><i class="bi bi-building"></i><span>Operadoras</span></a>
           <a class="side-item {% if request.endpoint=='gerenciar_tabelas' %}active{% endif %}" href="{{ url_for('gerenciar_tabelas') }}"><i class="bi bi-table"></i><span>Tabelas</span></a>
           <a class="side-item {% if request.endpoint and request.endpoint.startswith('admin_tetos') %}active{% endif %}" href="{{ url_for('admin_tetos') }}"><i class="bi bi-speedometer2"></i><span>Teto de Valores</span></a>
-          <a class="side-item {% if request.endpoint=='gerenciar_usuarios' %}active{% endif %}" href="{{ url_for('gerenciar_usuarios') }}"><i class="bi bi-people"></i><span>Usuarios</span></a>          <a class="side-item {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}"><i class="bi bi-sliders"></i><span>Regras CBHPM</span></a>
+          <a class="side-item {% if request.endpoint=='gerenciar_usuarios' %}active{% endif %}" href="{{ url_for('gerenciar_usuarios') }}"><i class="bi bi-people"></i><span>Usuarios</span></a>
+          <a class="side-item {% if request.endpoint=='admin_tuss_rol' %}active{% endif %}" href="{{ url_for('admin_tuss_rol') }}"><i class="bi bi-clipboard-check"></i><span>TUSS x ROL</span></a>
+          <a class="side-item {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}"><i class="bi bi-sliders"></i><span>Regras CBHPM</span></a>
         </div>
         {% endif %}
 

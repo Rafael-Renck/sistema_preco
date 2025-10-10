@@ -619,6 +619,7 @@
         const xhr = new XMLHttpRequest();
         xhr.open('POST', form.action);
         xhr.responseType = 'text';
+        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
 
         if(progressWrap){
           progressWrap.classList.remove('d-none');
@@ -637,15 +638,24 @@
           }
           if(submitBtn){ submitBtn.disabled = false; }
 
+          const contentType = xhr.getResponseHeader('Content-Type') || '';
+          let payload = null;
+          if(contentType.includes('application/json')){
+            try {
+              payload = JSON.parse(xhr.responseText || '{}');
+            } catch(_err){ payload = null; }
+          }
+
           if(xhr.status >= 200 && xhr.status < 400){
-            setMessage('success', 'Importação enviada. Processando...');
+            const msg = payload && payload.message ? payload.message : 'Importação enviada. Processando...';
+            const type = payload && payload.status === 'error' ? 'error' : 'success';
+            setMessage(type, msg);
             loadJobs();
-            setTimeout(() => {
-              window.location.href = xhr.responseURL || window.location.href;
-            }, 800);
           } else {
-            const reason = (xhr.responseText || xhr.statusText || 'Falha no envio.').trim();
-            setMessage('error', reason);
+            const errorMsg = payload && payload.message
+              ? payload.message
+              : (xhr.responseText || xhr.statusText || 'Falha no envio.').trim();
+            setMessage('error', errorMsg);
           }
         });
 

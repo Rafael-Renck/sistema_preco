@@ -182,11 +182,29 @@
     </div>
   </div>
 </div>
+
+<div class="modal fade" id="deepDiveModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Deep dive clínico</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <div class="text-muted small">Selecione um item na lista para explorar os detalhes clínicos.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 {{ super() }}
 <script>
+const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 (function(){
   const form = document.getElementById('insumoFilters');
   const tbody = document.getElementById('resultadoBody');
@@ -198,11 +216,19 @@
   const btnLimpar = document.getElementById('btnLimpar');
   const modalEl = document.getElementById('detalheModal');
   const modalBody = document.getElementById('detalheConteudo');
+  const deepDiveModalEl = document.getElementById('deepDiveModal');
+  const deepDiveBody = deepDiveModalEl ? deepDiveModalEl.querySelector('.modal-body') : null;
   let modal;
+  let deepDiveModalInstance = null;
   if (modalEl){ modal = new bootstrap.Modal(modalEl); }
+  if (deepDiveModalEl && window.bootstrap && bootstrap.Modal){
+    deepDiveModalInstance = new bootstrap.Modal(deepDiveModalEl);
+  }
 
   let page = 1;
   let totalPages = 0;
+  let currentDetail = null;
+  let currentSimilares = [];
 
   function toggleLoading(state){
     if(state){
@@ -216,11 +242,53 @@
     return (str || '').replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch] || ch));
   }
 
+  function parseDecimal(value){
+    if(value === null || value === undefined) return NaN;
+    if(typeof value === 'number') return value;
+    const raw = String(value).trim();
+    if(!raw) return NaN;
+    const cleaned = raw.replace(/\s+/g, '');
+    const match = cleaned.match(/[-]?[0-9]+([.,][0-9]+)?$/);
+    const normalized = (() => {
+      const lastComma = cleaned.lastIndexOf(',');
+      const lastDot = cleaned.lastIndexOf('.');
+      let decimalIndex = Math.max(lastComma, lastDot);
+      if(decimalIndex === -1) {
+        return cleaned.replace(/[^0-9-]/g, '');
+      }
+      const decimalSeparator = cleaned[decimalIndex];
+      const integerPart = cleaned.slice(0, decimalIndex).replace(/[^0-9-]/g, '');
+      const fractionPart = cleaned.slice(decimalIndex + 1).replace(/[^0-9]/g, '');
+      return `${integerPart}.${fractionPart}`;
+    })();
+    const parsed = Number(normalized);
+    if(!Number.isNaN(parsed)) return parsed;
+    if(match){
+      const fallback = match[0].replace(',', '.');
+      return Number(fallback);
+    }
+    return Number(cleaned.replace(',', '.'));
+  }
+
   function formatMoney(value){
     if(value === null || value === undefined || value === '') return '—';
-    const num = Number(value);
+    const num = parseDecimal(value);
     if(Number.isNaN(num)) return value;
-    return num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:4});
+    return num.toLocaleString('pt-BR', {style: 'currency', currency: 'BRL', minimumFractionDigits:2, maximumFractionDigits:4});
+  }
+
+  function formatDiffCurrency(value){
+    if(value === null || value === undefined || Number.isNaN(value) || !Number.isFinite(value)) return '—';
+    const prefix = value > 0 ? '+' : value < 0 ? '-' : '';
+    const amount = formatMoney(Math.abs(value));
+    return `${prefix}${amount}`;
+  }
+
+  function formatDiffPercent(value){
+    if(value === null || value === undefined || Number.isNaN(value) || !Number.isFinite(value)) return '—';
+    const prefix = value > 0 ? '+' : value < 0 ? '-' : '';
+    const abs = Math.abs(value);
+    return `${prefix}${abs.toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})}%`;
   }
 
   function formatAliquota(value){
@@ -228,6 +296,24 @@
     const num = Number(value);
     if(Number.isNaN(num)) return value;
     return num.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:4}) + '%';
+  }
+
+  function formatTussValue(item){
+    if(!item){ return '—'; }
+    const numero = (item.tuss_numero || '').toString().replace(/\D+/g, '');
+    if(numero){ return numero; }
+    const raw = (item.tuss_raw || item.tuss || '').toString();
+    const digits = raw.replace(/\D+/g, '');
+    if(digits){ return digits; }
+    return raw || '—';
+  }
+
+  function renderAnvisaLink(anvisa){
+    if(!anvisa){ return '—'; }
+    const code = String(anvisa).trim();
+    if(!code){ return '—'; }
+    const url = `https://consultas.anvisa.gov.br/#/medicamentos/q/?numeroRegistro=${encodeURIComponent(code)}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(code)}</a>`;
   }
 
   const TIMELINE_MONTHS = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
@@ -407,30 +493,34 @@
       tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Nenhum item encontrado.</td></tr>';
       return;
     }
-    const rows = items.map(item => {
-      const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
-      const dataRef = item.data_atualizacao || '—';
-      const origem = escapeHtml(item.origem);
-      const ufDisplay = item.uf_referencia || '';
-      const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
-      const uf = escapeHtml(ufDisplay || '—');
-      const ufSel = document.getElementById('fUf').value.trim();
-      const ufForDetail = ufSel || (ufCodes.length === 1 ? ufCodes[0] : (ufCodes[0] || ''));
+      const rows = items.map(item => {
+        const atualizacao = item.updated_at ? item.updated_at.replace('T',' ') : '—';
+        const dataRef = item.data_atualizacao || '—';
+        const origem = escapeHtml(item.origem);
+        const ufDisplay = item.uf_referencia || '';
+        const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
+        const uf = escapeHtml(ufDisplay || '—');
+        const ufSel = document.getElementById('fUf').value.trim();
+        const ufForDetail = ufSel || (ufCodes.length === 1 ? ufCodes[0] : (ufCodes[0] || ''));
       const aliquota = formatAliquota(item.aliquota);
+      const tussDisplay = escapeHtml(formatTussValue(item));
+      const anvisaHtml = renderAnvisaLink(item.anvisa);
+      const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
+      const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
       return `
         <tr>
           <td class="fw-semibold">${origem}</td>
           <td>
-            <div class="small fw-semibold">${escapeHtml(item.tuss || '—')}</div>
+            <div class="small fw-semibold">${tussDisplay}</div>
             <div class="small text-muted">TISS: ${escapeHtml(item.tiss || '—')}</div>
-            <div class="small text-muted">ANVISA: ${escapeHtml(item.anvisa || '—')}</div>
+            <div class="small text-muted">ANVISA: ${anvisaHtml}</div>
           </td>
           <td>
             <div class="fw-semibold">${escapeHtml(item.descricao || '')}</div>
             <div class="small text-muted">${escapeHtml(item.fabricante || '')}</div>
           </td>
-          <td class="text-end">${formatMoney(item.preco_pmc)}</td>
-          <td class="text-end">${formatMoney(item.preco_pfb)}</td>
+          <td class="text-end">${precoPmc}</td>
+          <td class="text-end">${precoPfb}</td>
           <td class="text-center">${uf}</td>
           <td class="text-end">${aliquota}</td>
           <td>
@@ -524,106 +614,386 @@
     document.getElementById('fPerPage').value = '50';
   });
 
-  tbody.addEventListener('click', async function(evt){
-    const btn = evt.target.closest('.visualizar-item');
-    if(!btn){ return; }
-    const origem = btn.getAttribute('data-origem');
-    const itemId = btn.getAttribute('data-id');
-    const ufItem = btn.getAttribute('data-uf') || '';
-    if(!origem || !itemId){ return; }
-    try{
-      btn.disabled = true;
-      const queryUf = ufItem ? `?uf=${encodeURIComponent(ufItem)}` : '';
-      const res = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}${queryUf}`);
-      if(!res.ok){ throw new Error('Item não encontrado.'); }
-      const data = await res.json();
-      const entries = [
-        ['Origem', data.origem],
-        ['TUSS', data.tuss || '—'],
-        ['TISS', data.tiss || '—'],
-        ['ANVISA', data.anvisa || '—'],
-        ['Descrição', data.descricao || ''],
-        ['Fabricante', data.fabricante || '—'],
-        ['PMC', formatMoney(data.preco_pmc ?? data.preco)],
-        ['PFB', formatMoney(data.preco_pfb ?? data.preco)],
-        ['Alíquota', formatAliquota(data.aliquota)],
-        ['UF', data.uf_referencia || '—'],
-        ['Versão', data.versao_tabela || '—'],
-        ['Data ref.', data.data_atualizacao || '—'],
-        ['Criado em', data.created_at ? data.created_at.replace('T',' ') : '—'],
-        ['Atualizado em', data.updated_at ? data.updated_at.replace('T',' ') : '—']
-      ];
-      const historico = Array.isArray(data.historico) ? data.historico : [];
-      const impactoClinico = Array.isArray(data.impacto_clinico) ? data.impacto_clinico : [];
-      const entriesMarkup = entries.map(([label, value]) => `
-        <dt class="col-4 text-muted small">${escapeHtml(label)}</dt>
-        <dd class="col-8 small">${escapeHtml(String(value))}</dd>
-      `).join('');
-      let impactoMarkup = '';
-      if (impactoClinico.length) {
-        const cards = impactoClinico.map(item => {
-          const freq = toNumber(item.frequencia_relativa);
-          const freqLabel = freq !== null ? formatPercent(freq * 100) : null;
-          const custoProcedimento = item.custo_procedimento !== null && item.custo_procedimento !== undefined ? formatMoney(item.custo_procedimento) : null;
-          const headerParts = [];
-          if(item.procedimento_codigo){ headerParts.push(item.procedimento_codigo); }
-          if(item.procedimento_descricao){ headerParts.push(item.procedimento_descricao); }
-          const header = headerParts.length ? headerParts.join(' · ') : 'Procedimento associado';
-          const drgInfo = item.drg ? `DRG ${escapeHtml(item.drg)}` : '';
-          const metrics = [
-            freqLabel ? `Frequência estimada: ${freqLabel}` : '',
-            custoProcedimento ? `Custo médio: R$ ${custoProcedimento}` : '',
-            drgInfo,
-          ].filter(Boolean).join(' · ');
-          const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
-          const variacoesMarkup = variacoes.length ? `
-            <div class="border rounded p-2 bg-light mt-2">
-              ${variacoes.map(v => {
-                const pctLabel = formatPercent(v.percentual);
-                const deltaUnit = formatMoney(v.delta_unitario);
-                const deltaProc = v.delta_procedimento ? formatMoney(v.delta_procedimento) : '—';
-                return `
-                  <div class="d-flex justify-content-between small">
-                    <span>${escapeHtml(pctLabel)}</span>
-                    <span>Δ Unidade: R$ ${escapeHtml(deltaUnit)}${deltaProc !== '—' ? ` · Δ Procedimento: R$ ${escapeHtml(deltaProc)}` : ''}</span>
+  async function fetchInsumoDetail(origem, itemId, ufItem){
+    const queryUf = ufItem ? `?uf=${encodeURIComponent(ufItem)}` : '';
+    const res = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}${queryUf}`);
+    if(!res.ok){
+      let message = 'Item não encontrado.';
+      try {
+        const data = await res.json();
+        if(data && data.error){
+          message = data.error;
+        }
+      } catch(_err){
+        message = res.statusText || message;
+      }
+      throw new Error(message);
+    }
+    return res.json();
+  }
+
+  function setupContextForm(container, origem, itemId, ufItem){
+    if(!IS_ADMIN) return;
+    const form = container.querySelector('form');
+    if(!form) return;
+    const errorBox = container.querySelector('[data-context-error]');
+    const successBox = container.querySelector('[data-context-success]');
+    const resetBtn = container.querySelector('[data-context-reset]');
+    const submitBtn = form.querySelector('button[type="submit"]');
+
+    const hideMessages = () => {
+      if(errorBox){ errorBox.classList.add('d-none'); }
+      if(successBox){ successBox.classList.add('d-none'); }
+    };
+
+    const showError = (message) => {
+      if(!errorBox) return;
+      errorBox.textContent = message;
+      errorBox.classList.remove('d-none');
+      if(successBox){ successBox.classList.add('d-none'); }
+    };
+
+    resetBtn?.addEventListener('click', () => {
+      form.reset();
+      hideMessages();
+    });
+
+    form.addEventListener('submit', async function(evt){
+      evt.preventDefault();
+      hideMessages();
+
+      const getValue = (name) => (form.elements[name]?.value || '').trim();
+      const payload = {
+        procedimento_codigo: getValue('procedimento_codigo') || null,
+        procedimento_descricao: getValue('procedimento_descricao') || null,
+        drg: getValue('drg') || null,
+        frequencia_percent: getValue('frequencia_percent') || null,
+        custo_procedimento: getValue('custo_procedimento') || null,
+        substitutos: getValue('substitutos') || null,
+        narrativa: getValue('narrativa') || null,
+      };
+
+      if(!payload.procedimento_codigo && !payload.procedimento_descricao){
+        showError('Informe código ou descrição do procedimento.');
+        return;
+      }
+
+      try{
+        if(submitBtn){ submitBtn.disabled = true; }
+        const response = await fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}/contexto`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json().catch(() => ({}));
+        if(!response.ok){
+          throw new Error(result.error || 'Falha ao registrar contexto clínico.');
+        }
+        const detail = await fetchInsumoDetail(origem, itemId, ufItem);
+        renderItemDetail(detail, origem, itemId, ufItem);
+        const successTarget = modalBody.querySelector('[data-context-success]');
+        if(successTarget){
+          successTarget.textContent = 'Contexto clínico registrado.';
+          successTarget.classList.remove('d-none');
+        }
+      } catch(err){
+        showError(err.message || 'Falha ao registrar contexto clínico.');
+      } finally {
+        if(submitBtn){ submitBtn.disabled = false; }
+      }
+    });
+  }
+
+  function computeHistoricoInsights(historico){
+    if(!Array.isArray(historico) || !historico.length){
+      return null;
+    }
+    const series = historico.map((entry, idx) => {
+      const preco = toNumber(entry.preco_pfb ?? entry.preco_pmc ?? entry.preco);
+      if(preco === null){
+        return null;
+      }
+      const date = parseBrDate(entry.data_atualizacao) || new Date(Date.now() - (historico.length - idx) * 86400000);
+      const stamp = date ? date.getTime() : idx;
+      return { preco, entry, stamp };
+    }).filter(Boolean);
+    if(!series.length){
+      return null;
+    }
+    series.sort((a, b) => a.stamp - b.stamp);
+    const first = series[0];
+    const last = series[series.length - 1];
+    const max = series.reduce((acc, cur) => cur.preco > acc.preco ? cur : acc, series[0]);
+    const min = series.reduce((acc, cur) => cur.preco < acc.preco ? cur : acc, series[0]);
+
+    const delta = last.preco - first.preco;
+    const deltaPct = first.preco ? (delta / first.preco) * 100 : null;
+    const amplitude = max.preco - min.preco;
+    const amplitudePct = min.preco ? (amplitude / min.preco) * 100 : null;
+    return {
+      first,
+      last,
+      max,
+      min,
+      delta,
+      deltaPct,
+      amplitude,
+      amplitudePct,
+      points: series.length,
+    };
+  }
+
+  function renderDeepDiveModal(data){
+    if(!deepDiveBody){
+      return;
+    }
+    if(!data){
+      deepDiveBody.innerHTML = '<div class="alert alert-info mb-0">Selecione um item para analisar.</div>';
+      return;
+    }
+    const historico = Array.isArray(data.historico) ? data.historico : [];
+    const similares = Array.isArray(data.similares) ? data.similares : [];
+    const impactoClinico = Array.isArray(data.impacto_clinico) ? data.impacto_clinico : [];
+
+    const insights = computeHistoricoInsights(historico);
+    let historicoMarkup = '<p class="text-muted small mb-0">Histórico insuficiente para análise.</p>';
+    if(insights){
+      const tendencia = insights.delta > 0 ? 'Alta de preço' : insights.delta < 0 ? 'Queda de preço' : 'Estabilidade';
+      const deltaText = insights.delta !== 0 ? formatDiffCurrency(insights.delta) : '—';
+      const deltaPctText = insights.deltaPct !== null ? formatDiffPercent(insights.deltaPct) : null;
+      const amplitudeText = insights.amplitude ? formatMoney(insights.amplitude) : '—';
+      const amplitudePctText = insights.amplitudePct !== null ? formatDiffPercent(insights.amplitudePct) : null;
+      const maxLabel = `${insights.max.entry.versao || 'Versão?'} · ${formatMoney(insights.max.preco)}`;
+      const minLabel = `${insights.min.entry.versao || 'Versão?'} · ${formatMoney(insights.min.preco)}`;
+      historicoMarkup = `
+        <div class="border rounded-3 p-3 bg-light">
+          <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <span class="badge bg-primary-subtle text-primary">${escapeHtml(tendencia)}</span>
+            <span class="badge bg-secondary-subtle text-secondary">${insights.points} pontos analisados</span>
+          </div>
+          <div class="row g-2 small">
+            <div class="col-12 col-md-4"><strong>Δ período</strong><br>${escapeHtml(deltaText)}${deltaPctText ? ` (${escapeHtml(deltaPctText)})` : ''}</div>
+            <div class="col-12 col-md-4"><strong>Amplitude</strong><br>${escapeHtml(amplitudeText)}${amplitudePctText ? ` (${escapeHtml(amplitudePctText)})` : ''}</div>
+            <div class="col-12 col-md-4"><strong>Pico vs. piso</strong><br>${escapeHtml(maxLabel)} → ${escapeHtml(minLabel)}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    let impactoMarkup = '<p class="text-muted small mb-0">Sem contexto clínico registrado.</p>';
+    if(impactoClinico.length){
+      const cards = impactoClinico.map(item => {
+        const freq = toNumber(item.frequencia_relativa);
+        const freqLabel = freq !== null ? formatPercent(freq * 100) : '—';
+        const custo = item.custo_procedimento != null ? formatMoney(item.custo_procedimento) : '—';
+        const variacoes = Array.isArray(item.variacoes) ? item.variacoes : [];
+        const variacoesMarkup = variacoes.length ? `
+          <div class="mt-2 d-flex flex-column gap-1">
+            ${variacoes.map(v => {
+              const pct = v.percentual ? v.percentual : '';
+              const deltaUnit = v.delta_unitario ? formatMoney(v.delta_unitario) : '—';
+              const deltaProc = v.delta_procedimento ? formatMoney(v.delta_procedimento) : null;
+              return `<div class="small text-muted">Δ ${escapeHtml(pct)} → Unidade ${escapeHtml(deltaUnit)}${deltaProc ? ` · Procedimento ${escapeHtml(deltaProc)}` : ''}</div>`;
+            }).join('')}
+          </div>
+        ` : '';
+        const substitutos = Array.isArray(item.substitutos) ? item.substitutos : [];
+        const substitutosMarkup = substitutos.length ? `
+          <div class="mt-2 d-flex flex-wrap gap-1">
+            ${substitutos.map(label => `<span class="badge bg-secondary-subtle text-secondary">${escapeHtml(label)}</span>`).join('')}
+          </div>
+        ` : '';
+        return `
+          <div class="border rounded-3 p-3 bg-white shadow-sm">
+            <div class="fw-semibold">${escapeHtml(item.procedimento_codigo || 'Procedimento associado')}</div>
+            <div class="text-muted small">${escapeHtml(item.procedimento_descricao || '')}</div>
+            <div class="small mt-2">
+              Frequência: ${escapeHtml(freqLabel)} · Custo médio: ${escapeHtml(custo)}${item.drg ? ` · DRG ${escapeHtml(item.drg)}` : ''}
+            </div>
+            ${variacoesMarkup}
+            ${substitutosMarkup}
+            ${item.narrativa ? `<div class="small mt-2">${escapeHtml(item.narrativa)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+      impactoMarkup = `<div class="d-flex flex-column gap-3">${cards}</div>`;
+    }
+
+    const similarMarkup = similares.length
+      ? `
+        <div class="d-flex flex-column gap-2">
+          ${similares.slice(0, 4).map(item => {
+            const baseInfo = pickPriceInfo(data);
+            const priceInfo = pickPriceInfo(item);
+            const diffNumeric = (Number.isFinite(priceInfo.num) && Number.isFinite(baseInfo.num))
+              ? priceInfo.num - baseInfo.num
+              : null;
+            const diffPercent = (diffNumeric !== null && baseInfo.num) ? (diffNumeric / baseInfo.num) * 100 : null;
+            const diffText = diffNumeric !== null ? formatDiffCurrency(diffNumeric) : '—';
+            const diffPctText = diffPercent !== null ? ` (${formatDiffPercent(diffPercent)})` : '';
+            return `
+              <div class="border rounded-3 p-3 bg-white">
+                <div class="d-flex justify-content-between gap-3">
+                  <div>
+                    <div class="fw-semibold">${escapeHtml(item.descricao || 'Similar')}</div>
+                    <div class="text-muted small">TUSS ${escapeHtml(formatTussValue(item) || '—')} · ${escapeHtml(item.uf_referencia || 'UF —')}</div>
                   </div>
-                `;
-              }).join('')}
-            </div>
-          ` : '';
-          const substitutos = Array.isArray(item.substitutos) ? item.substitutos : [];
-          const substitutosMarkup = substitutos.length ? `
-            <div class="d-flex flex-wrap gap-2 mt-2">
-              ${substitutos.map(label => `<span class="badge bg-secondary-subtle text-secondary">${escapeHtml(label)}</span>`).join('')}
-            </div>
-          ` : '';
-          const narrativa = item.narrativa ? `<p class="small mb-0 mt-2">${escapeHtml(item.narrativa)}</p>` : '';
-          return `
-            <div class="border rounded p-3 bg-white">
-              <div class="fw-semibold">${escapeHtml(header)}</div>
-              ${metrics ? `<div class="text-muted small mt-1">${metrics}</div>` : ''}
-              ${variacoesMarkup}
-              ${substitutosMarkup}
-              ${narrativa}
-            </div>
-          `;
-        }).join('');
-        impactoMarkup = `
+                  <div class="text-end">
+                    <div class="fw-semibold">${escapeHtml(priceInfo.formatted || formatMoney(priceInfo.num))}</div>
+                    <div class="small text-muted">Δ vs atual: ${escapeHtml(diffText + diffPctText)}</div>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `
+      : '<p class="text-muted small mb-0">Nenhum similar estratégico listado.</p>';
+
+    deepDiveBody.innerHTML = `
+      <div class="mb-3">
+        <h6 class="mb-2">Resumo de preço &amp; tendência</h6>
+        ${historicoMarkup}
+      </div>
+      <div class="mb-3">
+        <h6 class="mb-2">Contexto clínico</h6>
+        ${impactoMarkup}
+      </div>
+      <div class="mb-3">
+        <h6 class="mb-2">Similares estratégicos</h6>
+        ${similarMarkup}
+      </div>
+    `;
+    if(window.lucide){ lucide.createIcons(deepDiveBody); }
+  }
+
+  function renderItemDetail(data, origem, itemId, ufItem){
+    modalEl.dataset.currentOrigem = origem;
+    modalEl.dataset.currentItem = itemId;
+    modalEl.dataset.currentUf = ufItem || '';
+
+    const entries = [
+      ['Origem', data.origem],
+      ['TUSS', formatTussValue(data)],
+      ['TISS', data.tiss || '—'],
+      ['ANVISA', renderAnvisaLink(data.anvisa)],
+      ['Descrição', data.descricao || ''],
+      ['Fabricante', data.fabricante || '—'],
+      ['PMC', formatMoney(data.preco_pmc ?? data.preco)],
+      ['PFB', formatMoney(data.preco_pfb ?? data.preco)],
+      ['Alíquota', formatAliquota(data.aliquota)],
+      ['UF', data.uf_referencia || '—'],
+      ['Versão', data.versao_tabela || '—'],
+      ['Data ref.', data.data_atualizacao || '—'],
+      ['Criado em', data.created_at ? data.created_at.replace('T',' ') : '—'],
+      ['Atualizado em', data.updated_at ? data.updated_at.replace('T',' ') : '—']
+    ];
+    const historico = Array.isArray(data.historico) ? data.historico : [];
+    const similares = Array.isArray(data.similares) ? data.similares : [];
+    currentDetail = data;
+    currentSimilares = similares;
+    const baseInfo = pickPriceInfo(data);
+    const entriesMarkup = entries.map(([label, value]) => {
+      const content = label === 'ANVISA' ? value : escapeHtml(String(value ?? ''));
+      return `
+        <dt class="col-4 text-muted small">${escapeHtml(label)}</dt>
+        <dd class="col-8 small">${content}</dd>
+      `;
+    }).join('');
+
+    const similaresMarkup = (() => {
+      if(!similares.length){
+        return `
           <hr class="my-3">
           <div class="mb-3">
-            <h6 class="mb-2 d-flex align-items-center gap-2">Impacto clínico <span class="badge rounded-pill text-bg-dark">ADM</span></h6>
-            <div class="d-flex flex-column gap-3">
-              ${cards}
-            </div>
+            <h6 class="mb-2">Itens semelhantes</h6>
+            <div class="text-muted small">Nenhum similar encontrado.</div>
           </div>
         `;
       }
-      let historicoMarkup = '';
-      if (historico.length) {
-        const targetUf = (data.uf_filtro || data.uf_referencia || '').toUpperCase();
-        const timelineEvents = buildTimelineEvents(historico, targetUf);
-        const timelineMarkup = timelineEvents.length
-          ? `
+      const cards = similares.map(item => {
+        const priceInfo = pickPriceInfo(item);
+        const priceValue = priceInfo.formatted || formatMoney(item.preco_pfb ?? item.preco_pmc ?? item.preco);
+        const priceLabel = priceInfo.label || 'Preço';
+        const baseNumeric = Number.isFinite(baseInfo.num) ? baseInfo.num : null;
+        const similarNumeric = Number.isFinite(priceInfo.num) ? priceInfo.num : null;
+        const diffNumeric = (baseNumeric !== null && similarNumeric !== null) ? (similarNumeric - baseNumeric) : null;
+        const diffPercent = (diffNumeric !== null && baseNumeric !== null && baseNumeric !== 0)
+          ? (diffNumeric / baseNumeric) * 100
+          : null;
+        const tussDisplay = formatTussValue(item);
+        const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
+        const ufLabel = ufCodes.length ? ufCodes.join(', ') : (item.uf_referencia || '—');
+        const fabricante = item.fabricante ? `<div class="text-muted small">${escapeHtml(item.fabricante)}</div>` : '';
+        const origemLabel = item.origem ? `<span class="badge bg-secondary-subtle text-secondary">${escapeHtml(item.origem)}</span>` : '';
+        const ufForDetail = ufCodes.length ? ufCodes[0] : (item.uf_referencia || '');
+        const reasons = Array.isArray(item.justificativas) ? item.justificativas : [];
+        const reasonsMarkup = reasons.length
+          ? `<div class="d-flex flex-wrap gap-1 mt-2">${reasons.map(reason => `<span class="badge bg-info-subtle text-info">${escapeHtml(reason)}</span>`).join('')}</div>`
+          : '';
+        let diffBadge = '';
+        if(diffNumeric !== null){
+          const diffText = `Δ ${formatDiffCurrency(diffNumeric)}${diffPercent !== null ? ` (${formatDiffPercent(diffPercent)})` : ''}`;
+          const diffClass = diffNumeric < 0 ? 'bg-success-subtle text-success' : diffNumeric > 0 ? 'bg-danger-subtle text-danger' : 'bg-secondary-subtle text-secondary';
+          diffBadge = `<span class="badge ${diffClass}">${escapeHtml(diffText)}</span>`;
+        }
+        return `
+          <div class="border rounded p-3 bg-white shadow-sm">
+            <div class="d-flex justify-content-between gap-3">
+              <div>
+                <div class="fw-semibold">${escapeHtml(item.descricao || 'Descrição indisponível')}</div>
+                <div class="text-muted small mb-1">
+                  ${tussDisplay ? `TUSS ${escapeHtml(tussDisplay)} · ` : ''}
+                  UF ${escapeHtml(ufLabel || '—')}
+                </div>
+                ${fabricante}
+                ${reasonsMarkup}
+              </div>
+              <div class="text-end">
+                <div class="fw-semibold">${escapeHtml(priceValue || '—')}</div>
+                <div class="text-muted small">${escapeHtml(priceLabel)}</div>
+                ${diffBadge ? `<div class="mt-1">${diffBadge}</div>` : ''}
+              </div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center gap-2 mt-3">
+              ${origemLabel}
+              <button type="button" class="btn btn-outline-primary btn-sm visualizar-item" data-origem="${escapeHtml(item.origem)}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail || '')}">
+                Abrir item
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+      return `
+        <hr class="my-3">
+        <div class="mb-3" id="similaresSection">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <h6 class="mb-0">Itens semelhantes</h6>
+            <div class="d-flex flex-wrap gap-2">
+              <button type="button" class="btn btn-sm btn-outline-secondary btn-icon" data-action="toggle-explain">
+                <i class="bi bi-chat-dots"></i> Explain like I'm a specialist
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-primary btn-icon" data-action="toggle-combo">
+                <i class="bi bi-diagram-3"></i> Montar combo
+              </button>
+            </div>
+          </div>
+          <div class="small text-muted mt-1">Sugestões priorizadas por proximidade (EAN, ANVISA, códigos e termos da descrição).</div>
+          <div class="d-none mt-3" data-role="explain-box"></div>
+          <div class="d-none mt-3" data-role="combo-box"></div>
+          <div class="d-flex flex-column gap-3 mt-3">
+            ${cards}
+          </div>
+        </div>
+      `;
+    })();
+
+    let historicoMarkup = '';
+    if (historico.length) {
+      const targetUf = (data.uf_filtro || data.uf_referencia || '').toUpperCase();
+      const timelineEvents = buildTimelineEvents(historico, targetUf);
+      const timelineMarkup = timelineEvents.length
+        ? `
             <div class="d-flex flex-wrap gap-2">
               ${timelineEvents.map(evt => `
                 <div class="border rounded px-3 py-2 bg-light small">
@@ -633,15 +1003,15 @@
               `).join('')}
             </div>
           `
-          : '<p class="text-muted small mb-0">Nenhum evento relevante detectado para esta série.</p>';
-        const rows = historico.map(item => {
-          const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
-          const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
-          const aliquotaFmt = formatAliquota(item.aliquota);
-          const dataAtualizacao = escapeHtml(item.data_atualizacao || '—');
-          const versao = escapeHtml(item.versao || '—');
-          const uf = escapeHtml(item.uf || '—');
-          return `
+        : '<p class="text-muted small mb-0">Nenhum evento relevante detectado para esta série.</p>';
+      const rows = historico.map(item => {
+        const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
+        const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
+        const aliquotaFmt = formatAliquota(item.aliquota);
+        const dataAtualizacao = escapeHtml(item.data_atualizacao || '—');
+        const versao = escapeHtml(item.versao || '—');
+        const uf = escapeHtml(item.uf || '—');
+        return `
             <tr>
               <td class="small">${versao}</td>
               <td class="small">${uf}</td>
@@ -651,8 +1021,8 @@
               <td class="small text-end">${dataAtualizacao}</td>
             </tr>
           `;
-        }).join('');
-        historicoMarkup = `
+      }).join('');
+      historicoMarkup = `
           <hr class="my-3">
           <div class="mb-3">
             <h6 class="mb-2">Linha do tempo</h6>
@@ -679,20 +1049,418 @@
             </div>
           </div>
         `;
-      }
-      modalBody.innerHTML = `
-        <dl class="row g-2 mb-0">
-          ${entriesMarkup}
-        </dl>
-        ${impactoMarkup}
-        ${historicoMarkup || '<p class="text-muted small mb-0 mt-3">Histórico por versão/UF indisponível.</p>'}
+    }
+
+    let contextoMarkup = '';
+    if(IS_ADMIN){
+      contextoMarkup = `
+        <hr class="my-3">
+        <div class="mb-3" id="contextoClinicoForm">
+          <h6 class="mb-2 d-flex align-items-center gap-2">Registrar contexto clínico <span class="badge rounded-pill text-bg-dark">ADM</span></h6>
+          <div class="alert alert-success d-none" role="alert" data-context-success></div>
+          <div class="alert alert-danger d-none" role="alert" data-context-error></div>
+          <form class="row g-3">
+            <div class="col-sm-4">
+              <label class="form-label">Procedimento (TUSS)</label>
+              <input type="text" class="form-control" name="procedimento_codigo" maxlength="50">
+            </div>
+            <div class="col-sm-8">
+              <label class="form-label">Descrição do procedimento</label>
+              <input type="text" class="form-control" name="procedimento_descricao" maxlength="255">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">DRG</label>
+              <input type="text" class="form-control" name="drg" maxlength="50">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">Frequência (%)</label>
+              <input type="text" class="form-control" name="frequencia_percent" placeholder="ex.: 5">
+            </div>
+            <div class="col-sm-4">
+              <label class="form-label">Custo procedimento</label>
+              <input type="text" class="form-control" name="custo_procedimento" placeholder="ex.: 1200">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Substitutos (separar por vírgula)</label>
+              <input type="text" class="form-control" name="substitutos">
+            </div>
+            <div class="col-12">
+              <label class="form-label">Narrativa</label>
+              <textarea class="form-control" rows="3" name="narrativa"></textarea>
+            </div>
+            <div class="col-12 d-flex gap-2">
+              <button type="submit" class="btn btn-primary">
+                <i class="bi bi-plus-circle"></i> Adicionar contexto
+              </button>
+              <button type="button" class="btn btn-outline-secondary" data-context-reset>Limpar</button>
+            </div>
+          </form>
+        </div>
       `;
+    }
+
+    const actionsMarkup = `
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        <button type="button" class="btn btn-sm btn-outline-info btn-icon" data-action="open-deep-dive">
+          <i data-lucide="stethoscope"></i> Deep dive clínico
+        </button>
+      </div>
+    `;
+
+    modalBody.innerHTML = `
+      ${actionsMarkup}
+      <dl class="row g-2 mb-0">
+        ${entriesMarkup}
+      </dl>
+      ${similaresMarkup}
+      ${contextoMarkup}
+      ${historicoMarkup || '<p class="text-muted small mb-0 mt-3">Histórico por versão/UF indisponível.</p>'}
+    `;
+
+    const similaresSection = modalBody.querySelector('#similaresSection');
+    setupSimilaresInteractions(similaresSection);
+
+    if(window.lucide){ lucide.createIcons(modalBody); }
+
+    if(IS_ADMIN){
+      const wrapper = modalBody.querySelector('#contextoClinicoForm');
+      if(wrapper){
+        setupContextForm(wrapper, origem, itemId, ufItem);
+      }
+    }
+  }
+
+  function setupSimilaresInteractions(section){
+    if(!section) return;
+    const explainBtn = section.querySelector('[data-action="toggle-explain"]');
+    const comboBtn = section.querySelector('[data-action="toggle-combo"]');
+    const explainBox = section.querySelector('[data-role="explain-box"]');
+    const comboBox = section.querySelector('[data-role="combo-box"]');
+
+    if(explainBtn && explainBox){
+      explainBtn.addEventListener('click', () => {
+        const hidden = explainBox.classList.contains('d-none');
+        if(hidden){
+          renderSpecialistExplain(explainBox);
+          explainBox.classList.remove('d-none');
+          explainBtn.classList.add('active');
+        } else {
+          explainBox.classList.add('d-none');
+          explainBtn.classList.remove('active');
+        }
+      });
+    }
+
+    if(comboBtn && comboBox){
+      comboBtn.addEventListener('click', () => {
+        const hidden = comboBox.classList.contains('d-none');
+        if(hidden){
+          renderComboPlanner(comboBox);
+          comboBox.classList.remove('d-none');
+          comboBtn.classList.add('active');
+        } else {
+          comboBox.classList.add('d-none');
+          comboBtn.classList.remove('active');
+        }
+      });
+    }
+  }
+
+  function renderSpecialistExplain(container){
+    if(!container){
+      return;
+    }
+    if(!currentDetail){
+      container.innerHTML = '<div class="alert alert-info small mb-0">Selecione um item para gerar o resumo.</div>';
+      return;
+    }
+    if(!currentSimilares.length){
+      container.innerHTML = '<div class="text-muted small">Nenhum similar disponível para explicar.</div>';
+      return;
+    }
+
+    const baseInfo = pickPriceInfo(currentDetail);
+    const baseDesc = escapeHtml(currentDetail.descricao || 'Item atual');
+    const basePriceText = baseInfo.formatted
+      ? `${escapeHtml(baseInfo.label || 'Preço')} ${escapeHtml(baseInfo.formatted)}`
+      : 'sem preço informado';
+    const baseUfCodes = Array.isArray(currentDetail.uf_referencia_codes) ? currentDetail.uf_referencia_codes : [];
+    const baseUf = baseUfCodes.length ? baseUfCodes.join(', ') : (currentDetail.uf_referencia || 'UF não informada');
+    const baseNumeric = Number.isFinite(baseInfo.num) ? baseInfo.num : null;
+
+    const itemsHtml = currentSimilares.map(item => {
+      const priceInfo = pickPriceInfo(item);
+      const priceLabel = priceInfo.label || 'Preço';
+      const priceValue = priceInfo.formatted ? escapeHtml(priceInfo.formatted) : 'não informado';
+      const similarNumeric = Number.isFinite(priceInfo.num) ? priceInfo.num : null;
+      const diffNumeric = (baseNumeric !== null && similarNumeric !== null) ? (similarNumeric - baseNumeric) : null;
+      const diffPercent = (diffNumeric !== null && baseNumeric !== null && baseNumeric !== 0)
+        ? (diffNumeric / baseNumeric) * 100
+        : null;
+      const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
+      const similarUf = ufCodes.length ? ufCodes.join(', ') : (item.uf_referencia || 'UF não informada');
+      const reasons = Array.isArray(item.justificativas) ? item.justificativas : [];
+      const reasonText = reasons.length
+        ? reasons.map(reason => escapeHtml(reason)).join('; ')
+        : 'Relacionamento geral por similaridade';
+      let deltaSentence = ' com preço comparativo indisponível';
+      if(diffNumeric !== null){
+        deltaSentence = ` com variação de ${escapeHtml(formatDiffCurrency(diffNumeric))}`;
+        if(diffPercent !== null){
+          deltaSentence += ` (${escapeHtml(formatDiffPercent(diffPercent))})`;
+        }
+        deltaSentence += ' versus o item atual';
+      }
+      return `
+        <li class="mb-2">
+          <strong>${escapeHtml(item.descricao || 'Item similar')}</strong> —
+          ${reasonText}. ${escapeHtml(priceLabel)} ${priceValue} em ${escapeHtml(similarUf)}${deltaSentence}.
+        </li>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="border rounded-3 p-3 bg-white shadow-sm">
+        <p class="small mb-2">
+          Partindo de <strong>${baseDesc}</strong> (${basePriceText}) na UF ${escapeHtml(baseUf)}, estes são os vínculos clínicos mais fortes detectados:
+        </p>
+        <ul class="list-unstyled small mb-0">
+          ${itemsHtml}
+        </ul>
+        <p class="small text-muted mb-0 mt-3">
+          A explicação considera sinais regulatórios (ANVISA, TUSS/TISS), cadastro de substitutos e termos técnicos com maior peso no índice.
+        </p>
+      </div>
+    `;
+  }
+
+  function renderComboPlanner(container){
+    if(!container){
+      return;
+    }
+    if(!currentDetail){
+      container.innerHTML = '<div class="alert alert-info small mb-0">Selecione um item para montar o combo.</div>';
+      return;
+    }
+
+    const baseInfo = pickPriceInfo(currentDetail);
+    const baseNumeric = Number.isFinite(baseInfo.num) ? baseInfo.num : null;
+    const baseUfCodes = Array.isArray(currentDetail.uf_referencia_codes) ? currentDetail.uf_referencia_codes : [];
+    const baseUf = baseUfCodes.length ? baseUfCodes.join(', ') : (currentDetail.uf_referencia || '—');
+
+    const comboItems = [{
+      key: 'base',
+      label: 'Item atual',
+      nome: currentDetail.descricao || 'Item atual',
+      preco: baseNumeric,
+      precoLabel: baseInfo.label || 'Preço',
+      uf: baseUf,
+      origem: currentDetail.origem || '',
+      id: currentDetail.item_id,
+      mandatory: true,
+      defaultChecked: true,
+    }];
+
+    currentSimilares.forEach((item, idx) => {
+      const priceInfo = pickPriceInfo(item);
+      const similarNumeric = Number.isFinite(priceInfo.num) ? priceInfo.num : null;
+      const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
+      comboItems.push({
+        key: `sim-${item.item_id}`,
+        label: `Similar #${idx + 1}`,
+        nome: item.descricao || `Item ${idx + 1}`,
+        preco: similarNumeric,
+        precoLabel: priceInfo.label || 'Preço',
+        uf: ufCodes.length ? ufCodes.join(', ') : (item.uf_referencia || baseUf || '—'),
+        origem: item.origem || '',
+        id: item.item_id,
+        mandatory: false,
+        defaultChecked: idx < 2 && similarNumeric !== null,
+      });
+    });
+
+    container._comboItems = comboItems;
+
+    const rows = comboItems.map(item => {
+      const disabledAttr = item.mandatory ? 'disabled' : '';
+      const checkedAttr = (item.mandatory || item.defaultChecked) ? 'checked' : '';
+      const priceText = item.preco !== null && item.preco !== undefined
+        ? `${item.precoLabel}: ${formatMoney(item.preco)}`
+        : 'Preço não informado';
+      let diffDisplay = '—';
+      if(!item.mandatory && item.preco !== null && item.preco !== undefined && baseNumeric !== null){
+        const diffNumeric = item.preco - baseNumeric;
+        const diffPercent = (baseNumeric !== 0) ? (diffNumeric / baseNumeric) * 100 : null;
+        diffDisplay = `${formatDiffCurrency(diffNumeric)}${diffPercent !== null ? ` (${formatDiffPercent(diffPercent)})` : ''}`;
+      }
+      return `
+        <tr>
+          <td class="text-center">
+            <input type="checkbox" class="form-check-input" data-role="combo-item" data-key="${escapeHtml(item.key)}" ${checkedAttr} ${disabledAttr}>
+          </td>
+          <td>
+            <div class="fw-semibold small">${escapeHtml(item.nome)}</div>
+            <div class="text-muted small">${escapeHtml(item.label)} · UF ${escapeHtml(item.uf || '—')}</div>
+          </td>
+          <td class="small">${escapeHtml(priceText)}</td>
+          <td class="small">${escapeHtml(diffDisplay)}</td>
+        </tr>
+      `;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="border rounded-3 p-3 bg-white shadow-sm">
+        <div class="text-muted small mb-2">Monte um pacote rápido selecionando os itens que fazem sentido juntos.</div>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width:50px;"></th>
+                <th class="small">Item</th>
+                <th class="small" style="width:180px;">Preço</th>
+                <th class="small" style="width:180px;">Δ vs atual</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows}
+            </tbody>
+          </table>
+        </div>
+        <div class="d-flex gap-2 mt-3">
+          <button type="button" class="btn btn-sm btn-outline-secondary" data-action="clear-combo">Limpar seleção</button>
+          <button type="button" class="btn btn-sm btn-outline-primary" data-action="copy-combo">Copiar resumo</button>
+        </div>
+        <div class="small mt-3 border rounded p-2 bg-light" data-role="combo-summary"></div>
+      </div>
+    `;
+
+    const summaryEl = container.querySelector('[data-role="combo-summary"]');
+    const checkboxes = Array.from(container.querySelectorAll('input[data-role="combo-item"]'));
+
+    function collectSelected(){
+      return comboItems.filter(item => {
+        if(item.mandatory){
+          return true;
+        }
+        const checkbox = checkboxes.find(cb => cb.dataset.key === item.key);
+        return checkbox ? checkbox.checked : false;
+      });
+    }
+
+    function updateSummary(){
+      const selected = collectSelected();
+      const priced = selected.filter(item => item.preco !== null && item.preco !== undefined && Number.isFinite(item.preco));
+      const subtotal = priced.reduce((acc, item) => acc + item.preco, 0);
+      const avg = priced.length ? subtotal / priced.length : null;
+      const basePrice = comboItems[0]?.preco ?? null;
+      const avgDelta = (avg !== null && basePrice !== null && Number.isFinite(basePrice)) ? (avg - basePrice) : null;
+      const avgDeltaPct = (avgDelta !== null && basePrice !== 0 && basePrice !== null && Number.isFinite(basePrice))
+        ? (avgDelta / basePrice) * 100
+        : null;
+      const ufSet = new Set();
+      selected.forEach(item => {
+        (item.uf || '').split(',').map(part => part.trim()).filter(Boolean).forEach(uf => ufSet.add(uf));
+      });
+      const ufLabel = Array.from(ufSet).join(', ');
+
+      summaryEl.innerHTML = `
+        <div class="d-flex flex-column gap-1">
+          <div><strong>${selected.length}</strong> itens no combo (${priced.length} precificados)</div>
+          <div>Total estimado: ${priced.length ? formatMoney(subtotal) : '—'}</div>
+          <div>
+            Média por item: ${avg !== null ? formatMoney(avg) : '—'}
+            ${avgDelta !== null ? ` · Δ vs atual: ${formatDiffCurrency(avgDelta)}${avgDeltaPct !== null ? ` (${formatDiffPercent(avgDeltaPct)})` : ''}` : ''}
+          </div>
+          <div>UFs cobertas: ${ufLabel || '—'}</div>
+        </div>
+      `;
+    }
+
+    checkboxes.forEach(cb => cb.addEventListener('change', updateSummary));
+
+    const clearBtn = container.querySelector('[data-action="clear-combo"]');
+    clearBtn?.addEventListener('click', () => {
+      checkboxes.forEach(cb => {
+        if(cb.hasAttribute('disabled')) return;
+        cb.checked = false;
+      });
+      updateSummary();
+    });
+
+    const copyBtn = container.querySelector('[data-action="copy-combo"]');
+    copyBtn?.addEventListener('click', () => {
+      const selected = collectSelected();
+      const lines = selected.map(item => {
+        const priceText = item.preco !== null && item.preco !== undefined && Number.isFinite(item.preco)
+          ? `${item.precoLabel}: ${formatMoney(item.preco)}`
+          : 'Preço não informado';
+        return `${item.label} — ${item.nome} (${priceText})`;
+      });
+      const header = `Combo com ${selected.length} itens`;
+      const text = [header, ...lines].join('\n');
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text)
+          .then(() => {
+            if(window.showToast){
+              showToast('Resumo copiado para a área de transferência.', 'success');
+            }else{
+              alert('Resumo copiado.');
+            }
+          })
+          .catch(() => alert('Não foi possível copiar o resumo.'));
+      }else{
+        alert('Clipboard não disponível neste navegador.');
+      }
+    });
+
+    updateSummary();
+  }
+
+  async function loadItemDetail(origem, itemId, ufItem, triggerBtn){
+    try{
+      if(triggerBtn){ triggerBtn.disabled = true; }
+      const detail = await fetchInsumoDetail(origem, itemId, ufItem);
+      renderItemDetail(detail, origem, itemId, ufItem);
       modal.show();
     } catch(err){
-      alert(err.message);
+      alert(err.message || 'Falha ao carregar detalhes do item.');
     } finally {
-      btn.disabled = false;
+      if(triggerBtn){ triggerBtn.disabled = false; }
     }
+  }
+
+  tbody.addEventListener('click', function(evt){
+    const btn = evt.target.closest('.visualizar-item');
+    if(!btn){ return; }
+    const origem = btn.getAttribute('data-origem');
+    const itemId = Number(btn.getAttribute('data-id'));
+    const ufItem = btn.getAttribute('data-uf') || '';
+    if(!origem || !itemId){ return; }
+    loadItemDetail(origem, itemId, ufItem, btn);
+  });
+
+  modalBody.addEventListener('click', function(evt){
+    const deepDiveBtn = evt.target.closest('[data-action="open-deep-dive"]');
+    if(deepDiveBtn){
+      evt.preventDefault();
+      if(!currentDetail){
+        alert('Carregue um item para analisar.');
+        return;
+      }
+      if(deepDiveModalEl && window.bootstrap && bootstrap.Modal){
+        deepDiveModalInstance = bootstrap.Modal.getOrCreateInstance(deepDiveModalEl);
+      }
+      renderDeepDiveModal(currentDetail);
+      deepDiveModalInstance?.show();
+      return;
+    }
+    const btn = evt.target.closest('.visualizar-item');
+    if(!btn){ return; }
+    const origem = btn.getAttribute('data-origem');
+    const itemId = Number(btn.getAttribute('data-id'));
+    const ufItem = btn.getAttribute('data-uf') || '';
+    if(!origem || !itemId){ return; }
+    loadItemDetail(origem, itemId, ufItem, btn);
   });
 })();
 </script>
