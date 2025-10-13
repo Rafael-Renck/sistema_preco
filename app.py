@@ -2609,7 +2609,7 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
                 continue
             rows.append({
                 'codigo': cod,
-                'descricao': (row.get('descricao') or '').strip()[:500],
+                'descricao': (row.get('descricao') or '').strip()[:255],
                 'valor_total': val,
             })
         codes = [row['codigo'] for row in rows]
