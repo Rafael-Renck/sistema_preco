@@ -2601,7 +2601,17 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
     _update_teto_job(job_id, status='running', started_at=datetime.utcnow(), message='Processando registros…')
     try:
         rows_raw = preview_payload.get('rows') or []
-        rows = [row for row in rows_raw if row.get('codigo') and row.get('valor_total') is not None]
+        rows = []
+        for row in rows_raw:
+            cod = (row.get('codigo') or '').strip()
+            val = row.get('valor_total')
+            if not cod or val is None:
+                continue
+            rows.append({
+                'codigo': cod,
+                'descricao': (row.get('descricao') or '').strip()[:500],
+                'valor_total': val,
+            })
         codes = [row['codigo'] for row in rows]
         with app.app_context():
             existing: set[str] = set()
@@ -2612,11 +2622,7 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
                 for start in range(0, len(rows), chunk_size):
                     chunk = rows[start:start + chunk_size]
                     insert_rows = [
-                        {
-                            'codigo': row['codigo'],
-                            'descricao': row['descricao'],
-                            'valor_total': row['valor_total'],
-                        }
+                        row
                         for row in chunk
                     ]
                     stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
