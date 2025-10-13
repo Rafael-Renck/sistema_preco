@@ -2608,22 +2608,25 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
             if codes:
                 existing = {c for (c,) in db.session.query(CbhpmTeto.codigo).filter(CbhpmTeto.codigo.in_(codes)).all()}
             if rows:
-                insert_rows = [
-                    {
-                        'codigo': row['codigo'],
-                        'descricao': row['descricao'],
-                        'valor_total': row['valor_total'],
-                    }
-                    for row in rows
-                ]
-                stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
-                upsert_stmt = stmt.on_duplicate_key_update(
-                    descricao=stmt.inserted.descricao,
-                    valor_total=stmt.inserted.valor_total,
-                    updated_at=text('CURRENT_TIMESTAMP'),
-                )
-                db.session.execute(upsert_stmt)
-                db.session.commit()
+                chunk_size = 800
+                for start in range(0, len(rows), chunk_size):
+                    chunk = rows[start:start + chunk_size]
+                    insert_rows = [
+                        {
+                            'codigo': row['codigo'],
+                            'descricao': row['descricao'],
+                            'valor_total': row['valor_total'],
+                        }
+                        for row in chunk
+                    ]
+                    stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
+                    upsert_stmt = stmt.on_duplicate_key_update(
+                        descricao=stmt.inserted.descricao,
+                        valor_total=stmt.inserted.valor_total,
+                        updated_at=text('CURRENT_TIMESTAMP'),
+                    )
+                    db.session.execute(upsert_stmt)
+                    db.session.commit()
             db.session.remove()
             inserted = len([code for code in codes if code not in existing])
             updated = len(codes) - inserted
