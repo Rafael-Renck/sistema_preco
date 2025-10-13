@@ -144,7 +144,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     place(line_chars, 200, 8, 'CX10')
     place(line_chars, 209, 6, '000010')               # qtd_unidade
     place(line_chars, 230, 24, 'FABRICANTE TESTE')
-    place(line_chars, 280, 20, 'ANV1234567890123456')
+    place(line_chars, 250, 35, 'ANV1234567890123456')
     place(line_chars, 301, 8, '31122026')
     place(line_chars, 310, 16, '580076#NN7827608')
     place(line_chars, 330, 20, 'ATIVO')
@@ -177,7 +177,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
             {"name": "unidade_comercial", "start": 200, "length": 8},
             {"name": "qtd_unidade", "start": 209, "length": 6, "type": "int"},
             {"name": "fabricante", "start": 230, "length": 24},
-            {"name": "registro_anvisa", "start": 280, "length": 20},
+            {"name": "registro_anvisa", "start": 250, "length": 35},
             {"name": "validade_anvisa", "start": 301, "length": 8, "type": "date", "date_fmt": "DDMMYYYY"},
             {"name": "ean", "start": 310, "length": 16, "strip": ["+"]},
             {"name": "situacao", "start": 330, "length": 20},
@@ -247,7 +247,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     place(line_chars_sn, 200, 8, 'UNID')
     place(line_chars_sn, 209, 6, '000001')
     place(line_chars_sn, 230, 24, 'FABRICANTE EAN')
-    place(line_chars_sn, 280, 20, 'EAN1234567890123')
+    place(line_chars_sn, 250, 35, 'EAN1234567890123')
     place(line_chars_sn, 301, 8, '01012027')
     place(line_chars_sn, 310, 16, '7896004710471+SN')
     place(line_chars_sn, 326, 11, '+SN90434668')
@@ -276,3 +276,89 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     assert item_sn.tuss_prefix == 'SN'
     assert item_sn.tuss_numero == '90434668'
     assert item_sn.ean == '7896004710471'
+
+    # Caso com ANVISA numérico estendido no campo dedicado.
+    line_chars_anvisa = [' '] * 700
+    place(line_chars_anvisa, 1, 10, '7777777777')
+    place(line_chars_anvisa, 16, 10, 'ALTANV0001')
+    place(line_chars_anvisa, 30, 92, 'Produto com ANVISA estendida')
+    place(line_chars_anvisa, 123, 8, '02022026')
+    place(line_chars_anvisa, 131, 1, '1')
+    place(line_chars_anvisa, 132, 12, '000000030000')
+    place(line_chars_anvisa, 144, 12, '000000040000')
+    place(line_chars_anvisa, 156, 12, '000000050000')
+    place(line_chars_anvisa, 168, 12, '000000060000')
+    place(line_chars_anvisa, 200, 8, 'CX01')
+    place(line_chars_anvisa, 209, 6, '000010')
+    place(line_chars_anvisa, 230, 24, 'FABRICANTE ANV')
+    place(line_chars_anvisa, 250, 35, '00054400685000000000001023510590025')
+    place(line_chars_anvisa, 301, 8, '31072029')
+    place(line_chars_anvisa, 310, 16, '7896004817477-NS')
+    place(line_chars_anvisa, 326, 11, '90328949   ')
+    place(line_chars_anvisa, 350, 200, 'NN90328949')
+    fixed_line_anvisa = ''.join(line_chars_anvisa).rstrip()
+
+    stage_anvisa = app_ctx.SimproFixedStage(
+        arquivo='SIMPRO_ANVISA',
+        linha_num=1,
+        linha=fixed_line_anvisa,
+    )
+    session.add(stage_anvisa)
+    session.commit()
+
+    materialized_anvisa = app_ctx._materialize_simpro_items(
+        arquivo_label='SIMPRO_ANVISA',
+        map_config=map_config,
+        versao='2026-02',
+        uf_default='MG',
+    )
+
+    assert materialized_anvisa == 1
+    item_anvisa = session.get(app_ctx.SimproItemNormalized, stage_anvisa.id)
+    assert item_anvisa is not None
+    assert item_anvisa.anvisa == '1023510590025'
+    assert len(item_anvisa.anvisa) == 13
+
+    # Mapa com ANVISA truncado (janela deslocada) deve ser corrigido via fallback.
+    map_config_trunc = {
+        **map_config,
+        "columns": [
+            {"name": "codigo_interno", "start": 1, "length": 10},
+            {"name": "codigo_alternativo", "start": 16, "length": 10},
+            {"name": "descricao_completa", "start": 30, "length": 92},
+            {"name": "data_vigencia", "start": 123, "length": 8, "type": "date", "date_fmt": "DDMMYYYY"},
+            {"name": "tipo_registro", "start": 131, "length": 1},
+            {"name": "preco_pf", "start": 132, "length": 12, "type": "decimal"},
+            {"name": "preco_pmc", "start": 144, "length": 12, "type": "decimal"},
+            {"name": "preco_ph", "start": 156, "length": 12, "type": "decimal"},
+            {"name": "preco_outro", "start": 168, "length": 12, "type": "decimal"},
+            {"name": "unidade_comercial", "start": 200, "length": 8},
+            {"name": "qtd_unidade", "start": 209, "length": 6, "type": "int"},
+            {"name": "fabricante", "start": 230, "length": 24},
+            {"name": "registro_anvisa", "start": 296, "length": 20},
+            {"name": "validade_anvisa", "start": 301, "length": 8, "type": "date", "date_fmt": "DDMMYYYY"},
+            {"name": "ean", "start": 310, "length": 16, "strip": ["+"]},
+            {"name": "situacao", "start": 330, "length": 20},
+            {"name": "sufixo_livre", "start": 350, "length": 200, "rtrim": True},
+        ],
+    }
+
+    stage_anvisa_bad = app_ctx.SimproFixedStage(
+        arquivo='SIMPRO_ANVISA_BAD',
+        linha_num=1,
+        linha=fixed_line_anvisa,
+    )
+    session.add(stage_anvisa_bad)
+    session.commit()
+
+    materialized_anvisa_bad = app_ctx._materialize_simpro_items(
+        arquivo_label='SIMPRO_ANVISA_BAD',
+        map_config=map_config_trunc,
+        versao='2026-03',
+        uf_default='PR',
+    )
+
+    assert materialized_anvisa_bad == 1
+    item_anvisa_bad = session.get(app_ctx.SimproItemNormalized, stage_anvisa_bad.id)
+    assert item_anvisa_bad is not None
+    assert item_anvisa_bad.anvisa == '1023510590025'

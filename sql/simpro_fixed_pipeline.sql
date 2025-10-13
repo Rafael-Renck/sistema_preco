@@ -119,7 +119,7 @@ SELECT
     NULLIF(RTRIM(SUBSTRING(s.linha, 200,  8)), '')                         AS unidade,
     NULLIF(CAST(SUBSTRING(s.linha, 209,  6) AS UNSIGNED), 0)               AS qtd_unidade,
     NULLIF(RTRIM(SUBSTRING(s.linha, 230, 24)), '')                         AS fabricante,
-    NULLIF(RTRIM(SUBSTRING(s.linha, 280, 20)), '')                         AS registro_anvisa,
+    NULLIF(RTRIM(SUBSTRING(s.linha, 250, 35)), '')                         AS registro_anvisa,
     NULLIF(STR_TO_DATE(SUBSTRING(s.linha, 301, 8), '%d%m%Y'), '0000-00-00') AS validade_anvisa,
     NULLIF(TRIM(REPLACE(SUBSTRING(s.linha, 310, 16), '+', '')), '')        AS ean,
     NULLIF(RTRIM(SUBSTRING(s.linha, 330, 20)), '')                         AS situacao,

@@ -1,0 +1,339 @@
+{% extends 'base.html' %}
+{% block title %}Contratos{% endblock %}
+{% block page_title %}Contratos{% endblock %}
+{% block content %}
+
+{% set stats = namespace(total=registros|length, uco_total=0, uco_count=0, inflator_pos=0, inflator_neg=0) %}
+{% for item in registros %}
+  {% if item.valor_uco is not none %}
+    {% set stats.uco_total = stats.uco_total + (item.valor_uco|float) %}
+    {% set stats.uco_count = stats.uco_count + 1 %}
+  {% endif %}
+  {% if item.inflator_deflator %}
+    {% set infl = item.inflator_deflator.strip() %}
+    {% if infl.startswith('+') %}
+      {% set stats.inflator_pos = stats.inflator_pos + 1 %}
+    {% elif infl.startswith('-') %}
+      {% set stats.inflator_neg = stats.inflator_neg + 1 %}
+    {% endif %}
+  {% endif %}
+{% endfor %}
+{% set uco_media = (stats.uco_total / stats.uco_count) if stats.uco_count else None %}
+
+<div class="d-flex flex-column gap-4">
+  <div class="d-flex flex-wrap gap-3">
+    <div class="card flex-grow-1 min-width-220">
+      <div class="card-body">
+        <div class="mini-label text-uppercase text-muted mb-1">Contratos ativos</div>
+        <div class="fs-3 fw-bold">{{ stats.total }}</div>
+        <div class="small text-muted">Prestadores cadastrados com resumo vigente.</div>
+      </div>
+    </div>
+    <div class="card flex-grow-1 min-width-220">
+      <div class="card-body">
+        <div class="mini-label text-uppercase text-muted mb-1">UCO médio</div>
+        <div class="fs-3 fw-bold">
+          {{ uco_media|round(2)|float|brl if uco_media is not none else '—' }}
+        </div>
+        <div class="small text-muted">{{ stats.uco_count }} contrato(s) informaram valor de UCO.</div>
+      </div>
+    </div>
+    <div class="card flex-grow-1 min-width-220">
+      <div class="card-body">
+        <div class="mini-label text-uppercase text-muted mb-1">Ajustes (%/+)</div>
+        <div class="d-flex align-items-baseline gap-2">
+          <span class="badge bg-success-subtle text-success px-3 py-2">+{{ stats.inflator_pos }}</span>
+          <span class="badge bg-danger-subtle text-danger px-3 py-2">-{{ stats.inflator_neg }}</span>
+        </div>
+        <div class="small text-muted mt-1">Contratos com inflator ou deflator registrado.</div>
+      </div>
+    </div>
+  </div>
+
+  {% if erro %}
+    <div class="alert alert-danger">{{ erro }}</div>
+  {% endif %}
+  {% with messages = get_flashed_messages(with_categories=True) %}
+    {% if messages %}
+      {% for category, message in messages %}
+        <div class="alert alert-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+{% set form_data = form if form is defined and form else {
+    'prestador': '',
+    'tabela_honorarios': '',
+    'tabela_portes': '',
+    'valor_uco': '',
+    'inflator_deflator': '',
+    'filme_radiologico': '',
+    'observacoes': '',
+    'record_id': ''
+  } %}
+
+  <div class="card">
+    <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
+      <div>
+        <h5 class="mb-1">Cadastro de contratos</h5>
+        <p class="mb-0 text-muted">Clique em “Novo contrato” ou utilize as ações da tabela para editar registros existentes.</p>
+      </div>
+      <button type="button" class="btn btn-primary" id="btnNovoContrato" data-bs-toggle="modal" data-bs-target="#contratoModal">
+        <i class="bi bi-plus-lg me-1"></i>Novo contrato
+      </button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header d-flex flex-wrap align-items-center gap-2 justify-content-between">
+      <div>
+        <h5 class="mb-0">Contratos cadastrados</h5>
+        <small class="text-muted">Use a busca rápida para filtrar por prestador, tabela ou palavras-chave.</small>
+      </div>
+      <div class="d-flex flex-wrap gap-2">
+        <div class="input-group input-group-sm" style="min-width:240px;">
+          <span class="input-group-text"><i class="bi bi-search"></i></span>
+          <input id="contratosSearch" class="form-control" placeholder="Buscar por prestador, tabela ou observação">
+        </div>
+        <select id="contratosAjuste" class="form-select form-select-sm" style="width:auto;">
+          <option value="">Todos os ajustes</option>
+          <option value="positivo">Com inflator (+)</option>
+          <option value="negativo">Com deflator (-)</option>
+          <option value="neutro">Sem ajuste indicado</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0" id="contratosTabela">
+        <thead class="table-light">
+          <tr>
+            <th class="text-nowrap">Prestador</th>
+            <th>Tabela Honorários</th>
+            <th>Tabela Portes</th>
+            <th class="text-end">Valor UCO</th>
+            <th class="text-center">Ajuste</th>
+            <th>Filme Radiológico</th>
+            <th style="width:22%">Observações</th>
+            <th class="text-end">Ações</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for resumo in registros %}
+            {% set infl_padrao = resumo.inflator_deflator or '' %}
+            {% set infl_trim = infl_padrao.strip() %}
+            {% set infl_class = 'badge bg-secondary-subtle text-muted' %}
+            {% if infl_trim.startswith('+') %}
+              {% set infl_class = 'badge bg-success-subtle text-success' %}
+            {% elif infl_trim.startswith('-') %}
+              {% set infl_class = 'badge bg-danger-subtle text-danger' %}
+            {% endif %}
+            <tr data-prestador="{{ resumo.prestador|lower }}" data-honorarios="{{ (resumo.tabela_honorarios or '')|lower }}" data-observacoes="{{ (resumo.observacoes or '')|lower }}" data-ajuste="{{ 'positivo' if infl_trim.startswith('+') else ('negativo' if infl_trim.startswith('-') else 'neutro') }}">
+              <td>
+                <strong>{{ resumo.prestador }}</strong>
+                {% if resumo.observacoes %}
+                  <div class="small text-muted">{{ resumo.observacoes[:50] }}{% if resumo.observacoes|length > 50 %}...{% endif %}</div>
+                {% endif %}
+              </td>
+              <td>{{ resumo.tabela_honorarios or '—' }}</td>
+              <td>{{ resumo.tabela_portes or '—' }}</td>
+              <td class="text-end">{{ resumo.valor_uco|brl if resumo.valor_uco is not none else '—' }}</td>
+              <td class="text-center">
+                {% if infl_trim %}
+                  <span class="{{ infl_class }}">{{ infl_trim }}</span>
+                {% else %}
+                  <span class="badge bg-light text-muted">—</span>
+                {% endif %}
+              </td>
+              <td>{{ resumo.filme_radiologico or '—' }}</td>
+              <td>
+                {% if resumo.observacoes %}
+                  <span class="text-muted">{{ resumo.observacoes }}</span>
+                {% else %}
+                  <span class="text-muted">—</span>
+                {% endif %}
+              </td>
+              <td class="text-end">
+                <div class="btn-group btn-group-sm" role="group">
+                  <button type="button"
+                          class="btn btn-outline-secondary js-edit-contrato"
+                          title="Editar"
+                          data-id="{{ resumo.id }}"
+                          data-prestador="{{ resumo.prestador|e }}"
+                          data-honorarios="{{ (resumo.tabela_honorarios or '')|e }}"
+                          data-portes="{{ (resumo.tabela_portes or '')|e }}"
+                          data-uco="{{ (resumo.valor_uco if resumo.valor_uco is not none else '')|e }}"
+                          data-inflator="{{ (resumo.inflator_deflator or '')|e }}"
+                          data-filme="{{ (resumo.filme_radiologico or '')|e }}"
+                          data-observacoes="{{ (resumo.observacoes or '')|e }}">
+                    <i class="bi bi-pencil"></i>
+                  </button>
+                  <form method="post" action="{{ url_for('contratos_resumo_excluir', cid=resumo.id) }}" onsubmit="return confirm('Confirma remover o contrato de {{ resumo.prestador }}?');">
+                    <button class="btn btn-outline-danger" type="submit" title="Excluir">
+                      <i class="bi bi-trash"></i>
+                    </button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="text-center text-muted py-4">Nenhum contrato cadastrado até o momento.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de cadastro/edição -->
+<div class="modal fade" id="contratoModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <form method="post" class="modal-content" id="contratoModalForm">
+      <div class="modal-header">
+        <h5 class="modal-title" id="contratoModalLabel">Novo contrato</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" name="record_id" id="contratoRecordId" value="">
+        <div class="row g-3">
+          <div class="col-12 col-lg-6">
+            <label class="form-label">Prestador <span class="text-danger">*</span></label>
+            <input class="form-control" name="prestador" id="contratoPrestador" required>
+          </div>
+          <div class="col-12 col-lg-6">
+            <label class="form-label">Tabela de Honorários</label>
+            <input class="form-control" name="tabela_honorarios" id="contratoHonorarios" placeholder="Ex.: CBHPM 2025">
+          </div>
+          <div class="col-12 col-lg-6">
+            <label class="form-label">Tabela de Portes</label>
+            <input class="form-control" name="tabela_portes" id="contratoPortes" placeholder="Ex.: Portes Regional">
+          </div>
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Valor UCO (R$)</label>
+            <input class="form-control" name="valor_uco" id="contratoUco" placeholder="0,55">
+          </div>
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Inflator/Deflator (%)</label>
+            <input class="form-control" name="inflator_deflator" id="contratoInflator" placeholder="+10%">
+          </div>
+          <div class="col-12 col-lg-6">
+            <label class="form-label">Filme Radiológico</label>
+            <input class="form-control" name="filme_radiologico" id="contratoFilme" placeholder="Incluso / R$ 12,00">
+          </div>
+          <div class="col-12">
+            <label class="form-label">Observações</label>
+            <textarea class="form-control" name="observacoes" id="contratoObservacoes" rows="3" placeholder="Cláusulas especiais, reajustes, vigência..."></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="contratoSubmitBtn">
+          <i class="bi bi-save me-1"></i>Salvar contrato
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const searchInput = document.getElementById('contratosSearch');
+  const ajusteSelect = document.getElementById('contratosAjuste');
+  const tableRows = Array.from(document.querySelectorAll('#contratosTabela tbody tr'));
+  const modalData = {{ modal_prefill|tojson|safe }};
+  const modalShouldOpen = {{ 'true' if modal_open else 'false' }};
+  const modalElement = document.getElementById('contratoModal');
+  const contratoModal = (window.bootstrap && modalElement) ? new bootstrap.Modal(modalElement) : null;
+  const contratoForm = modalElement?.querySelector('#contratoModalForm');
+  const contratoLabel = document.getElementById('contratoModalLabel');
+  const contratoSubmitBtn = document.getElementById('contratoSubmitBtn');
+  const fieldMap = contratoForm ? {
+    record_id: contratoForm.querySelector('#contratoRecordId'),
+    prestador: contratoForm.querySelector('#contratoPrestador'),
+    tabela_honorarios: contratoForm.querySelector('#contratoHonorarios'),
+    tabela_portes: contratoForm.querySelector('#contratoPortes'),
+    valor_uco: contratoForm.querySelector('#contratoUco'),
+    inflator_deflator: contratoForm.querySelector('#contratoInflator'),
+    filme_radiologico: contratoForm.querySelector('#contratoFilme'),
+    observacoes: contratoForm.querySelector('#contratoObservacoes'),
+  } : {};
+
+  function applyFilters(){
+    const term = (searchInput?.value || '').trim().toLowerCase();
+    const ajuste = ajusteSelect?.value || '';
+
+    tableRows.forEach(row => {
+      let visible = true;
+      if(term){
+        const composite = [
+          row.dataset.prestador || '',
+          row.dataset.honorarios || '',
+          row.dataset.observacoes || ''
+        ].join(' ');
+        visible = composite.includes(term);
+      }
+      if(visible && ajuste){
+        visible = (row.dataset.ajuste === ajuste);
+      }
+      row.style.display = visible ? '' : 'none';
+    });
+  }
+
+  searchInput?.addEventListener('input', () => {
+    window.clearTimeout(searchInput._debounce);
+    searchInput._debounce = window.setTimeout(applyFilters, 150);
+  });
+  ajusteSelect?.addEventListener('change', applyFilters);
+
+  function fillModal(data){
+    if(!contratoForm) return;
+    const payload = data || {};
+    fieldMap.record_id.value = payload.record_id || '';
+    fieldMap.prestador.value = payload.prestador || '';
+    fieldMap.tabela_honorarios.value = payload.tabela_honorarios || '';
+    fieldMap.tabela_portes.value = payload.tabela_portes || '';
+    fieldMap.valor_uco.value = payload.valor_uco || '';
+    fieldMap.inflator_deflator.value = payload.inflator_deflator || '';
+    fieldMap.filme_radiologico.value = payload.filme_radiologico || '';
+    fieldMap.observacoes.value = payload.observacoes || '';
+    const isEdit = !!payload.record_id;
+    if(contratoLabel){
+      contratoLabel.textContent = isEdit ? 'Editar contrato' : 'Novo contrato';
+    }
+    if(contratoSubmitBtn){
+      contratoSubmitBtn.innerHTML = `<i class="bi bi-save me-1"></i>${isEdit ? 'Atualizar contrato' : 'Salvar contrato'}`;
+    }
+  }
+
+  document.getElementById('btnNovoContrato')?.addEventListener('click', () => {
+    fillModal({});
+  });
+
+  document.querySelectorAll('.js-edit-contrato').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const data = {
+        record_id: btn.dataset.id || '',
+        prestador: btn.dataset.prestador || '',
+        tabela_honorarios: btn.dataset.honorarios || '',
+        tabela_portes: btn.dataset.portes || '',
+        valor_uco: btn.dataset.uco || '',
+        inflator_deflator: btn.dataset.inflator || '',
+        filme_radiologico: btn.dataset.filme || '',
+        observacoes: btn.dataset.observacoes || '',
+      };
+      fillModal(data);
+      contratoModal?.show();
+    });
+  });
+
+  if(contratoModal && (modalShouldOpen || (modalData && (modalData.record_id || modalData.prestador || modalData.observacoes || modalData.valor_uco || modalData.inflator_deflator || modalData.filme_radiologico)))){
+    fillModal(modalData || {});
+    contratoModal.show();
+  }
+});
+</script>
+{% endblock %}

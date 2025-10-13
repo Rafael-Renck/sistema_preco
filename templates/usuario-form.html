@@ -14,12 +14,18 @@
   {% set perfil_val = form_data.get('perfil') if form_data.get('perfil') is not none else (usuario.perfil if usuario else '') %}
   {% if form is defined %}
     {% set acesso_insumos_val = 1 if form.get('acesso_insumos') else 0 %}
+    {% set acesso_consulta_val = 1 if form.get('acesso_consulta') else 0 %}
+    {% set acesso_contratos_val = 1 if form.get('acesso_contratos') else 0 %}
     {% set acesso_tuss_val = 1 if form.get('acesso_tuss_rol') else 0 %}
   {% elif usuario %}
     {% set acesso_insumos_val = 1 if usuario.acesso_insumos else 0 %}
+    {% set acesso_consulta_val = 1 if usuario.acesso_consulta else 0 %}
+    {% set acesso_contratos_val = 1 if usuario.acesso_contratos else 0 %}
     {% set acesso_tuss_val = 1 if usuario.acesso_tuss_rol else 0 %}
   {% else %}
     {% set acesso_insumos_val = 1 %}
+    {% set acesso_consulta_val = 1 %}
+    {% set acesso_contratos_val = 1 %}
     {% set acesso_tuss_val = 1 %}
   {% endif %}
   {% set selected_operadoras = [] %}
@@ -92,6 +98,18 @@
             <input class="form-check-input" type="checkbox" id="acessoInsumos" name="acesso_insumos" value="1" {% if acesso_insumos_val %}checked{% endif %}>
             <label class="form-check-label" for="acessoInsumos">
               Simpro &amp; Brasíndice
+            </label>
+          </div>
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="acessoConsulta" name="acesso_consulta" value="1" {% if acesso_consulta_val %}checked{% endif %}>
+            <label class="form-check-label" for="acessoConsulta">
+              Consulta &amp; Comparar
+            </label>
+          </div>
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="acessoContratos" name="acesso_contratos" value="1" {% if acesso_contratos_val %}checked{% endif %}>
+            <label class="form-check-label" for="acessoContratos">
+              Contratos
             </label>
           </div>
           <div class="form-check mt-2">

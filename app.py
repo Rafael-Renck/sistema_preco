@@ -270,6 +270,8 @@ def inject_session():
         "session_operadora_nomes": session.get('operadora_nomes') or [],
         "session_operadora_ids": session.get('operadora_ids') or [],
         "session_feature_insumos": (session.get('feature_insumos') if session.get('feature_insumos') is not None else (session.get('perfil') == 'adm')),
+        "session_feature_consulta": (session.get('feature_consulta') if session.get('feature_consulta') is not None else (session.get('perfil') == 'adm')),
+        "session_feature_contratos": (session.get('feature_contratos') if session.get('feature_contratos') is not None else (session.get('perfil') in {'adm', 'adm de contrato', 'operadora'})),
         "session_feature_tuss_rol": (session.get('feature_tuss_rol') if session.get('feature_tuss_rol') is not None else (session.get('perfil') == 'adm')),
         "security_password_min_length": PASSWORD_MIN_LENGTH,
         "security_password_history_size": PASSWORD_HISTORY_SIZE,
@@ -293,6 +295,8 @@ class Usuario(db.Model):
         backref=db.backref('usuarios', lazy='dynamic')
     )
     acesso_insumos = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
+    acesso_consulta = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
+    acesso_contratos = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
     acesso_tuss_rol = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
     must_reset_senha = db.Column(db.Boolean, nullable=False, default=True, server_default=text('1'))
     senha_atualizada_em = db.Column(db.DateTime, nullable=True)
@@ -313,6 +317,30 @@ class UsuarioSenhaHistorico(db.Model):
     usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id', ondelete='CASCADE'), nullable=False, index=True)
     senha_hash = db.Column(db.String(255), nullable=False)
     criada_em = db.Column(db.DateTime, nullable=False, default=_now_utc)
+
+
+class ContractSummary(db.Model):
+    __tablename__ = 'contratos_resumo'
+
+    id = db.Column(db.Integer, primary_key=True)
+    prestador = db.Column(db.String(255), nullable=False)
+    tabela_honorarios = db.Column(db.String(255), nullable=True)
+    tabela_portes = db.Column(db.String(255), nullable=True)
+    valor_uco = db.Column(db.Numeric(12, 4), nullable=True)
+    inflator_deflator = db.Column(db.String(120), nullable=True)
+    filme_radiologico = db.Column(db.String(120), nullable=True)
+    observacoes = db.Column(db.Text, nullable=True)
+    created_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+    updated_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
 
 
 class AuditLog(db.Model):
@@ -930,6 +958,8 @@ _TERNARY_CONCAT_RE = re.compile(
     re.IGNORECASE,
 )
 _TUSS_INLINE_RE = re.compile(r'(?:[#\-\+\s]?)([NS][A-Z])\s*([0-9]{6,12})', re.IGNORECASE)
+_ANVISA_DIGITS_RE = re.compile(r'(\d{13,})')
+_ANVISA_INLINE_RE = re.compile(r'[A-Z]{3,}\s{2,}(\d{13,})')
 
 
 def _extract_tuss_parts(text: str | None) -> tuple[str, str, int, int] | None:
@@ -1069,12 +1099,18 @@ def _enrich_tuss_from_ean(record: dict[str, object | None]) -> None:
 
 
 def _ensure_tuss_from_line(record: dict[str, object | None], line: str) -> None:
-    if record.get('tuss_numero'):
-        return
     extracted = _extract_tuss_parts(line)
     if not extracted:
         return
+
     prefix, numero, _, _ = extracted
+    existing_raw = record.get('tuss_numero')
+    existing_digits = ''.join(ch for ch in str(existing_raw).strip() if ch.isdigit()) if existing_raw else ''
+    if existing_digits and len(existing_digits) >= len(numero):
+        if not record.get('tuss_prefix'):
+            record['tuss_prefix'] = prefix
+        return
+
     if not record.get('tuss_prefix'):
         record['tuss_prefix'] = prefix
     record['tuss_numero'] = numero
@@ -1095,6 +1131,106 @@ def _ensure_tuss_field(record: dict[str, object | None]) -> None:
         record['tuss'] = f'{prefix}{numero}'
 
 
+def _normalize_anvisa_field(record: dict[str, object | None]) -> None:
+    source_key = 'anvisa'
+    raw = record.get(source_key)
+    if raw is None:
+        source_key = 'registro_anvisa'
+        raw = record.get(source_key)
+        if raw is None:
+            return
+
+    text = str(raw).strip()
+    if not text:
+        record[source_key] = None
+        record['anvisa'] = None
+        return
+
+    stripped = text.lstrip()
+    if stripped and stripped[0].isalpha():
+        record[source_key] = text
+        record['anvisa'] = text
+        return
+
+    matches = _ANVISA_DIGITS_RE.findall(text)
+    if matches:
+        candidate = max(matches, key=len)
+        normalized = (candidate[-13:] if len(candidate) > 13 else candidate) or None
+        record[source_key] = normalized
+        record['anvisa'] = normalized
+        return
+
+    digit_tokens = [token for token in text.split() if token.isdigit() and len(token) >= 13]
+    if digit_tokens:
+        candidate = max(digit_tokens, key=len)
+        normalized = candidate[-13:] if len(candidate) > 13 else candidate
+        record[source_key] = normalized
+        record['anvisa'] = normalized
+        return
+
+    if ' ' not in text and not re.search(r'[A-Za-z]', text):
+        compact = ''.join(ch for ch in text if ch.isdigit())
+        if compact:
+            normalized = compact[-13:] if len(compact) > 13 else compact
+            record[source_key] = normalized
+            record['anvisa'] = normalized
+            return
+
+    compact = ''.join(ch for ch in text if ch.isdigit())
+    if len(compact) >= 13:
+        normalized = compact[-13:]
+        record[source_key] = normalized
+        record['anvisa'] = normalized
+        return
+
+    record[source_key] = text
+    record['anvisa'] = text
+
+
+def _ensure_anvisa_from_line(record: dict[str, object | None], line: str) -> None:
+    current_raw = record.get('anvisa') or record.get('registro_anvisa')
+    current_text = str(current_raw).strip() if current_raw is not None else ''
+    if current_text and any(ch.isalpha() for ch in current_text):
+        return
+
+    current_digits = ''.join(ch for ch in current_text if ch.isdigit()) if current_text else ''
+
+    preferred: str | None = None
+    inline_match = _ANVISA_INLINE_RE.search(line)
+    if inline_match:
+        digits = ''.join(ch for ch in inline_match.group(1) if ch.isdigit())
+        if 13 <= len(digits) <= 40:
+            preferred = digits
+
+    candidates: list[tuple[int, str]] = []
+    if preferred is None:
+        for match in _ANVISA_DIGITS_RE.finditer(line):
+            digits = ''.join(ch for ch in match.group(0) if ch.isdigit())
+            length = len(digits)
+            if length < 13 or length > 40:
+                continue
+            following = line[match.end():match.end() + 1]
+            if following in {'-', '#', '+'}:
+                continue
+            candidates.append((match.start(), digits))
+
+    if preferred is None and candidates:
+        if current_digits:
+            for _, digits in candidates:
+                if len(digits) > len(current_digits) and digits.endswith(current_digits):
+                    preferred = digits
+                    break
+        if preferred is None:
+            candidates.sort(key=lambda item: item[0])
+            preferred = candidates[-1][1]
+
+    if preferred:
+        normalized = preferred[-13:] if len(preferred) > 13 else preferred
+        if not normalized:
+            return
+        if normalized != current_digits or not record.get('anvisa'):
+            record['registro_anvisa'] = normalized
+            record['anvisa'] = normalized
 def _format_tuss_display(value: str | None, numero: str | None = None) -> str | None:
     numero_text = ''.join(ch for ch in str(numero).strip() if ch.isdigit()) if numero is not None else ''
     if numero_text:
@@ -1681,6 +1817,8 @@ def _materialize_simpro_items(
         _enrich_tuss_from_ean(record)
         _ensure_tuss_from_line(record, line)
         _ensure_tuss_field(record)
+        _normalize_anvisa_field(record)
+        _ensure_anvisa_from_line(record, line)
 
         payload = {
             'id': stage.id,
@@ -1699,6 +1837,8 @@ def _materialize_simpro_items(
     db.session.bulk_insert_mappings(SimproItemNormalized, parsed_rows)
     db.session.commit()
     return len(parsed_rows)
+
+
 def _stage_bras_delimited(
     *,
     file_path: Path,
@@ -4202,6 +4342,8 @@ def login():
                 session['operadora_nomes'] = nomes
                 session['operadora_nome'] = ', '.join(nomes) if nomes else None
                 session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+                session['feature_consulta'] = bool(usuario.acesso_consulta) or (usuario.perfil == 'adm')
+                session['feature_contratos'] = bool(getattr(usuario, 'acesso_contratos', True)) or (usuario.perfil in {'adm', 'adm de contrato', 'operadora'})
                 session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
                 session['login_time'] = agora.isoformat()
                 session['session_nonce'] = uuid4().hex
@@ -4356,6 +4498,7 @@ def alterar_senha():
 
 @app.route('/consulta-comparar')
 @login_required
+@feature_required('consulta')
 def consulta_comparar():
     restore_cbhpm_payload = None
     history_id = request.args.get('sim_hist')
@@ -4589,6 +4732,27 @@ def _compute_simulacao_cbhpm(data):
         via_pct_map['__default__'] = Decimal('100')
     applied_via_map: dict[str, Decimal] = {}
 
+    acomodacao_map_raw = data.get('acomodacao_map')
+    acomodacao_map: dict[str, str] = {}
+    if isinstance(acomodacao_map_raw, dict):
+        for key, value in acomodacao_map_raw.items():
+            key_norm = str(key or '').strip().upper()
+            if not key_norm:
+                continue
+            val_norm = str(value or '').strip().lower()
+            if val_norm not in {'apartamento', 'enfermaria'}:
+                continue
+            acomodacao_map[key_norm] = 'apartamento' if val_norm == 'apartamento' else 'enfermaria'
+
+    def _resolve_acomodacao(code_key: str | None) -> str:
+        key_norm = str(code_key or '').strip().upper()
+        if key_norm and key_norm in acomodacao_map:
+            return acomodacao_map[key_norm]
+        default_val = acomodacao_map.get('__DEFAULT__')
+        if default_val == 'apartamento':
+            return 'apartamento'
+        return 'enfermaria'
+
     def apply_via_entrada(breakdown: dict | None, code_key: str | None):
         if not breakdown:
             return breakdown
@@ -4615,10 +4779,86 @@ def _compute_simulacao_cbhpm(data):
                 reduced_porte = total_porte_original
         breakdown['total_porte'] = reduced_porte
 
+        aux_scaled_total = None
+        aux_details = breakdown.get('auxiliares_detalhe')
+        if isinstance(aux_details, list) and aux_details:
+            new_details: list[dict] = []
+            running_total = Decimal('0')
+            for entry in aux_details:
+                val = _as_decimal(entry.get('valor'))
+                if val is None:
+                    new_details.append(entry)
+                    continue
+                try:
+                    scaled_val = (val * factor).quantize(quantize_money, rounding=ROUND_HALF_UP)
+                except (InvalidOperation, ValueError):
+                    scaled_val = val * factor
+                running_total += scaled_val
+                new_entry = dict(entry)
+                new_entry['valor'] = scaled_val
+                new_details.append(new_entry)
+            breakdown['auxiliares_detalhe'] = new_details
+            aux_scaled_total = running_total
+
+        if aux_scaled_total is not None:
+            breakdown['total_auxiliares'] = aux_scaled_total
+            total_aux = aux_scaled_total
+        elif total_aux is not None and factor is not None and factor != Decimal('1'):
+            try:
+                breakdown['total_auxiliares'] = (total_aux * factor).quantize(quantize_money, rounding=ROUND_HALF_UP)
+            except (InvalidOperation, ValueError):
+                breakdown['total_auxiliares'] = total_aux * factor
+            total_aux = _as_decimal(breakdown.get('total_auxiliares'))
+
         total_reduzido = _sum_decimals([reduced_porte, total_filme, total_uco, total_an, total_aux])
         breakdown['total_reduzido'] = total_reduzido
         breakdown['total_final'] = total_reduzido
         breakdown['total'] = total_reduzido
+        return breakdown
+
+    def apply_acomodacao(breakdown: dict | None, code_key: str | None):
+        if not breakdown:
+            return breakdown
+        acomodacao_value = _resolve_acomodacao(code_key)
+        breakdown['acomodacao'] = acomodacao_value
+        if acomodacao_value != 'apartamento':
+            return breakdown
+        keys_to_scale = ('total_porte', 'total_porte_an', 'total_auxiliares')
+        for key in keys_to_scale:
+            current = _as_decimal(breakdown.get(key))
+            if current is None:
+                continue
+            try:
+                breakdown[key] = (current * Decimal('2')).quantize(quantize_money, rounding=ROUND_HALF_UP)
+            except (InvalidOperation, ValueError):
+                breakdown[key] = current * Decimal('2')
+        aux_details = breakdown.get('auxiliares_detalhe')
+        if isinstance(aux_details, list):
+            new_details = []
+            for entry in aux_details:
+                val = _as_decimal(entry.get('valor'))
+                if val is None:
+                    new_details.append(entry)
+                    continue
+                try:
+                    new_val = (val * Decimal('2')).quantize(quantize_money, rounding=ROUND_HALF_UP)
+                except (InvalidOperation, ValueError):
+                    new_val = val * Decimal('2')
+                updated = dict(entry)
+                updated['valor'] = new_val
+                new_details.append(updated)
+            breakdown['auxiliares_detalhe'] = new_details
+        total_porte = _as_decimal(breakdown.get('total_porte'))
+        total_filme = _as_decimal(breakdown.get('total_filme'))
+        total_uco = _as_decimal(breakdown.get('total_uco'))
+        total_an = _as_decimal(breakdown.get('total_porte_an'))
+        total_aux = _as_decimal(breakdown.get('total_auxiliares'))
+        total_calculado = _sum_decimals([total_porte, total_filme, total_uco, total_an, total_aux])
+        for key in ('total', 'total_final', 'total_reduzido'):
+            if key in breakdown:
+                breakdown[key] = total_calculado
+        if breakdown.get('total_original') is not None:
+            breakdown['total_original'] = total_calculado
         return breakdown
 
     codigo = (data.get('codigo') or '').strip()
@@ -4658,7 +4898,6 @@ def _compute_simulacao_cbhpm(data):
     incid_in = _as_decimal(data.get('incidencias'))
     aj_porte_pct = _as_decimal(data.get('ajuste_porte_pct')) or Decimal('0')
     aj_an_pct = _as_decimal(data.get('ajuste_porte_an_pct')) or Decimal('0')
-
     if not codigo and not codigos and not dtp_items:
         return {"error": 'Informe "codigo" ou a lista "codigos".'}, 400
 
@@ -4744,6 +4983,7 @@ def _compute_simulacao_cbhpm(data):
             val = _as_decimal(value)
             return val if val is not None else d0
 
+        acomodacao_out_map: dict[str, str] = {}
         if codigos:
             for cod in codigos:
                 it_item = None
@@ -4803,6 +5043,7 @@ def _compute_simulacao_cbhpm(data):
                     rules=ruleset_dict
                 )
                 br = apply_via_entrada(br, cod)
+                br = apply_acomodacao(br, cod)
                 item_out = {k: _stringify_for_output(v) for k, v in br.items()}
                 if br.get('applied_rules'):
                     item_out['applied_rules'] = _stringify_for_output(br['applied_rules'])
@@ -4812,6 +5053,9 @@ def _compute_simulacao_cbhpm(data):
                     item_out['total_final'] = _stringify_for_output(br.get('total_final'))
                 item_out['percentual_via'] = _stringify_for_output(br.get('via_entrada_pct')) if br.get('via_entrada_pct') is not None else item_out.get('percentual_via')
                 item_out.update({'codigo': cod, 'descricao': base_i.procedimento, 'origem': 'cbhpm'})
+                code_norm = str(cod or '').strip().upper()
+                if code_norm:
+                    acomodacao_out_map[code_norm] = br.get('acomodacao') or 'enfermaria'
                 cbhpm_results.append({
                     'payload': item_out,
                     'totals': {
@@ -4944,6 +5188,7 @@ def _compute_simulacao_cbhpm(data):
                 'tabela_origem': meta.get('tabela_nome'),
                 'uf_origem': meta.get('uf'),
                 'auxiliares_detalhe': [],
+                'acomodacao': 'enfermaria',
             })
 
         sum_porte = sum(to_decimal(item.get('total_porte')) for item in itens)
@@ -4960,6 +5205,20 @@ def _compute_simulacao_cbhpm(data):
             for key, value in applied_via_map.items()
             if key != '__default__'
         }
+
+        acomodacoes_utilizadas = [
+            (entry['payload'].get('acomodacao') or 'enfermaria').lower()
+            for entry in cbhpm_results
+            if entry['payload'].get('origem') == 'cbhpm'
+        ]
+        if acomodacoes_utilizadas:
+            unique_acomodacoes = set(acomodacoes_utilizadas)
+            if len(unique_acomodacoes) == 1:
+                acomodacao_summary = unique_acomodacoes.pop()
+            else:
+                acomodacao_summary = 'misto'
+        else:
+            acomodacao_summary = None
 
         payload_agregado = {
             'itens': itens,
@@ -4981,6 +5240,8 @@ def _compute_simulacao_cbhpm(data):
             'cbhpm_rules_info': rules_meta,
             'teto_alertas': teto_alerts,
             'teto_status': 'ULTRAPASSA' if teto_alerts else 'OK',
+            'acomodacao_summary': acomodacao_summary,
+            'acomodacao_map': acomodacao_out_map,
         }
         return payload_agregado, 200
 
@@ -4991,7 +5252,9 @@ def _compute_simulacao_cbhpm(data):
         rules=ruleset_dict
     )
     breakdown = apply_via_entrada(breakdown, codigo)
+    breakdown = apply_acomodacao(breakdown, codigo)
     resp = {k: _stringify_for_output(v) for k, v in breakdown.items()}
+    resp['acomodacao'] = breakdown.get('acomodacao') or 'enfermaria'
     resp.update({
         'codigo': codigo,
         'descricao': base.procedimento,
@@ -5007,6 +5270,9 @@ def _compute_simulacao_cbhpm(data):
             for key, value in applied_via_map.items()
             if key != '__default__'
         },
+        'acomodacao_map': {
+            str(codigo).strip().upper(): resp['acomodacao']
+        } if codigo else {},
         'cbhpm_rules_info': rules_meta,
     })
 
@@ -5986,6 +6252,146 @@ def gerenciar_tabelas():
     return render_template('gerenciar-tabelas.html', tabelas=tabelas, operadoras=operadoras, UFS=BR_UFS, cbhpm_tabelas=cbhpm_tabelas)
 
 
+@app.route('/contratos-resumo', methods=['GET', 'POST'])
+@login_required
+@feature_required('contratos')
+def contratos_resumo():
+    erro = None
+    form_data: dict[str, str | None] = {}
+
+    if request.method == 'POST':
+        form = request.form or {}
+        record_id_raw = (form.get('record_id') or '').strip()
+        prestador = (form.get('prestador') or '').strip()
+        tabela_honorarios = (form.get('tabela_honorarios') or '').strip() or None
+        tabela_portes = (form.get('tabela_portes') or '').strip() or None
+        valor_uco_raw = (form.get('valor_uco') or '').strip()
+        inflator_deflator = (form.get('inflator_deflator') or '').strip() or None
+        filme_radiologico = (form.get('filme_radiologico') or '').strip() or None
+        observacoes = (form.get('observacoes') or '').strip() or None
+
+        valor_uco = None
+        if valor_uco_raw:
+            try:
+                valor_uco = _parse_money(valor_uco_raw)
+            except Exception:
+                valor_uco = None
+
+        if not prestador:
+            erro = 'Informe o prestador.'
+        else:
+            try:
+                if record_id_raw:
+                    record_id = int(record_id_raw)
+                    resumo = ContractSummary.query.get(record_id)
+                    if not resumo:
+                        erro = 'Registro não encontrado.'
+                    else:
+                        resumo.prestador = prestador
+                        resumo.tabela_honorarios = tabela_honorarios
+                        resumo.tabela_portes = tabela_portes
+                        resumo.valor_uco = valor_uco
+                        resumo.inflator_deflator = inflator_deflator
+                        resumo.filme_radiologico = filme_radiologico
+                        resumo.observacoes = observacoes
+                        db.session.commit()
+                        flash('Resumo atualizado com sucesso.', 'success')
+                        return redirect(url_for('contratos_resumo'))
+                else:
+                    resumo = ContractSummary(
+                        prestador=prestador,
+                        tabela_honorarios=tabela_honorarios,
+                        tabela_portes=tabela_portes,
+                        valor_uco=valor_uco,
+                        inflator_deflator=inflator_deflator,
+                        filme_radiologico=filme_radiologico,
+                        observacoes=observacoes,
+                    )
+                    db.session.add(resumo)
+                    db.session.commit()
+                    flash('Resumo cadastrado com sucesso.', 'success')
+                    return redirect(url_for('contratos_resumo'))
+            except ValueError:
+                erro = 'Identificador inválido.'
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.error('Erro ao salvar resumo de contrato: %s', exc)
+                erro = 'Não foi possível salvar o resumo. Tente novamente.'
+
+        form_data = {
+            'record_id': record_id_raw,
+            'prestador': prestador,
+            'tabela_honorarios': tabela_honorarios or '',
+            'tabela_portes': tabela_portes or '',
+            'valor_uco': valor_uco_raw,
+            'inflator_deflator': inflator_deflator or '',
+            'filme_radiologico': filme_radiologico or '',
+            'observacoes': observacoes or '',
+        }
+    else:
+        edit_id = request.args.get('edit')
+        if edit_id:
+            try:
+                resumo = ContractSummary.query.get(int(edit_id))
+            except (TypeError, ValueError):
+                resumo = None
+            if resumo:
+                valor_uco_display = ''
+                if resumo.valor_uco is not None:
+                    try:
+                        valor_uco_display = str(resumo.valor_uco.normalize()).replace('.', ',')
+                    except Exception:
+                        valor_uco_display = str(resumo.valor_uco)
+                form_data = {
+                    'record_id': resumo.id,
+                    'prestador': resumo.prestador,
+                    'tabela_honorarios': resumo.tabela_honorarios or '',
+                    'tabela_portes': resumo.tabela_portes or '',
+                    'valor_uco': valor_uco_display,
+                    'inflator_deflator': resumo.inflator_deflator or '',
+                    'filme_radiologico': resumo.filme_radiologico or '',
+                    'observacoes': resumo.observacoes or '',
+                }
+
+    registros = ContractSummary.query.order_by(ContractSummary.prestador.asc(), ContractSummary.id.asc()).all()
+
+    modal_prefill = {
+        'record_id': form_data.get('record_id'),
+        'prestador': form_data.get('prestador', ''),
+        'tabela_honorarios': form_data.get('tabela_honorarios', ''),
+        'tabela_portes': form_data.get('tabela_portes', ''),
+        'valor_uco': form_data.get('valor_uco', ''),
+        'inflator_deflator': form_data.get('inflator_deflator', ''),
+        'filme_radiologico': form_data.get('filme_radiologico', ''),
+        'observacoes': form_data.get('observacoes', ''),
+    }
+    modal_open = False
+    if request.method == 'POST' and (erro or form_data.get('record_id')):
+        modal_open = True
+    if request.args.get('edit') and form_data.get('record_id'):
+        modal_open = True
+
+    return render_template(
+        'contratos_resumo.html',
+        registros=registros,
+        form=form_data,
+        erro=erro,
+        modal_prefill=modal_prefill,
+        modal_open=modal_open,
+    )
+
+
+@app.route('/contratos-resumo/<int:cid>/excluir', methods=['POST'])
+@login_required
+@feature_required('contratos')
+def contratos_resumo_excluir(cid: int):
+    resumo = ContractSummary.query.get_or_404(cid)
+    db.session.delete(resumo)
+    db.session.commit()
+    flash('Resumo removido com sucesso.', 'success')
+    return redirect(url_for('contratos_resumo'))
+
+
 @app.route('/admin/tetos')
 @admin_required
 def admin_tetos():
@@ -6577,6 +6983,10 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
         try:
             with app.app_context():
                 db.create_all()
+                try:
+                    ContractSummary.__table__.create(bind=db.engine, checkfirst=True)
+                except Exception:
+                    db.session.rollback()
                 # Tentativa de migração leve para acrescentar colunas caso já exista a tabela
                 try:
                     db.session.execute(text("ALTER TABLE tabelas ADD COLUMN prestador VARCHAR(255) NULL"))
@@ -6643,6 +7053,16 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                 except Exception:
                     db.session.rollback()
                 try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN acesso_consulta TINYINT(1) NOT NULL DEFAULT 1"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE usuarios ADD COLUMN acesso_contratos TINYINT(1) NOT NULL DEFAULT 1"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
                     db.session.execute(text("ALTER TABLE usuarios ADD COLUMN acesso_tuss_rol TINYINT(1) NOT NULL DEFAULT 1"))
                     db.session.commit()
                 except Exception:
@@ -6673,7 +7093,7 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                 except Exception:
                     db.session.rollback()
                 try:
-                    db.session.execute(text("UPDATE usuarios SET acesso_insumos = COALESCE(acesso_insumos, 1), acesso_tuss_rol = COALESCE(acesso_tuss_rol, 1), must_reset_senha = COALESCE(must_reset_senha, 0), senha_atualizada_em = COALESCE(senha_atualizada_em, CURRENT_TIMESTAMP)"))
+                    db.session.execute(text("UPDATE usuarios SET acesso_insumos = COALESCE(acesso_insumos, 1), acesso_consulta = COALESCE(acesso_consulta, 1), acesso_contratos = COALESCE(acesso_contratos, 1), acesso_tuss_rol = COALESCE(acesso_tuss_rol, 1), must_reset_senha = COALESCE(must_reset_senha, 0), senha_atualizada_em = COALESCE(senha_atualizada_em, CURRENT_TIMESTAMP)"))
                     db.session.commit()
                 except Exception:
                     db.session.rollback()
@@ -6828,6 +7248,8 @@ def usuario_novo():
         if Usuario.query.filter_by(email=email).first():
             return render_template('usuario-form.html', erro='E-mail já cadastrado', modo='novo', form=request.form, operadoras=operadoras)
         acesso_insumos = bool(request.form.get('acesso_insumos'))
+        acesso_consulta = bool(request.form.get('acesso_consulta'))
+        acesso_contratos = bool(request.form.get('acesso_contratos'))
         acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
         agora = _now_utc()
         senha_hash = _hash_password(senha)
@@ -6837,6 +7259,8 @@ def usuario_novo():
             senha=senha_hash,
             perfil=perfil,
             acesso_insumos=acesso_insumos,
+            acesso_consulta=acesso_consulta,
+            acesso_contratos=acesso_contratos,
             acesso_tuss_rol=acesso_tuss_rol,
         )
         u.must_reset_senha = True
@@ -6870,6 +7294,8 @@ def usuario_editar(uid):
         perfil_novo = request.form.get('perfil') or u.perfil
         original_perfil = u.perfil
         original_insumos = u.acesso_insumos
+        original_consulta = u.acesso_consulta
+        original_contratos = getattr(u, 'acesso_contratos', True)
         original_tuss = u.acesso_tuss_rol
         original_operadoras = sorted(op.id for op in u.operadoras)
         raw_operadoras = [s.strip() for s in request.form.getlist('operadora_ids') if s and s.strip()]
@@ -6912,6 +7338,8 @@ def usuario_editar(uid):
                 operadoras=operadoras,
             )
         acesso_insumos = bool(request.form.get('acesso_insumos'))
+        acesso_consulta = bool(request.form.get('acesso_consulta'))
+        acesso_contratos = bool(request.form.get('acesso_contratos'))
         acesso_tuss_rol = bool(request.form.get('acesso_tuss_rol'))
         new_senha = (request.form.get('senha') or '').strip()
         password_changed = False
@@ -6951,6 +7379,8 @@ def usuario_editar(uid):
         u.perfil = perfil_novo
         u.operadoras = operadoras_sel
         u.acesso_insumos = acesso_insumos
+        u.acesso_consulta = acesso_consulta
+        u.acesso_contratos = acesso_contratos
         u.acesso_tuss_rol = acesso_tuss_rol
 
         try:
@@ -6966,6 +7396,8 @@ def usuario_editar(uid):
             permissions_changed = (
                 original_perfil != u.perfil
                 or original_insumos != acesso_insumos
+                or original_consulta != acesso_consulta
+                or original_contratos != acesso_contratos
                 or original_tuss != acesso_tuss_rol
                 or original_operadoras != sorted(op.id for op in u.operadoras)
             )
@@ -6979,6 +7411,10 @@ def usuario_editar(uid):
                         'perfil_depois': u.perfil,
                         'acesso_insumos_antes': original_insumos,
                         'acesso_insumos_depois': acesso_insumos,
+                        'acesso_consulta_antes': original_consulta,
+                        'acesso_consulta_depois': acesso_consulta,
+                        'acesso_contratos_antes': original_contratos,
+                        'acesso_contratos_depois': acesso_contratos,
                         'acesso_tuss_antes': original_tuss,
                         'acesso_tuss_depois': acesso_tuss_rol,
                         'operadoras_antes': original_operadoras,
@@ -7009,6 +7445,8 @@ def usuario_editar(uid):
             session['operadora_nomes'] = nomes
             session['operadora_nome'] = ', '.join(nomes) if nomes else None
             session['feature_insumos'] = acesso_insumos or (session.get('perfil') == 'adm')
+            session['feature_consulta'] = acesso_consulta or (session.get('perfil') == 'adm')
+            session['feature_contratos'] = acesso_contratos or (session.get('perfil') in {'adm', 'adm de contrato', 'operadora'})
             session['feature_tuss_rol'] = acesso_tuss_rol or (session.get('perfil') == 'adm')
             session['must_change_senha'] = bool(u.must_reset_senha)
         return redirect(url_for('gerenciar_usuarios'))

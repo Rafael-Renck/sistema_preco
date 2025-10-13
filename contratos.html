@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contratos - Price Health</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+      .modal-backdrop{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:80;padding:24px;}
+      .modal-backdrop.show{display:flex;}
+      .modal-card{background:#fff;border-radius:16px;box-shadow:0 24px 48px rgba(15,23,42,.25);max-width:720px;width:100%;display:flex;flex-direction:column;overflow:hidden;}
+      .modal-card-header{display:flex;align-items:center;justify-content:space-between;padding:20px 24px;border-bottom:1px solid #e2e8f0;}
+      .modal-card-body{padding:24px;display:flex;flex-direction:column;gap:16px;}
+      .modal-card-body .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;}
+      .modal-card-body label{display:flex;flex-direction:column;gap:6px;font-size:.95rem;color:#475569;}
+      .modal-card-body input,.modal-card-body textarea{padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;font-size:.95rem;}
+      .modal-card-footer{display:flex;justify-content:flex-end;gap:12px;padding:0 24px 24px;}
+      .modal-close{background:none;border:0;font-size:1.6rem;line-height:1;color:#64748b;cursor:pointer;}
+    </style>
+</head>
+<body>
+
+    <div class="dashboard-container">
+        <nav class="sidebar">
+            <div class="sidebar-header">
+                <h3>Banco de Preços</h3>
+            </div>
+            <ul class="menu-list">
+                <li><a href="index.html">Início</a></li>
+                <li><a href="consultar-comparar.html">Consultar e Comparar</a></li>
+                <li><a href="gerenciar-tabelas.html">Gerenciar Tabelas</a></li>
+                <li><a href="contratos.html" class="active">Contratos</a></li>
+                <li><a href="gerenciar-operadoras.html">Gerenciar Operadoras</a></li>
+                <li><a href="gerenciar-usuarios.html">Gerenciar Usuários</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content">
+            <header class="main-header">
+                <h1>Resumo de Contratos</h1>
+                <a href="login.html" class="logout-button">Sair</a>
+            </header>
+
+            <div class="content-body d-flex flex-column gap-4">
+                <section class="cards-row">
+                    <div class="card metric-card">
+                        <h3>Contratos ativos</h3>
+                        <p class="metric-number">18</p>
+                        <span class="metric-details">Prestadores com parâmetros cadastrados.</span>
+                    </div>
+                    <div class="card metric-card">
+                        <h3>UCO médio</h3>
+                        <p class="metric-number">R$ 0,54</p>
+                        <span class="metric-details">Última atualização em 12/10/2025.</span>
+                    </div>
+                    <div class="card metric-card">
+                        <h3>Ajustes</h3>
+                        <div class="metric-split">
+                            <span class="badge success">+ 7</span>
+                            <span class="badge warn">- 3</span>
+                        </div>
+                        <span class="metric-details">Inflator / deflator aplicados.</span>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-header">
+                        <div>
+                            <h2>Gestão de contratos</h2>
+                            <small>Cadastre, edite e consulte rapidamente os parâmetros acordados.</small>
+                        </div>
+                        <button type="button" class="btn-primary" id="mockNovoContrato">Novo contrato</button>
+                    </div>
+                </section>
+
+                <section class="card">
+                    <div class="card-header">
+                        <div>
+                            <h2>Contratos cadastrados</h2>
+                            <small>Pesquise por prestador, tabela ou palavra-chave.</small>
+                        </div>
+                        <div class="filters">
+                            <input type="search" placeholder="Buscar prestador ou descrição..." id="mockSearch">
+                            <select id="mockAjuste">
+                                <option value="">Todos os ajustes</option>
+                                <option value="positivo">Com inflator (+)</option>
+                                <option value="negativo">Com deflator (-)</option>
+                                <option value="neutro">Sem ajuste</option>
+                            </select>
+                        </div>
+                    </div>
+                    <table class="data-table" id="mockContracts">
+                        <thead>
+                            <tr>
+                                <th>Prestador</th>
+                                <th>Honorários</th>
+                                <th>Portes</th>
+                                <th>UCO</th>
+                                <th>Inflator</th>
+                                <th>Filme</th>
+                                <th>Observações</th>
+                                <th class="text-end">Ações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr data-ajuste="positivo">
+                                <td><strong>Hospital Murta</strong><div class="muted">Reajuste anual IPCA</div></td>
+                                <td>CBHPM 2025</td>
+                                <td>Portes 2024</td>
+                                <td>R$ 0,60</td>
+                                <td><span class="badge success">+8%</span></td>
+                                <td>Incluso</td>
+                                <td>Renovação automática em julho.</td>
+                                <td class="text-end">
+                                    <button class="btn-icon js-mock-edit"
+                                            data-id="1"
+                                            data-prestador="Hospital Murta"
+                                            data-honorarios="CBHPM 2025"
+                                            data-portes="Portes 2024"
+                                            data-uco="0,60"
+                                            data-inflator="+8%"
+                                            data-filme="Incluso"
+                                            data-observacoes="Renovação automática em julho.">✎</button>
+                                    <button class="btn-icon danger">🗑</button>
+                                </td>
+                            </tr>
+                            <tr data-ajuste="neutro">
+                                <td><strong>Clínica Alfa</strong><div class="muted">Sem reajuste programado</div></td>
+                                <td>HON 2023</td>
+                                <td>Padrão Regional</td>
+                                <td>R$ 0,52</td>
+                                <td><span class="badge neutral">—</span></td>
+                                <td>R$ 12,00</td>
+                                <td>Prevê auditoria trimestral.</td>
+                                <td class="text-end">
+                                    <button class="btn-icon js-mock-edit"
+                                            data-id="2"
+                                            data-prestador="Clínica Alfa"
+                                            data-honorarios="HON 2023"
+                                            data-portes="Padrão Regional"
+                                            data-uco="0,52"
+                                            data-inflator=""
+                                            data-filme="R$ 12,00"
+                                            data-observacoes="Prevê reajuste pelo IPCA.">✎</button>
+                                    <button class="btn-icon danger">🗑</button>
+                                </td>
+                            </tr>
+                            <tr data-ajuste="negativo">
+                                <td><strong>Centro Ortopédico Beta</strong><div class="muted">Redutor para porte anestésico</div></td>
+                                <td>TUSS 2025</td>
+                                <td>CBHPM 2018</td>
+                                <td>R$ 0,48</td>
+                                <td><span class="badge warn">-5%</span></td>
+                                <td>R$ 9,50</td>
+                                <td>Aplica coparticipação em procedimentos ambulatoriais.</td>
+                                <td class="text-end">
+                                    <button class="btn-icon js-mock-edit"
+                                            data-id="3"
+                                            data-prestador="Centro Ortopédico Beta"
+                                            data-honorarios="TUSS 2025"
+                                            data-portes="CBHPM 2018"
+                                            data-uco="0,48"
+                                            data-inflator="-5%"
+                                            data-filme="R$ 9,50"
+                                            data-observacoes="Aplica coparticipação em procedimentos ambulatoriais.">✎</button>
+                                    <button class="btn-icon danger">🗑</button>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal-backdrop" id="mockModalBackdrop">
+      <div class="modal-card">
+        <div class="modal-card-header">
+          <h3 id="mockModalTitle">Novo contrato</h3>
+          <button class="modal-close" id="mockModalClose">×</button>
+        </div>
+        <form class="modal-card-body" id="mockModalForm">
+          <input type="hidden" id="mockRecordId">
+          <div class="grid">
+            <label>
+              Prestador
+              <input type="text" id="mockPrestador" placeholder="Nome do prestador">
+            </label>
+            <label>
+              Tabela de Honorários
+              <input type="text" id="mockHonorarios" placeholder="CBHPM 2025">
+            </label>
+            <label>
+              Tabela de Portes
+              <input type="text" id="mockPortes" placeholder="Portes 2024">
+            </label>
+            <label>
+              Valor UCO (R$)
+              <input type="text" id="mockUco" placeholder="0,55">
+            </label>
+            <label>
+              Inflator/Deflator (%)
+              <input type="text" id="mockInflator" placeholder="+10%">
+            </label>
+            <label>
+              Filme Radiológico
+              <input type="text" id="mockFilme" placeholder="Incluso">
+            </label>
+          </div>
+          <label>
+            Observações
+            <textarea id="mockObservacoes" rows="3" placeholder="Cláusulas específicas"></textarea>
+          </label>
+          <div class="modal-card-footer">
+            <button type="button" class="btn-secondary" id="mockModalCancel">Cancelar</button>
+            <button type="submit" class="btn-primary">Salvar</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script>
+        const search = document.getElementById('mockSearch');
+        const ajuste = document.getElementById('mockAjuste');
+        const rows = Array.from(document.querySelectorAll('#mockContracts tbody tr'));
+
+        function applyMockFilters(){
+            const term = (search.value || '').trim().toLowerCase();
+            const selected = ajuste.value;
+            rows.forEach(row=>{
+                const text = row.innerText.toLowerCase();
+                const matchTerm = term ? text.includes(term) : true;
+                const matchAjuste = selected ? row.dataset.ajuste === selected : true;
+                row.style.display = (matchTerm && matchAjuste) ? '' : 'none';
+            });
+        }
+        search?.addEventListener('input', ()=>{ clearTimeout(search._debounce); search._debounce = setTimeout(applyMockFilters, 120); });
+        ajuste?.addEventListener('change', applyMockFilters);
+
+        const backdrop = document.getElementById('mockModalBackdrop');
+        const btnNovo = document.getElementById('mockNovoContrato');
+        const btnClose = document.getElementById('mockModalClose');
+        const btnCancel = document.getElementById('mockModalCancel');
+        const modalTitle = document.getElementById('mockModalTitle');
+        const fields = {
+            id: document.getElementById('mockRecordId'),
+            prestador: document.getElementById('mockPrestador'),
+            honorarios: document.getElementById('mockHonorarios'),
+            portes: document.getElementById('mockPortes'),
+            uco: document.getElementById('mockUco'),
+            inflator: document.getElementById('mockInflator'),
+            filme: document.getElementById('mockFilme'),
+            observacoes: document.getElementById('mockObservacoes'),
+        };
+
+        function openModal(data){
+            const payload = data || {};
+            fields.id.value = payload.id || '';
+            fields.prestador.value = payload.prestador || '';
+            fields.honorarios.value = payload.honorarios || '';
+            fields.portes.value = payload.portes || '';
+            fields.uco.value = payload.uco || '';
+            fields.inflator.value = payload.inflator || '';
+            fields.filme.value = payload.filme || '';
+            fields.observacoes.value = payload.observacoes || '';
+            modalTitle.textContent = payload.id ? 'Editar contrato' : 'Novo contrato';
+            backdrop.classList.add('show');
+        }
+
+        function closeModal(){
+            backdrop.classList.remove('show');
+        }
+
+        btnNovo?.addEventListener('click', ()=> openModal({}));
+        btnClose?.addEventListener('click', closeModal);
+        btnCancel?.addEventListener('click', closeModal);
+        backdrop?.addEventListener('click', (ev)=>{ if(ev.target === backdrop) closeModal(); });
+        document.querySelectorAll('.js-mock-edit').forEach(btn=>{
+            btn.addEventListener('click', ()=>{
+                openModal({
+                    id: btn.dataset.id,
+                    prestador: btn.dataset.prestador,
+                    honorarios: btn.dataset.honorarios,
+                    portes: btn.dataset.portes,
+                    uco: btn.dataset.uco,
+                    inflator: btn.dataset.inflator,
+                    filme: btn.dataset.filme,
+                    observacoes: btn.dataset.observacoes,
+                });
+            });
+        });
+    </script>
+</body>
+</html>

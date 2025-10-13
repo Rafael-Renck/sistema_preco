@@ -2087,6 +2087,7 @@ const _toNumber = (value)=> {
 window._cbhpmHasResult = window._cbhpmHasResult || false;
 window._cbhpmLastPayload = window._cbhpmLastPayload || null;
 window._cbhpmViaPctByCode = window._cbhpmViaPctByCode || {};
+window._cbhpmAcomodacaoByCode = window._cbhpmAcomodacaoByCode || {};
 window._cbhpmViewState = window._cbhpmViewState || { onlyExced:false, sort:'codigo' };
 window._cbhpmSavedScenarios = window._cbhpmSavedScenarios || loadSavedScenarios();
 window._cbhpmBaselineScenario = window._cbhpmBaselineScenario || null;
@@ -2112,6 +2113,28 @@ function _pruneViaPctStore(activeCodes){
   Object.keys(window._cbhpmViaPctByCode).forEach(key=>{
     if(!keep.has(key)){
       delete window._cbhpmViaPctByCode[key];
+    }
+  });
+}
+
+const _normalizeAcomodacao = (value)=> (value||'').toString().toLowerCase() === 'apartamento' ? 'apartamento' : 'enfermaria';
+function _setAcomodacaoFor(code, value){
+  const key = _normalizeCode(code);
+  if(!key) return;
+  window._cbhpmAcomodacaoByCode[key] = _normalizeAcomodacao(value);
+}
+
+function _getAcomodacaoFor(code){
+  const key = _normalizeCode(code);
+  if(!key) return 'enfermaria';
+  return window._cbhpmAcomodacaoByCode[key] || 'enfermaria';
+}
+
+function _pruneAcomodacaoStore(activeCodes){
+  const keep = new Set(activeCodes.map(_normalizeCode));
+  Object.keys(window._cbhpmAcomodacaoByCode).forEach(key=>{
+    if(!keep.has(key)){
+      delete window._cbhpmAcomodacaoByCode[key];
     }
   });
 }
@@ -2158,6 +2181,14 @@ function simularCBHPM(){
         if(!normKey || normKey === '__default__') return;
         serverMap[normKey] = String(val);
       });
+      const serverAcomodacaoRaw = (data.acomodacao_map && typeof data.acomodacao_map === 'object') ? data.acomodacao_map : {};
+      const serverAcomodacaoMap = {};
+      Object.entries(serverAcomodacaoRaw).forEach(([key,val])=>{
+        const normKey = _normalizeCode(key);
+        if(!normKey) return;
+        serverAcomodacaoMap[normKey] = _normalizeAcomodacao(val);
+      });
+      Object.entries(serverAcomodacaoMap).forEach(([key,val])=> _setAcomodacaoFor(key, val));
       Object.entries(serverMap).forEach(([key,val])=> _setViaPctFor(key, val));
 
       const tetoAlertas = Array.isArray(data.teto_alertas) ? data.teto_alertas : [];
@@ -2181,6 +2212,13 @@ function simularCBHPM(){
           : (excedeuTeto
               ? `<span class="badge bg-danger-subtle text-danger" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-exclamation-triangle me-1"></i>Ultrapassa o teto</span>`
               : `<span class="badge bg-success-subtle text-success" data-bs-toggle="tooltip" data-bs-title="${esc(statusTooltip)}"><i class="bi bi-check-circle me-1"></i>Dentro do teto</span>`);
+        const acomodacaoRaw = (data.acomodacao_summary || 'enfermaria').toString().toLowerCase();
+        let acomodacaoLabel = 'Enfermaria';
+        if(acomodacaoRaw === 'apartamento'){
+          acomodacaoLabel = 'Apartamento';
+        }else if(acomodacaoRaw === 'misto'){
+          acomodacaoLabel = 'Misto';
+        }
         let html='';
         if(tetoAlertas.length){
           const list = tetoAlertas.map(alerta=>{
@@ -2215,7 +2253,7 @@ function simularCBHPM(){
         {% if show_tuss_rol %}
         html+='<th class="text-center" style="width:110px">ROL ANS</th>';
         {% endif %}
-        html+='<th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-center">Status</th><th class="text-end">Excedente</th></tr></thead><tbody>';
+        html+='<th class="text-end">Porte</th><th class="text-end">Filme</th><th class="text-end">UCO</th><th class="text-end">Porte AN</th><th class="text-end">Auxiliares</th><th class="text-center" style="width:140px">Acomodação</th><th class="text-center" style="width:150px">Via entrada</th><th class="text-end">Total</th><th class="text-end">Teto</th><th class="text-center">Status</th><th class="text-end">Excedente</th></tr></thead><tbody>';
 
         const activeCodes = new Set();
         const tableItems = prepareItemsForView(data.itens, state);
@@ -2256,8 +2294,15 @@ function simularCBHPM(){
               _setViaPctFor(codeKey, current);
               serverMap[codeKey] = current;
             }
+            if(!(codeKey in serverAcomodacaoMap)){
+              const currentAcomodacao = _getAcomodacaoFor(codeKey);
+              serverAcomodacaoMap[codeKey] = currentAcomodacao;
+            }
           }
+          const currentAcomodacao = isDtp ? 'enfermaria' : (serverAcomodacaoMap[codeKey] || _getAcomodacaoFor(codeKey));
+          _setAcomodacaoFor(codeKey, currentAcomodacao);
           const currentPct = isDtp ? '100' : (serverMap[codeKey] || _getViaPctFor(codeKey));
+          const acomodacaoHtml = isDtp ? '-' : `<select class="form-select form-select-sm acomodacao-selector" data-code="${codeKey}"><option value="enfermaria" ${currentAcomodacao==='enfermaria'?'selected':''}>Enfermaria</option><option value="apartamento" ${currentAcomodacao==='apartamento'?'selected':''}>Apartamento</option></select>`;
           const selectHtml = isDtp ? '-' : `<select class="form-select form-select-sm via-selector" data-code="${codeKey}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')}</select>`;
           const tetoValor = (!isDtp && _hasValue(it.teto_valor_total)) ? brl(it.teto_valor_total) : '-';
           let excedenteValor = (!isDtp && _hasValue(it.teto_excedente)) ? brl(it.teto_excedente) : '-';
@@ -2286,25 +2331,28 @@ function simularCBHPM(){
              {% endif %}
              +  '<td class="text-end">'+ porte +'</td>'
              +  '<td class="text-end">'+ filme +'</td>'
-             +  '<td class="text-end">'+ uco +'</td>'
-             +  '<td class="text-end">'+ porteAn +'</td>'
-             +  '<td class="text-end">'+ aux +'</td>'
-             +  `<td class="text-center">${selectHtml}</td>`
-             +  '<td class="text-end fw-semibold">'+ totalHtml +'</td>'
-             +  `<td class="${tetoClass}">${tetoValor}</td>`
-             +  `<td class="text-center">${statusHtml}</td>`
-             +  `<td class="${excedClass}">${excedenteValor}</td>`
-             +  '</tr>';
+            +  '<td class="text-end">'+ uco +'</td>'
+            +  '<td class="text-end">'+ porteAn +'</td>'
+            +  '<td class="text-end">'+ aux +'</td>'
+            +  `<td class="text-center">${acomodacaoHtml}</td>`
+            +  `<td class="text-center">${selectHtml}</td>`
+            +  '<td class="text-end fw-semibold">'+ totalHtml +'</td>'
+            +  `<td class="${tetoClass}">${tetoValor}</td>`
+            +  `<td class="text-center">${statusHtml}</td>`
+            +  `<td class="${excedClass}">${excedenteValor}</td>`
+            +  '</tr>';
         });
 
         _pruneViaPctStore([...activeCodes]);
+        _pruneAcomodacaoStore([...activeCodes]);
 
         html+='</tbody></table></div>';
         const totalOriginalAgg = brl(data.total_original || data.total);
         const totalFinalAgg = brl(data.total_final || data.total);
         const totalTetoBase = tetoAlertas.reduce((acc, alerta)=> acc + _toNumber(alerta.teto_valor_total), 0);
         const excedenteTotalPct = totalTetoBase > 0 ? pct((excedenteTotal / totalTetoBase) * 100) : null;
-        html+='<div class="mt-3"><span class="mini-label">Porte:</span> <strong>'+brl(data.total_porte)+'</strong> · '
+        html+='<div class="mt-3"><span class="mini-label">Acomodação:</span> <strong>'+esc(acomodacaoLabel)+'</strong> · '
+             + '<span class="mini-label">Porte:</span> <strong>'+brl(data.total_porte)+'</strong> · '
              + '<span class="mini-label">Filme:</span> <strong>'+brl(data.total_filme)+'</strong> · '
              + '<span class="mini-label">UCO:</span> <strong>'+brl(data.total_uco)+'</strong> · '
              + '<span class="mini-label">Porte AN:</span> <strong>'+brl(data.total_porte_an)+'</strong> · '
@@ -2332,6 +2380,14 @@ function simularCBHPM(){
         out.innerHTML=html;
         if(window.lucide)lucide.createIcons();
         initTooltips(out);
+        out.querySelectorAll('.acomodacao-selector').forEach(sel=>{
+          sel.addEventListener('change', (ev)=>{
+            const code = ev.target.dataset.code;
+            const val = ev.target.value;
+            _setAcomodacaoFor(code, val);
+            simularCBHPM();
+          });
+        });
         out.querySelectorAll('.via-selector').forEach(sel=>{
           sel.addEventListener('change', (ev)=>{
             const code = ev.target.dataset.code;
@@ -2374,6 +2430,7 @@ function simularCBHPM(){
       const basePctSource = baseCode ? serverMap[baseCode] : (data.via_entrada_pct || '100');
       const numericBasePct = Number(basePctSource);
       const pctLabel = Number.isFinite(numericBasePct) ? _formatPctLabel(numericBasePct) : '100%';
+      const currentPctSingle = String(basePctSource || '100');
 
       const statusBadgeSingle = !hasTetoInfo
         ? '—'
@@ -2385,6 +2442,8 @@ function simularCBHPM(){
       const tetoValorSingle = _hasValue(data.teto_valor_total) ? brl(data.teto_valor_total) : '-';
       const excedenteSingle = _hasValue(data.teto_excedente) ? brl(data.teto_excedente) : '-';
       const excedPctSingle = _hasValue(data.teto_pct_excedente) ? pct(data.teto_pct_excedente) : null;
+      const baseAcomodacaoValue = baseCode ? (serverAcomodacaoMap[baseCode] || _getAcomodacaoFor(baseCode) || _normalizeAcomodacao(data.acomodacao)) : _normalizeAcomodacao(data.acomodacao);
+      const acomodacaoLabelSingle = baseAcomodacaoValue === 'apartamento' ? 'Apartamento' : 'Enfermaria';
       const tetoCardSubtitle = !hasTetoInfo
         ? '-'
         : (tetoStatus === 'ULTRAPASSA'
@@ -2425,7 +2484,15 @@ function simularCBHPM(){
         html += '<div class="small text-muted">Original '+totalOriginalSingle+'</div>';
       }
       html+='</div></div>';
-      html+='</div><div class="soft mt-2">UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong> · Redutor via entrada: <strong>'+ pctLabel +'</strong> · Teto: '+ statusBadgeSingle +'</div>';
+      if(baseCode){
+        serverAcomodacaoMap[baseCode] = baseAcomodacaoValue;
+        _setAcomodacaoFor(baseCode, baseAcomodacaoValue);
+        _pruneAcomodacaoStore([baseCode]);
+        const acomodacaoSelectSingle = `<select class="form-select form-select-sm acomodacao-selector" data-code="${baseCode}"><option value="enfermaria" ${baseAcomodacaoValue==='enfermaria'?'selected':''}>Enfermaria</option><option value="apartamento" ${baseAcomodacaoValue==='apartamento'?'selected':''}>Apartamento</option></select>`;
+        const viaSelectSingle = `<select class="form-select form-select-sm via-selector" data-code="${baseCode}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPctSingle)?'selected':''}>${opt}%</option>`).join('')}</select>`;
+        html+='<div class="row g-2 mt-3"><div class="col-auto"><label class="form-label">Acomodação</label>'+acomodacaoSelectSingle+'</div><div class="col-auto"><label class="form-label">Redutor via entrada</label>'+viaSelectSingle+'</div></div>';
+      }
+      html+='</div><div class="soft mt-2">Acomodação: <strong>'+esc(acomodacaoLabelSingle)+'</strong> · UCO usado: <strong>'+ (data.uco_valor||'-') +'</strong> · Porte: <strong>'+ (data.porte_tabela_usada||'-') +'</strong> · Porte AN: <strong>'+ (data.porte_an_tabela_usada||'-') +'</strong> · Ajustes: Porte <strong>'+ (data.ajuste_porte_pct||'0') +'%</strong>, Porte AN <strong>'+ (data.ajuste_porte_an_pct||'0') +'%</strong> · Redutor via entrada: <strong>'+ pctLabel +'</strong> · Teto: '+ statusBadgeSingle +'</div>';
       {% if show_tuss_rol %}
       html+='<div class="soft mt-1">ROL ANS: '+ rolBadgeSingle +'</div>';
       {% endif %}
@@ -2455,7 +2522,15 @@ function simularCBHPM(){
       }
       out.innerHTML=html;
       if(window.lucide)lucide.createIcons();
-      initTooltips(out);
+        initTooltips(out);
+        out.querySelectorAll('.acomodacao-selector').forEach(sel=>{
+          sel.addEventListener('change', (ev)=>{
+            const code = ev.target.dataset.code;
+            const val = ev.target.value;
+            _setAcomodacaoFor(code, val);
+            simularCBHPM();
+          });
+        });
       out.querySelectorAll('.via-selector').forEach(sel=>{
         sel.addEventListener('change', (ev)=>{
           const code = ev.target.dataset.code;
@@ -3243,6 +3318,15 @@ function getCBHPMPayload(){
     viaMap[key] = pct;
   });
   _pruneViaPctStore([...activeCodes]);
+  const acomodacaoMap = {};
+  activeCodes.forEach(code=>{
+    const key = _normalizeCode(code);
+    if(!key) return;
+    const acom = _getAcomodacaoFor(key);
+    _setAcomodacaoFor(key, acom);
+    acomodacaoMap[key] = acom;
+  });
+  _pruneAcomodacaoStore([...activeCodes]);
 
   return {
     codigo,
@@ -3258,6 +3342,7 @@ function getCBHPMPayload(){
     ajuste_porte_pct:document.getElementById('cbhpm-aj-porte').value||0,
     ajuste_porte_an_pct:document.getElementById('cbhpm-aj-an').value||0,
     via_entrada_pcts: viaMap,
+    acomodacao_map: acomodacaoMap,
   };
 }
 
@@ -3293,6 +3378,14 @@ function setCBHPMPayload(data){
   const activeForRestore = [...codigos];
   if(data.codigo) activeForRestore.push(data.codigo);
   _pruneViaPctStore(activeForRestore);
+
+  window._cbhpmAcomodacaoByCode = {};
+  const acomMap = (data.acomodacao_map && typeof data.acomodacao_map === 'object') ? data.acomodacao_map : {};
+  Object.entries(acomMap).forEach(([key,val])=> _setAcomodacaoFor(key, val));
+  if(!Object.keys(window._cbhpmAcomodacaoByCode).length && data.codigo && data.acomodacao){
+    _setAcomodacaoFor(data.codigo, data.acomodacao);
+  }
+  _pruneAcomodacaoStore(activeForRestore);
 
   cbhpmDtpMeta.clear();
   const dtpItems = Array.isArray(data.dtp_items) ? data.dtp_items : [];
