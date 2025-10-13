@@ -36,6 +36,7 @@ import html
 import hashlib
 from datetime import date, datetime, timedelta
 from uuid import uuid4
+from types import SimpleNamespace
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Sequence
@@ -1384,6 +1385,9 @@ TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
 INSUMO_IMPORT_ASYNC_DIR = Path(tempfile.gettempdir()) / 'insumo_async_imports'
 INSUMO_IMPORT_ASYNC_DIR.mkdir(parents=True, exist_ok=True)
 
+_TETO_IMPORT_JOBS_LOCK = threading.Lock()
+_TETO_IMPORT_JOBS: dict[str, dict] = {}
+
 BRAS_RAW_DEFAULT_COLUMNS = [
     'col01', 'col02', 'col03', 'col04', 'col05', 'col06', 'col07', 'col08', 'col09', 'col10',
     'col11', 'col12', 'col13', 'col14', 'col15', 'col16', 'col17', 'col18', 'col19', 'col20',
@@ -2558,6 +2562,120 @@ def _discard_teto_preview(token: str) -> None:
         file_path.unlink(missing_ok=True)
     except Exception:
         pass
+
+
+def _register_teto_job(job: dict) -> None:
+    with _TETO_IMPORT_JOBS_LOCK:
+        _TETO_IMPORT_JOBS[job['id']] = job
+        if len(_TETO_IMPORT_JOBS) > 25:
+            oldest_id = min(_TETO_IMPORT_JOBS.items(), key=lambda item: item[1]['created_at'])[0]
+            _TETO_IMPORT_JOBS.pop(oldest_id, None)
+
+
+def _update_teto_job(job_id: str, **fields) -> None:
+    with _TETO_IMPORT_JOBS_LOCK:
+        job = _TETO_IMPORT_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(fields)
+
+
+def _snapshot_teto_jobs() -> list[SimpleNamespace]:
+    with _TETO_IMPORT_JOBS_LOCK:
+        jobs = [job.copy() for job in _TETO_IMPORT_JOBS.values()]
+    jobs.sort(key=lambda item: item['created_at'], reverse=True)
+    snapshot: list[SimpleNamespace] = []
+    for job in jobs:
+        created_fmt = job['created_at'].strftime('%d/%m/%Y %H:%M:%S') if job.get('created_at') else None
+        started_fmt = job.get('started_at').strftime('%d/%m/%Y %H:%M:%S') if job.get('started_at') else None
+        finished_fmt = job.get('finished_at').strftime('%d/%m/%Y %H:%M:%S') if job.get('finished_at') else None
+        job_ns = SimpleNamespace(**job)
+        job_ns.created_at_fmt = created_fmt
+        job_ns.started_at_fmt = started_fmt
+        job_ns.finished_at_fmt = finished_fmt
+        snapshot.append(job_ns)
+    return snapshot
+
+
+def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str) -> None:
+    _update_teto_job(job_id, status='running', started_at=datetime.utcnow(), message='Processando registros…')
+    try:
+        rows_raw = preview_payload.get('rows') or []
+        rows = [row for row in rows_raw if row.get('codigo') and row.get('valor_total') is not None]
+        codes = [row['codigo'] for row in rows]
+        with app.app_context():
+            existing: set[str] = set()
+            if codes:
+                existing = {c for (c,) in db.session.query(CbhpmTeto.codigo).filter(CbhpmTeto.codigo.in_(codes)).all()}
+            if rows:
+                insert_rows = [
+                    {
+                        'codigo': row['codigo'],
+                        'descricao': row['descricao'],
+                        'valor_total': row['valor_total'],
+                    }
+                    for row in rows
+                ]
+                stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
+                upsert_stmt = stmt.on_duplicate_key_update(
+                    descricao=stmt.inserted.descricao,
+                    valor_total=stmt.inserted.valor_total,
+                    updated_at=text('CURRENT_TIMESTAMP'),
+                )
+                db.session.execute(upsert_stmt)
+                db.session.commit()
+            db.session.remove()
+            inserted = len([code for code in codes if code not in existing])
+            updated = len(codes) - inserted
+            error_count = len(preview_payload.get('errors', []))
+            _update_teto_job(
+                job_id,
+                status='success',
+                finished_at=datetime.utcnow(),
+                inserted=inserted,
+                updated=updated,
+                total=len(codes),
+                errors=error_count,
+                message=f'Importação concluída: {len(codes)} linha(s), {inserted} inserida(s), {updated} atualizada(s).',
+            )
+            app.logger.info(
+                'Importação CBHPM teto concluída (job %s): total=%s, inseridos=%s, atualizados=%s, erros=%s',
+                job_id, len(codes), inserted, updated, error_count
+            )
+    except Exception as exc:
+        with app.app_context():
+            db.session.rollback()
+            db.session.remove()
+        app.logger.exception('Erro ao processar importação de tetos (job %s)', job_id)
+        _update_teto_job(
+            job_id,
+            status='error',
+            finished_at=datetime.utcnow(),
+            message=str(exc),
+        )
+    finally:
+        _discard_teto_preview(confirm_token)
+
+
+def _start_teto_import_job(preview_payload: dict, confirm_token: str) -> str:
+    codes = [row['codigo'] for row in preview_payload.get('rows') or [] if row.get('codigo')]
+    job_id = uuid4().hex[:8].upper()
+    job = {
+        'id': job_id,
+        'status': 'queued',
+        'created_at': datetime.utcnow(),
+        'started_at': None,
+        'finished_at': None,
+        'total': len(codes),
+        'inserted': 0,
+        'updated': 0,
+        'errors': len(preview_payload.get('errors', []) or []),
+        'message': 'Aguardando processamento…',
+    }
+    _register_teto_job(job)
+    thread = threading.Thread(target=_run_teto_import_job, args=(job_id, preview_payload, confirm_token), daemon=True)
+    thread.start()
+    return job_id
 
 
 def _read_teto_rows_from_csv(file_path: Path) -> list[tuple[int, dict[str, object]]]:
@@ -6423,6 +6541,8 @@ def admin_tetos():
             flash('Pré-visualização expirada ou inválida. Envie o arquivo novamente.', 'warning')
             return redirect(url_for('admin_tetos'))
 
+    teto_jobs = _snapshot_teto_jobs()
+
     return render_template(
         'admin_tetos.html',
         tetos=tetos,
@@ -6433,6 +6553,7 @@ def admin_tetos():
         q=search,
         preview=preview_payload,
         format_brl=_format_brl,
+        teto_jobs=teto_jobs,
     )
 
 
@@ -6446,37 +6567,8 @@ def admin_tetos_import():
             _discard_teto_preview(confirm_token)
             flash('Pré-visualização expirada ou vazia. Envie o arquivo novamente.', 'warning')
             return redirect(url_for('admin_tetos'))
-        rows = [row for row in preview_payload['rows'] if row.get('codigo') and row.get('valor_total') is not None]
-        codes = [row['codigo'] for row in rows]
-        existing: set[str] = set()
-        if codes:
-            existing = {c for (c,) in db.session.query(CbhpmTeto.codigo).filter(CbhpmTeto.codigo.in_(codes)).all()}
-        if rows:
-            insert_rows = [
-                {
-                    'codigo': row['codigo'],
-                    'descricao': row['descricao'],
-                    'valor_total': row['valor_total'],
-                }
-                for row in rows
-            ]
-            stmt = mysql_insert(CbhpmTeto.__table__).values(insert_rows)
-            upsert_stmt = stmt.on_duplicate_key_update(
-                descricao=stmt.inserted.descricao,
-                valor_total=stmt.inserted.valor_total,
-                updated_at=text('CURRENT_TIMESTAMP'),
-            )
-            db.session.execute(upsert_stmt)
-            db.session.commit()
-        inserted = len([code for code in codes if code not in existing])
-        updated = len(codes) - inserted
-        error_count = len(preview_payload.get('errors', []))
-        app.logger.info(
-            'Importação CBHPM teto concluída: total=%s, inseridos=%s, atualizados=%s, erros=%s',
-            len(codes), inserted, updated, error_count
-        )
-        flash(f'Importação concluída: {len(codes)} registro(s), {inserted} inserido(s), {updated} atualizado(s).', 'success')
-        _discard_teto_preview(confirm_token)
+        job_id = _start_teto_import_job(preview_payload, confirm_token)
+        flash(f'Importação agendada (Job {job_id}). Atualize esta página para acompanhar o status.', 'info')
         return redirect(url_for('admin_tetos'))
 
     upload = request.files.get('arquivo')

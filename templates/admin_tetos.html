@@ -91,6 +91,55 @@
       </p>
     </div>
 
+    {% if teto_jobs %}
+    <div class="card p-3 mb-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="mb-0">Processos recentes</h6>
+        <span class="text-muted small">Atualize a página para ver novas atualizações.</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Job</th>
+              <th>Status</th>
+              <th class="text-end">Total</th>
+              <th class="text-end">Inseridos</th>
+              <th class="text-end">Atualizados</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for job in teto_jobs[:5] %}
+            {% set badge_class = 'text-bg-secondary' %}
+            {% if job.status == 'running' %}
+              {% set badge_class = 'text-bg-info' %}
+            {% elif job.status == 'success' %}
+              {% set badge_class = 'text-bg-success' %}
+            {% elif job.status == 'error' %}
+              {% set badge_class = 'text-bg-danger' %}
+            {% endif %}
+            <tr>
+              <td>
+                <div class="fw-semibold">{{ job.id }}</div>
+                <div class="small text-muted">
+                  Iniciado: {{ job.started_at_fmt or job.created_at_fmt }}
+                  {% if job.finished_at_fmt %}<br>Concluído: {{ job.finished_at_fmt }}{% endif %}
+                </div>
+              </td>
+              <td><span class="badge {{ badge_class }} text-uppercase">{{ job.status }}</span></td>
+              <td class="text-end">{{ job.total }}</td>
+              <td class="text-end">{{ job.inserted }}</td>
+              <td class="text-end">{{ job.updated }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% set latest = teto_jobs[0] %}
+      <div class="small text-muted mt-2">{{ latest.message or '—' }}</div>
+    </div>
+    {% endif %}
+
     {% if preview %}
     <div class="card p-3">
       <div class="d-flex justify-content-between align-items-center mb-2">
