@@ -126,6 +126,7 @@
           <a class="side-item {% if request.endpoint=='admin_tuss_rol' %}active{% endif %}" href="{{ url_for('admin_tuss_rol') }}"><i class="bi bi-clipboard-check"></i><span>TUSS x ROL</span></a>
           <a class="side-item {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}"><i class="bi bi-sliders"></i><span>Regras CBHPM</span></a>
           <a class="side-item {% if request.endpoint=='admin_audit_trail' %}active{% endif %}" href="{{ url_for('admin_audit_trail') }}"><i class="bi bi-activity"></i><span>Auditoria</span></a>
+          <a class="side-item {% if request.endpoint=='health_check' %}active{% endif %}" href="{{ url_for('health_check') }}"><i class="bi bi-heart-pulse"></i><span>Status do Sistema</span></a>
         </div>
         {% endif %}
 

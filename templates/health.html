@@ -1,0 +1,369 @@
+{% extends 'base.html' %}
+
+{% block title %}Status do Sistema{% endblock %}
+{% block page_title %}Status do Sistema{% endblock %}
+
+{% block head %}
+<style>
+        body {
+            /* Sobrescreve o fundo padrão para esta página específica */
+            background: var(--bg);
+        }
+        .health-container {
+            /* O container principal já é fornecido pelo base.html */
+            width: 100%;
+            padding: 0;
+        }
+        .status-card {
+            background: white;
+            border-radius: 15px;
+            padding: 2rem;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 2rem;
+            border: 1px solid var(--border);
+            background: var(--card);
+        }
+        .status-badge {
+            font-size: 1.5rem;
+            padding: 0.5rem 1.5rem;
+            border-radius: 50px;
+            font-weight: bold;
+        }
+        .status-healthy {
+            background: #10b981;
+            color: white;
+        }
+        .status-degraded {
+            background: #f59e0b;
+            color: white;
+        }
+        .status-unhealthy {
+            background: #ef4444;
+            color: white;
+        }
+        .check-item {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid #6c757d;
+        }
+        .check-item.status-ok {
+            border-left-color: #10b981;
+        }
+        .check-item.status-warning {
+            border-left-color: #f59e0b;
+            background: #fef3c7;
+        }
+        .check-item.status-error {
+            border-left-color: #ef4444;
+            background: #fee2e2;
+        }
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .metric-label {
+            font-size: 0.9rem;
+            color: #6c757d;
+            text-transform: uppercase;
+        }
+        .progress-custom {
+            height: 25px;
+            border-radius: 10px;
+        }
+        .header-icon {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 1.5rem;
+        }
+        .timestamp {
+            font-size: 0.85rem;
+            color: #6c757d;
+        }
+        .auto-refresh {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: white;
+            padding: 1rem;
+            border-radius: 50px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+    </style>
+{% endblock %}
+
+{% block content %}
+    <div class="health-container">
+        <!-- Header -->
+        <!-- O cabeçalho principal já está no base.html, este é o card de status -->
+        <div class="status-card">
+            <div class="d-flex justify-content-between align-items-center">
+                <div class="d-flex align-items-center gap-3">
+                    <div class="header-icon">
+                        <i class="bi bi-heart-pulse"></i>
+                    </div>
+                    <div>
+                        <h1 class="mb-0">System Health</h1>
+                        <p class="timestamp mb-0">
+                            <i class="bi bi-clock"></i>
+                            {{ health.timestamp }}
+                        </p>
+                    </div>
+                </div>
+                <div>
+                    <span class="status-badge status-{{ health.status }}">
+                        {% if health.status == 'healthy' %}
+                            <i class="bi bi-check-circle-fill"></i> Healthy
+                        {% elif health.status == 'degraded' %}
+                            <i class="bi bi-exclamation-triangle-fill"></i> Degraded
+                        {% else %}
+                            <i class="bi bi-x-circle-fill"></i> Unhealthy
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Database Check -->
+        {% if health.checks.database %}
+        <div class="status-card">
+            <div class="check-item status-{{ health.checks.database.status }}">
+                <div class="d-flex align-items-center gap-3">
+                    <i class="bi bi-database-fill fs-2"></i>
+                    <div class="flex-grow-1">
+                        <h5 class="mb-1">Database Connection</h5>
+                        <p class="mb-0">{{ health.checks.database.message }}</p>
+                    </div>
+                    <div>
+                        {% if health.checks.database.status == 'ok' %}
+                            <i class="bi bi-check-circle-fill text-success fs-2"></i>
+                        {% else %}
+                            <i class="bi bi-x-circle-fill text-danger fs-2"></i>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- System Resources -->
+        <div class="status-card">
+            <h4 class="mb-4"><i class="bi bi-cpu"></i> System Resources</h4>
+
+            <div class="row g-4">
+                <!-- Disk -->
+                {% if health.checks.disk %}
+                <div class="col-md-6">
+                    <div class="check-item status-{{ health.checks.disk.status }}">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6><i class="bi bi-hdd"></i> Disk Space</h6>
+                            <span class="badge bg-secondary">{{ health.checks.disk.free_gb }} GB free</span>
+                        </div>
+                        <div class="progress progress-custom">
+                            <div class="progress-bar {% if health.checks.disk.used_percent > 90 %}bg-danger{% elif health.checks.disk.used_percent > 75 %}bg-warning{% else %}bg-success{% endif %}"
+                                 role="progressbar"
+                                 style="width: {{ health.checks.disk.used_percent }}%"
+                                 aria-valuenow="{{ health.checks.disk.used_percent }}"
+                                 aria-valuemin="0"
+                                 aria-valuemax="100">
+                                {{ health.checks.disk.used_percent }}%
+                            </div>
+                        </div>
+                        <small class="text-muted">{{ health.checks.disk.total_gb }} GB total</small>
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Memory -->
+                {% if health.checks.memory %}
+                <div class="col-md-6">
+                    <div class="check-item status-{{ health.checks.memory.status }}">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <h6><i class="bi bi-memory"></i> Memory</h6>
+                            <span class="badge bg-secondary">{{ health.checks.memory.available_gb }} GB available</span>
+                        </div>
+                        <div class="progress progress-custom">
+                            <div class="progress-bar {% if health.checks.memory.used_percent > 90 %}bg-danger{% elif health.checks.memory.used_percent > 75 %}bg-warning{% else %}bg-success{% endif %}"
+                                 role="progressbar"
+                                 style="width: {{ health.checks.memory.used_percent }}%"
+                                 aria-valuenow="{{ health.checks.memory.used_percent }}"
+                                 aria-valuemin="0"
+                                 aria-valuemax="100">
+                                {{ health.checks.memory.used_percent }}%
+                            </div>
+                        </div>
+                        <small class="text-muted">{{ health.checks.memory.total_gb }} GB total</small>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Table Statistics -->
+        {% if health.checks.tables and health.checks.tables.counts %}
+        <div class="status-card">
+            <h4 class="mb-4"><i class="bi bi-table"></i> Database Tables</h4>
+            <div class="row g-4">
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">Usuários</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.usuarios|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">Operadoras</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.operadoras|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">Tabelas</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.tabelas|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">SIMPRO</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.simpro|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">Brasíndice</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.brasindice|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="text-center">
+                        <div class="metric-label">Insumos Index</div>
+                        <div class="metric-value">{{ health.checks.tables.counts.insumos_index|format(group_separator='.') }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Cache Status -->
+        {% if health.checks.cache %}
+        <div class="status-card">
+            <div class="check-item status-{{ health.checks.cache.status }}">
+                <div class="d-flex align-items-center gap-3">
+                    <i class="bi bi-lightning-fill fs-2"></i>
+                    <div class="flex-grow-1">
+                        <h5 class="mb-1">Application Cache</h5>
+                        <p class="mb-0">
+                            {{ health.checks.cache.insumo_cache_size }} items em cache
+                            (TTL: {{ health.checks.cache.ttl_seconds }}s)
+                        </p>
+                    </div>
+                    <div>
+                        <i class="bi bi-check-circle-fill text-success fs-2"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Recent Imports -->
+        {% if health.checks.recent_imports and health.checks.recent_imports.jobs %}
+        <div class="status-card">
+            <h4 class="mb-4"><i class="bi bi-cloud-upload"></i> Recent Imports</h4>
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Origem</th>
+                            <th>Status</th>
+                            <th>Versão</th>
+                            <th>Created</th>
+                            <th>Finished</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for job in health.checks.recent_imports.jobs %}
+                        <tr>
+                            <td><code>{{ job.id }}</code></td>
+                            <td><span class="badge bg-info">{{ job.origem }}</span></td>
+                            <td>
+                                {% if job.status == 'SUCCESS' %}
+                                    <span class="badge bg-success">{{ job.status }}</span>
+                                {% elif job.status == 'RUNNING' %}
+                                    <span class="badge bg-primary">{{ job.status }}</span>
+                                {% elif job.status == 'FAILED' %}
+                                    <span class="badge bg-danger">{{ job.status }}</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ job.status }}</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ job.versao or '—' }}</td>
+                            <td><small>{{ job.created_at[:19] if job.created_at else '—' }}</small></td>
+                            <td><small>{{ job.finished_at[:19] if job.finished_at else '—' }}</small></td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Footer Actions -->
+        <div class="status-card">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-primary">
+                        <i class="bi bi-house"></i> Voltar ao Dashboard
+                    </a>
+                    <a href="{{ url_for('health_check', format='json') }}" class="btn btn-outline-secondary" target="_blank">
+                        <i class="bi bi-code-square"></i> Ver JSON
+                    </a>
+                </div>
+                <div>
+                    <button class="btn btn-primary" onclick="location.reload()">
+                        <i class="bi bi-arrow-clockwise"></i> Atualizar
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Auto Refresh Toggle (movido para fora do content block para ficar fixo) -->
+    <div class="auto-refresh">
+        <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="autoRefresh">
+            <label class="form-check-label" for="autoRefresh">
+                Auto-refresh (30s)
+            </label>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+        // Auto-refresh functionality
+        let refreshInterval = null;
+        const checkbox = document.getElementById('autoRefresh');
+
+        checkbox.addEventListener('change', function() {
+            if (this.checked) {
+                refreshInterval = setInterval(() => {
+                    location.reload();
+                }, 30000); // 30 seconds
+            } else {
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                    refreshInterval = null;
+                }
+            }
+        });
+    </script>
+{% endblock %}

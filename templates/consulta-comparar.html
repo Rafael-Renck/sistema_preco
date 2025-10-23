@@ -9,61 +9,403 @@
   /* Esconde a busca global do topo nesta tela */
   #globalSearch{ display:none !important; }
 
-  :root { --ap-border:#e5e7eb; --ap-muted:#6b7280; --ap-bg-soft:#f8fafc; }
-  .section-title{ font-weight:600; margin-bottom:.25rem; letter-spacing:.2px; }
-  .soft{ color:var(--ap-muted); font-size:.875rem; }
-  .mini-label{ font-size:.8rem; color:var(--ap-muted); }
-  .pill{ border:1px solid var(--ap-border); background:#fff; border-radius:999px; padding:.25rem .6rem; font-size:.75rem; }
-  .kbd{ border:1px solid var(--ap-border); background:#fff; border-radius:6px; padding:.05rem .35rem; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.75rem; }
+  :root {
+    --ap-border:#e5e7eb;
+    --ap-muted:#6b7280;
+    --ap-bg-soft:#f8fafc;
+
+    /* 🎨 Elegant Tech Colors */
+    --tech-primary: #2563eb;
+    --tech-primary-light: #3b82f6;
+    --tech-accent: #0ea5e9;
+    --tech-dark: #1e293b;
+    --tech-gray: #64748b;
+
+    /* Smooth transitions */
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* 🌐 Subtle background pattern */
+  body {
+    background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+    position: relative;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image:
+      radial-gradient(circle at 10% 20%, rgba(37, 99, 235, 0.03) 0%, transparent 50%),
+      radial-gradient(circle at 90% 80%, rgba(14, 165, 233, 0.03) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .section-title{
+    font-weight:700;
+    margin-bottom:.35rem;
+    letter-spacing:-0.025em;
+    color: var(--tech-dark);
+  }
+  .soft{
+    color:var(--ap-muted);
+    font-size:.875rem;
+    line-height: 1.5;
+  }
+  .mini-label{
+    font-size:.75rem;
+    color:var(--tech-gray);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .pill{
+    border:1px solid var(--ap-border);
+    background:#fff;
+    border-radius:999px;
+    padding:.35rem .85rem;
+    font-size:.8rem;
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    transition: var(--transition);
+  }
+  .pill:hover {
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+    transform: translateY(-1px);
+  }
+  .kbd{
+    border:1px solid var(--ap-border);
+    background:#fff;
+    border-radius:6px;
+    padding:.2rem .5rem;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:.75rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    font-weight: 500;
+  }
 
   /* Deixa o SVG do Lucide “transparente” ao clique: evita bugs de evento no ícone */
   .lucide, [data-lucide], .btn svg, .nav-item svg { pointer-events:none; }
 
-  .card-toolbar{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.5rem .75rem;border-bottom:1px solid var(--ap-border);background:linear-gradient(180deg,rgba(0,0,0,.02),transparent)}
-  .btn-icon{display:inline-flex;align-items:center;gap:.35rem}
-  .btn-icon i{width:16px;height:16px}
+  /* 🎯 Modern Cards */
+  .card {
+    border: 1px solid rgba(37, 99, 235, 0.08);
+    border-radius: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    background: #fff;
+    transition: var(--transition);
+    position: relative;
+    z-index: 1;
+  }
+  .card:hover {
+    box-shadow: 0 8px 24px rgba(37, 99, 235, 0.12);
+    transform: translateY(-2px);
+  }
 
-  /* Tabela */
-  .table-smart thead th{position:sticky;top:0;z-index:2;background:var(--ap-bg-soft);backdrop-filter:blur(2px)}
-  .table-smart tbody td,.table-smart thead th{white-space:nowrap;vertical-align:middle}
-  .table-sticky-first td:first-child,.table-sticky-first th:first-child{position:sticky;left:0;z-index:1;background:#fff;box-shadow:1px 0 0 var(--ap-border)}
-  .table-hover tbody tr:hover td{background:rgba(32,132,125,.06)}
-  .empty{padding:2.5rem 1rem;text-align:center;color:var(--ap-muted)}
-  .empty i{width:22px;height:22px;margin-right:.25rem}
+  .card-toolbar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:1rem;
+    padding:1rem 1.25rem;
+    border-bottom:1px solid rgba(37, 99, 235, 0.08);
+    background:linear-gradient(180deg, rgba(37, 99, 235, 0.02), transparent);
+  }
+  .btn-icon{
+    display:inline-flex;
+    align-items:center;
+    gap:.5rem;
+    font-weight: 500;
+  }
+  .btn-icon i{width:18px;height:18px}
 
-  .nav-pills .nav-link{border-radius:999px;padding:.4rem .9rem;font-weight:500}
-  .meta{display:flex;flex-wrap:wrap;gap:.4rem .5rem;align-items:center}
-  .meta .chip{border:1px solid var(--ap-border);border-radius:999px;padding:.2rem .6rem;font-size:.75rem;background:#fff}
-  .check-grid .form-check{padding:.4rem .5rem;border:1px solid var(--ap-border);border-radius:10px;background:#fff}
-  .check-grid .form-check.suggested{border-color:#0d9488;box-shadow:0 0 0 1px rgba(13,148,136,.25) inset;background:#f0fdfa}
-  .table-smart tbody tr.row-excede td{background:rgba(220,53,69,.08)}
-  .table-smart tbody tr.row-excede:hover td{background:rgba(220,53,69,.12)}
-  /* === Autocomplete de Procedimentos === */
-.ap-picker{ position:relative; }
-.ap-input{ padding-right:2.25rem; }
-.ap-chips{ display:flex; flex-wrap:wrap; gap:.35rem; margin-bottom:.35rem; }
-.ap-chip{
-  display:inline-flex; align-items:center; gap:.35rem;
-  border:1px solid var(--ap-border); background:#fff; border-radius:999px;
-  padding:.15rem .5rem; font-size:.8rem;
+  /* 📊 Modern Table */
+  .table-smart {
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .table-smart thead th{
+    position:sticky;
+    top:0;
+    z-index:2;
+    background: linear-gradient(135deg, var(--tech-primary) 0%, var(--tech-primary-light) 100%);
+    backdrop-filter:blur(10px);
+    color: white;
+    padding: 1rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    border: none;
+  }
+  .table-smart tbody td,.table-smart thead th{
+    white-space:nowrap;
+    vertical-align:middle;
+  }
+  .table-smart tbody td {
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid rgba(37, 99, 235, 0.06);
+  }
+  .table-sticky-first td:first-child,.table-sticky-first th:first-child{
+    position:sticky;
+    left:0;
+    z-index:1;
+    background:#fff;
+    box-shadow: 2px 0 4px rgba(0,0,0,0.04);
+  }
+  .table-hover tbody tr{
+    transition: var(--transition);
+  }
+  .table-hover tbody tr:hover td{
+    background: rgba(37, 99, 235, 0.04);
+    transform: scale(1.001);
+  }
+  .empty{
+    padding:3rem 1.5rem;
+    text-align:center;
+    color:var(--ap-muted);
+  }
+  .empty i{
+    width:28px;
+    height:28px;
+    margin-right:.5rem;
+    opacity: 0.5;
+  }
+
+  /* 🎨 Modern Forms */
+  .form-control, .form-select {
+    border: 1px solid rgba(37, 99, 235, 0.15);
+    border-radius: 10px;
+    padding: 0.625rem 0.875rem;
+    font-size: 0.9375rem;
+    transition: var(--transition);
+    background: #fff;
+  }
+  .form-control:focus, .form-select:focus {
+    border-color: var(--tech-primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    outline: none;
+  }
+  .form-control:hover, .form-select:hover {
+    border-color: rgba(37, 99, 235, 0.3);
+  }
+  .form-label {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: var(--tech-dark);
+    margin-bottom: 0.5rem;
+  }
+
+  /* 🔘 Modern Buttons */
+  .btn-primary {
+    background: linear-gradient(135deg, var(--tech-primary) 0%, var(--tech-primary-light) 100%);
+    border: none;
+    border-radius: 10px;
+    padding: 0.625rem 1.25rem;
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+    transition: var(--transition);
+  }
+  .btn-primary:hover {
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.35);
+    transform: translateY(-1px);
+  }
+  .btn-outline-secondary {
+    border: 1px solid rgba(37, 99, 235, 0.2);
+    border-radius: 10px;
+    padding: 0.625rem 1.25rem;
+    font-weight: 500;
+    transition: var(--transition);
+  }
+  .btn-outline-secondary:hover {
+    background: rgba(37, 99, 235, 0.04);
+    border-color: var(--tech-primary);
+    transform: translateY(-1px);
+  }
+
+  .nav-pills .nav-link{
+    border-radius:999px;
+    padding:.5rem 1rem;
+    font-weight:600;
+    transition: var(--transition);
+    font-size: 0.875rem;
+  }
+  .nav-pills .nav-link:hover{
+    background: rgba(37, 99, 235, 0.08);
+  }
+  .nav-pills .nav-link.active{
+    background: var(--tech-primary);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+  }
+
+  .meta{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+  .meta .chip{
+    border:1px solid rgba(37, 99, 235, 0.2);
+    border-radius:999px;
+    padding:.3rem .75rem;
+    font-size:.8rem;
+    background:#fff;
+    font-weight: 500;
+    transition: var(--transition);
+  }
+  .meta .chip:hover{
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+    transform: translateY(-1px);
+  }
+
+  .check-grid .form-check{
+    padding:.6rem .75rem;
+    border:1px solid rgba(37, 99, 235, 0.15);
+    border-radius:12px;
+    background:#fff;
+    transition: var(--transition);
+  }
+  .check-grid .form-check:hover{
+    border-color: rgba(37, 99, 235, 0.3);
+    box-shadow: 0 2px 8px rgba(37, 99, 235, 0.1);
+  }
+  .check-grid .form-check.suggested{
+    border-color:#0d9488;
+    box-shadow:0 0 0 3px rgba(13,148,136,.15);
+    background:#f0fdfa;
+  }
+  .table-smart tbody tr.row-excede td{background:rgba(220,53,69,.06)}
+  .table-smart tbody tr.row-excede:hover td{background:rgba(220,53,69,.1)}
+  /* === 🔍 Modern Autocomplete === */
+.ap-picker{
+  position:relative;
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  border-radius: 12px;
+  background: #fff;
+  transition: var(--transition);
 }
-.ap-chip .ap-x{ cursor:pointer; font-size:1rem; line-height:1; opacity:.7; }
-.ap-chip .ap-x:hover{ opacity:1; }
-.ap-list{ position:absolute; inset-inline:0; top:100%; z-index:3000; max-height:300px; overflow:auto; }
+.ap-picker:focus-within{
+  border-color: var(--tech-primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+.ap-input{
+  padding-right:2.25rem;
+  border: none;
+  border-radius: 12px;
+  padding: 0.625rem 0.875rem;
+}
+.ap-input:focus{
+  outline: none;
+  box-shadow: none;
+}
+.ap-chips{
+  display:flex;
+  flex-wrap:wrap;
+  gap:.5rem;
+  margin-bottom:.5rem;
+  padding: 0.5rem;
+}
+.ap-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:.5rem;
+  border:1px solid rgba(37, 99, 235, 0.2);
+  background: linear-gradient(135deg, #fff 0%, rgba(37, 99, 235, 0.02) 100%);
+  border-radius:999px;
+  padding:.35rem .75rem;
+  font-size:.85rem;
+  font-weight: 500;
+  transition: var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.ap-chip:hover{
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+  transform: translateY(-1px);
+}
+.ap-chip .ap-x{
+  cursor:pointer;
+  font-size:1rem;
+  line-height:1;
+  opacity:.6;
+  transition: all 0.2s;
+}
+.ap-chip .ap-x:hover{
+  opacity:1;
+  color: #dc2626;
+}
+.ap-list{
+  position:absolute;
+  inset-inline:0;
+  top:100%;
+  z-index:3000;
+  max-height:300px;
+  overflow:auto;
+  background: #fff;
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  border-radius: 12px;
+  margin-top: 0.5rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+}
 
 /* Cada opção: uma linha, altura confortável */
 .ap-item{
-  display:flex; align-items:center; gap:.5rem;
-  padding:.4rem .75rem; cursor:pointer; border-bottom:1px solid var(--ap-border);
+  display:flex;
+  align-items:center;
+  gap:.7rem;
+  padding:.625rem 1rem;
+  cursor:pointer;
+  border-bottom:1px solid rgba(37, 99, 235, 0.06);
+  transition: var(--transition);
 }
 .ap-item:last-child{ border-bottom:0; }
-.ap-item:hover, .ap-item.active{ background:rgba(32,132,125,.08); }
+.ap-item:hover, .ap-item.active{
+  background: rgba(37, 99, 235, 0.06);
+  padding-left: 1.25rem;
+}
 
-.ap-state{ padding:.5rem .75rem; font-size:.85rem; color:var(--ap-muted); background:#fff; border:1px solid var(--ap-border); border-top:0; }
-.ap-hint{border:1px dashed var(--ap-border); background:var(--ap-bg-soft); border-radius:10px; padding:.75rem;}
-.ap-hint .mini-label{display:block; font-size:.75rem; text-transform:uppercase; letter-spacing:.05em; margin-bottom:.35rem;}
-.ap-hint .badge{padding:.4rem .6rem; font-size:.75rem; border-radius:999px; border:1px solid rgba(13,148,136,.35); color:#067a6f; background:rgba(13,148,136,.12);}
-.ap-hint .soft{font-size:.8rem;}
+.ap-state{
+  padding:.625rem 1rem;
+  font-size:.875rem;
+  color:var(--ap-muted);
+  background:#fff;
+  border:1px solid rgba(37, 99, 235, 0.15);
+  border-top:0;
+  border-radius: 0 0 12px 12px;
+}
+.ap-hint{
+  border:1px dashed rgba(37, 99, 235, 0.2);
+  background: rgba(37, 99, 235, 0.02);
+  border-radius:12px;
+  padding:1rem;
+  transition: var(--transition);
+}
+.ap-hint:hover{
+  background: rgba(37, 99, 235, 0.04);
+  border-color: rgba(37, 99, 235, 0.3);
+}
+.ap-hint .mini-label{
+  display:block;
+  font-size:.75rem;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  margin-bottom:.5rem;
+  color: var(--tech-primary);
+  font-weight: 700;
+}
+.ap-hint .badge{
+  padding:.4rem .75rem;
+  font-size:.8rem;
+  border-radius:999px;
+  border:1px solid rgba(13,148,136,.3);
+  color:#067a6f;
+  background:rgba(13,148,136,.1);
+  font-weight: 600;
+  transition: var(--transition);
+}
+.ap-hint .badge:hover{
+  box-shadow: 0 2px 8px rgba(13,148,136,0.2);
+  transform: translateY(-1px);
+}
+.ap-hint .soft{font-size:.85rem;}
 .btn[data-loading="on"] .btn-icon-slot[data-state="icon"],
 .btn[data-loading="on"] .btn-icon-slot[data-state="label"]{ opacity:.6; }
 .btn[data-loading="on"] .spinner-border{ display:inline-block !important; margin-right:.35rem; }
@@ -78,32 +420,197 @@
 /* Texto auxiliar menor e em cinza (se usar) */
 .ap-muted{ color:var(--ap-muted); font-size:.8rem; }
 
-/* Combos de procedimento */
-.combo-card{border:1px solid var(--ap-border);border-radius:16px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,.06);overflow:hidden;}
-.combo-card-header{padding:1rem 1.25rem;border-bottom:1px solid var(--ap-border);display:flex;flex-wrap:wrap;align-items:center;gap:1rem;justify-content:space-between;}
-.combo-card-header h5{margin:0;font-weight:600;}
+/* 📦 Modern Combos */
+.combo-card{
+  border:1px solid rgba(37, 99, 235, 0.1);
+  border-radius:16px;
+  background:#fff;
+  box-shadow:0 4px 16px rgba(37, 99, 235, 0.08);
+  overflow:hidden;
+  transition: var(--transition);
+}
+.combo-card:hover{
+  box-shadow:0 8px 24px rgba(37, 99, 235, 0.15);
+  transform: translateY(-2px);
+}
+.combo-card-header{
+  padding:1rem 1.25rem;
+  border-bottom:1px solid rgba(37, 99, 235, 0.08);
+  background: linear-gradient(180deg, rgba(37, 99, 235, 0.02), transparent);
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:1rem;
+  justify-content:space-between;
+}
+.combo-card-header h5{
+  margin:0;
+  font-weight:700;
+  color: var(--tech-dark);
+}
 .combo-card-body{padding:1.25rem;}
-.combo-builder{display:grid;grid-template-columns:1fr;gap:1rem;}
+.combo-builder{display:grid;grid-template-columns:1fr;gap:1.25rem;}
 @media(min-width:992px){.combo-builder{grid-template-columns:1.1fr .9fr;}}
-.combo-ghost{border:1px dashed var(--ap-border);border-radius:12px;padding:1rem;background:var(--ap-bg-soft);}
-.combo-items-list{display:flex;flex-direction:column;gap:.75rem;margin-top:.75rem;}
-.combo-item{border:1px solid var(--ap-border);border-radius:12px;padding:.75rem 1rem;background:#fff;display:flex;flex-direction:column;gap:.35rem;}
-.combo-item-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;}
-.combo-item-meta{font-size:.8rem;color:var(--ap-muted);display:flex;flex-wrap:wrap;gap:.4rem;}
-.combo-summary-box{border:1px solid rgba(13,148,136,.35);background:rgba(13,148,136,.08);border-radius:12px;padding:.9rem 1rem;display:flex;flex-direction:column;gap:.35rem;}
-.combo-badge{background:rgba(13,148,136,.12);color:#0f766e;border-radius:999px;padding:.2rem .6rem;font-size:.75rem;font-weight:500;}
-.combo-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.75rem;}
-.combo-saved-list{display:flex;flex-direction:column;gap:.6rem;}
-.combo-saved-card{border:1px solid var(--ap-border);border-radius:12px;padding:.8rem 1rem;background:#fff;display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start;}
-.combo-saved-card:hover{border-color:#0d9488;box-shadow:0 4px 16px rgba(13,148,136,.18);}
-.combo-empty{padding:1rem;border:1px dashed var(--ap-border);border-radius:12px;background:var(--ap-bg-soft);color:var(--ap-muted);}
-.combo-pill{border:1px solid rgba(15,23,42,.12);border-radius:999px;padding:.15rem .5rem;font-size:.75rem;background:#fff;color:#0f172a;}
+.combo-ghost{
+  border:1px dashed rgba(37, 99, 235, 0.2);
+  border-radius:14px;
+  padding:1.5rem;
+  background: rgba(37, 99, 235, 0.02);
+  transition: var(--transition);
+}
+.combo-ghost:hover{
+  background: rgba(37, 99, 235, 0.04);
+  border-color: rgba(37, 99, 235, 0.3);
+}
+.combo-items-list{display:flex;flex-direction:column;gap:.875rem;margin-top:.875rem;}
+.combo-item{
+  border:1px solid rgba(37, 99, 235, 0.12);
+  border-radius:12px;
+  padding:.875rem 1.125rem;
+  background:#fff;
+  display:flex;
+  flex-direction:column;
+  gap:.5rem;
+  transition: var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.combo-item:hover{
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
+  transform: translateX(4px);
+}
+.combo-item-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;}
+.combo-item-meta{font-size:.85rem;color:var(--ap-muted);display:flex;flex-wrap:wrap;gap:.5rem;font-weight: 500;}
+.combo-summary-box{
+  border:1px solid rgba(13,148,136,.3);
+  background:rgba(13,148,136,.06);
+  border-radius:14px;
+  padding:1rem 1.25rem;
+  display:flex;
+  flex-direction:column;
+  gap:.5rem;
+  box-shadow: 0 2px 8px rgba(13,148,136,0.1);
+}
+.combo-badge{
+  background:rgba(13,148,136,.12);
+  color:#0f766e;
+  border-radius:999px;
+  padding:.35rem .75rem;
+  font-size:.8rem;
+  font-weight:600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.combo-actions{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:1rem;}
+.combo-saved-list{display:flex;flex-direction:column;gap:.75rem;}
+.combo-saved-card{
+  border:1px solid rgba(37, 99, 235, 0.12);
+  border-radius:12px;
+  padding:.875rem 1.125rem;
+  background:#fff;
+  display:flex;
+  justify-content:space-between;
+  gap:1rem;
+  align-items:flex-start;
+  transition: var(--transition);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.combo-saved-card:hover{
+  border-color: var(--tech-primary);
+  box-shadow:0 4px 16px rgba(37, 99, 235, 0.15);
+  transform: translateY(-2px);
+}
+.combo-empty{
+  padding:1.5rem;
+  border:1px dashed rgba(37, 99, 235, 0.2);
+  border-radius:12px;
+  background: rgba(37, 99, 235, 0.02);
+  color:var(--ap-muted);
+  text-align: center;
+}
+.combo-pill{
+  border:1px solid rgba(37, 99, 235, 0.2);
+  border-radius:999px;
+  padding:.3rem .7rem;
+  font-size:.8rem;
+  background:#fff;
+  color: var(--tech-dark);
+  font-weight: 500;
+  transition: var(--transition);
+}
+.combo-pill:hover{
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+  transform: translateY(-1px);
+}
 .combo-suggest{position:relative;}
-.combo-suggest-list{position:absolute;top:100%;left:0;right:0;margin-top:.3rem;background:#fff;border:1px solid var(--ap-border);border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.18);max-height:260px;overflow:auto;z-index:1070;}
-.combo-suggest-item{padding:.45rem .75rem;display:flex;flex-direction:column;gap:.1rem;cursor:pointer;}
-.combo-suggest-item strong{font-size:.9rem;}
-.combo-suggest-item small{font-size:.75rem;color:var(--ap-muted);}
-.combo-suggest-item:hover,.combo-suggest-item.active{background:rgba(13,148,136,.12);}
+.combo-suggest-list{
+  position:absolute;
+  top:100%;
+  left:0;
+  right:0;
+  margin-top:.5rem;
+  background:#fff;
+  border:1px solid rgba(37, 99, 235, 0.15);
+  border-radius:12px;
+  box-shadow:0 8px 24px rgba(37, 99, 235, 0.15);
+  max-height:280px;
+  overflow:auto;
+  z-index:1070;
+}
+.combo-suggest-item{
+  padding:.625rem 1rem;
+  display:flex;
+  flex-direction:column;
+  gap:.25rem;
+  cursor:pointer;
+  border-bottom:1px solid rgba(37, 99, 235, 0.06);
+  transition: var(--transition);
+}
+.combo-suggest-item:last-child{border-bottom: none;}
+.combo-suggest-item strong{font-size:.95rem;font-weight:600;}
+.combo-suggest-item small{font-size:.8rem;color:var(--ap-muted);}
+.combo-suggest-item:hover,.combo-suggest-item.active{
+  background: rgba(37, 99, 235, 0.06);
+  padding-left: 1.25rem;
+}
+
+/* 🎯 Alert Styles */
+.alert {
+  border-radius: 12px;
+  padding: 0.875rem 1.125rem;
+  border: 1px solid;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.alert-info {
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.2);
+  color: var(--tech-primary);
+}
+
+/* 🎨 Badge Styles */
+.badge {
+  padding: 0.35rem 0.75rem;
+  font-weight: 600;
+  font-size: 0.8rem;
+  border-radius: 999px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+
+/* ⚡ Input Groups */
+.input-group-text {
+  background: rgba(37, 99, 235, 0.04);
+  border: 1px solid rgba(37, 99, 235, 0.15);
+  color: var(--tech-gray);
+  font-weight: 500;
+}
+
+/* 📱 Responsive improvements */
+@media (max-width: 768px) {
+  .card {
+    border-radius: 12px;
+  }
+  .card-toolbar {
+    padding: 0.875rem 1rem;
+  }
+}
 </style>
 {% endblock %}
 
@@ -119,7 +626,6 @@
         <div class="soft">Pesquise, compare colunas e detalhe por versões ou prestadores.</div>
       </div>
     </div>
-    <div class="d-none d-md-block"><span class="pill">• Ferramentas de Tabelas</span></div>
   </div>
 
   {# ================= Filtros ================= #}
@@ -2160,6 +2666,23 @@ function simularCBHPM(){
     return;
   }
   window._cbhpmLastPayload = payload;
+
+  // SALVA todos os valores atuais dos selects ANTES de reconstruir o HTML
+  // IMPORTANTE: Salva em window para estar disponível na renderização
+  window._cbhpmSavedStates = {};
+  document.querySelectorAll('.via-selector').forEach(sel => {
+    const code = sel.dataset.code;
+    window._cbhpmSavedStates[code] = { via: sel.value };
+    _setViaPctFor(code, sel.value);
+  });
+  document.querySelectorAll('.acomodacao-selector').forEach(sel => {
+    const code = sel.dataset.code;
+    if(!window._cbhpmSavedStates[code]) window._cbhpmSavedStates[code] = {};
+    window._cbhpmSavedStates[code].acomodacao = sel.value;
+    _setAcomodacaoFor(code, sel.value);
+  });
+  console.log('[CBHPM] Estados salvos antes da simulação:', window._cbhpmSavedStates);
+
   out.innerHTML='<div class="soft">Calculando...</div>';
 
   fetch('/api/simulacao_cbhpm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
@@ -2188,8 +2711,9 @@ function simularCBHPM(){
         if(!normKey) return;
         serverAcomodacaoMap[normKey] = _normalizeAcomodacao(val);
       });
-      Object.entries(serverAcomodacaoMap).forEach(([key,val])=> _setAcomodacaoFor(key, val));
-      Object.entries(serverMap).forEach(([key,val])=> _setViaPctFor(key, val));
+      // NÃO sobrescreve valores locais - DOM é a fonte da verdade
+      // Object.entries(serverAcomodacaoMap).forEach(([key,val])=> _setAcomodacaoFor(key, val));
+      // Object.entries(serverMap).forEach(([key,val])=> _setViaPctFor(key, val));
 
       const tetoAlertas = Array.isArray(data.teto_alertas) ? data.teto_alertas : [];
       const hasTetoInfo = Array.isArray(data.itens)
@@ -2257,8 +2781,10 @@ function simularCBHPM(){
 
         const activeCodes = new Set();
         const tableItems = prepareItemsForView(data.itens, state);
-        tableItems.forEach(it=>{
+        tableItems.forEach((it, idx)=>{
           const isDtp = (it.origem === 'dtp');
+          // Usa índice original do item (preservado mesmo após ordenação)
+          const itemIndex = it.item_index !== undefined ? it.item_index : idx;
           const descricao = (it.descricao||'-');
           const descHtml = isDtp ? `${descricao} <span class="badge bg-info-subtle text-info ms-1">DTP</span>` : descricao;
           {% if show_tuss_rol %}
@@ -2287,23 +2813,24 @@ function simularCBHPM(){
             totalHtml += `<div class="small text-muted">Orig. ${totalOriginal}</div>`;
           }
           const codeKey = _normalizeCode(it.codigo);
+          // Cria chave única para este item (código + índice)
+          const itemKey = `${codeKey}_${itemIndex}`;
+
           if(!isDtp && codeKey){
             activeCodes.add(codeKey);
-            if(!(codeKey in serverMap)){
-              const current = _getViaPctFor(codeKey);
-              _setViaPctFor(codeKey, current);
-              serverMap[codeKey] = current;
-            }
-            if(!(codeKey in serverAcomodacaoMap)){
-              const currentAcomodacao = _getAcomodacaoFor(codeKey);
-              serverAcomodacaoMap[codeKey] = currentAcomodacao;
-            }
           }
-          const currentAcomodacao = isDtp ? 'enfermaria' : (serverAcomodacaoMap[codeKey] || _getAcomodacaoFor(codeKey));
-          _setAcomodacaoFor(codeKey, currentAcomodacao);
-          const currentPct = isDtp ? '100' : (serverMap[codeKey] || _getViaPctFor(codeKey));
-          const acomodacaoHtml = isDtp ? '-' : `<select class="form-select form-select-sm acomodacao-selector" data-code="${codeKey}"><option value="enfermaria" ${currentAcomodacao==='enfermaria'?'selected':''}>Enfermaria</option><option value="apartamento" ${currentAcomodacao==='apartamento'?'selected':''}>Apartamento</option></select>`;
-          const selectHtml = isDtp ? '-' : `<select class="form-select form-select-sm via-selector" data-code="${codeKey}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')}</select>`;
+
+          // USA valores salvos ANTES do rebuild (window._cbhpmSavedStates tem os valores do DOM)
+          const savedStates = window._cbhpmSavedStates || {};
+          const currentAcomodacao = isDtp
+            ? 'enfermaria'
+            : (savedStates[itemKey]?.acomodacao || _getAcomodacaoFor(itemKey) || 'enfermaria');
+
+          const currentPct = isDtp
+            ? '100'
+            : (savedStates[itemKey]?.via || _getViaPctFor(itemKey) || '100');
+          const acomodacaoHtml = isDtp ? '-' : `<select class="form-select form-select-sm acomodacao-selector" data-code="${itemKey}"><option value="enfermaria" ${currentAcomodacao==='enfermaria'?'selected':''}>Enfermaria</option><option value="apartamento" ${currentAcomodacao==='apartamento'?'selected':''}>Apartamento</option></select>`;
+          const selectHtml = isDtp ? '-' : `<select class="form-select form-select-sm via-selector" data-code="${itemKey}">${VIA_PCT_OPTIONS.map(opt=>`<option value="${opt}" ${opt===String(currentPct)?'selected':''}>${opt}%</option>`).join('')}</select>`;
           const tetoValor = (!isDtp && _hasValue(it.teto_valor_total)) ? brl(it.teto_valor_total) : '-';
           let excedenteValor = (!isDtp && _hasValue(it.teto_excedente)) ? brl(it.teto_excedente) : '-';
           const excedentePct = (!isDtp && _hasValue(it.teto_pct_excedente)) ? pct(it.teto_pct_excedente) : null;
@@ -2385,6 +2912,7 @@ function simularCBHPM(){
             const code = ev.target.dataset.code;
             const val = ev.target.value;
             _setAcomodacaoFor(code, val);
+            // Simula automaticamente - valores serão preservados via window._cbhpmSavedStates
             simularCBHPM();
           });
         });
@@ -2393,6 +2921,7 @@ function simularCBHPM(){
             const code = ev.target.dataset.code;
             const val = ev.target.value;
             _setViaPctFor(code, val);
+            // Simula automaticamente - valores serão preservados via window._cbhpmSavedStates
             simularCBHPM();
           });
         });
@@ -3268,6 +3797,31 @@ async function buscarDTPPacote(){
     });
   }
 })();
+
+/* === Helper: marca mudanças pendentes === */
+function _markPendingChanges(){
+  // Adiciona badge visual indicando mudanças pendentes
+  let badge = document.getElementById('cbhpm-pending-badge');
+  if(!badge){
+    const btnSimular = document.querySelector('button[onclick*="simularCBHPM"]');
+    if(btnSimular){
+      badge = document.createElement('span');
+      badge.id = 'cbhpm-pending-badge';
+      badge.className = 'badge bg-warning text-dark ms-2';
+      badge.textContent = 'Recalcular';
+      badge.style.cursor = 'pointer';
+      badge.style.animation = 'pulse 1.5s ease-in-out infinite';
+      badge.onclick = ()=> simularCBHPM();
+      btnSimular.parentElement.appendChild(badge);
+    }
+  }
+}
+
+function _clearPendingChanges(){
+  const badge = document.getElementById('cbhpm-pending-badge');
+  if(badge) badge.remove();
+}
+
 /* === Helper: monta o payload do simulador CBHPM (reuso) === */
 
 function getCBHPMPayload(){
@@ -3275,11 +3829,10 @@ function getCBHPMPayload(){
   const pacoteRaw = document.getElementById('cbhpm-pacote').value;
 
   let codigos = [];
-  const seen = new Set();
+  // Permite códigos duplicados - não usa Set para filtrar
   const addCode = (raw)=>{
     const code = (raw || '').split(' - ', 1)[0].trim();
-    if(!code || seen.has(code)) return;
-    seen.add(code);
+    if(!code) return;
     codigos.push(code);
   };
 
@@ -3307,6 +3860,32 @@ function getCBHPMPayload(){
   const ativos = new Set(allCodes);
   Array.from(cbhpmDtpMeta.keys()).forEach(code=>{ if(!ativos.has(code)) cbhpmDtpMeta.delete(code); });
 
+  // Envia arrays de ajustes por índice para permitir códigos repetidos com ajustes independentes
+  // ABORDAGEM: Lê valores diretamente dos selects HTML (fonte da verdade)
+  const viaPctArray = [];
+  const acomodacaoArray = [];
+
+  // Busca todos os selects que existem na tela
+  const viaSelects = Array.from(document.querySelectorAll('.via-selector'));
+  const acomSelects = Array.from(document.querySelectorAll('.acomodacao-selector'));
+
+  codigos.forEach((code, idx)=>{
+    const key = _normalizeCode(code);
+    const itemKey = `${key}_${idx}`;
+
+    // Procura o select correspondente a este índice
+    const viaSelect = viaSelects.find(sel => sel.dataset.code === itemKey);
+    const acomSelect = acomSelects.find(sel => sel.dataset.code === itemKey);
+
+    // Usa valor do select se existir, senão usa valor salvo ou padrão
+    const pct = viaSelect ? viaSelect.value : (_getViaPctFor(itemKey) || '100');
+    const acom = acomSelect ? acomSelect.value : (_getAcomodacaoFor(itemKey) || 'enfermaria');
+
+    viaPctArray.push(pct);
+    acomodacaoArray.push(acom);
+  });
+
+  // Mantém compatibilidade com código antigo (usa primeiro valor)
   const activeCodes = new Set(codigos);
   if(codigo) activeCodes.add(codigo);
   const viaMap = {};
@@ -3314,19 +3893,15 @@ function getCBHPMPayload(){
     const key = _normalizeCode(code);
     if(!key) return;
     const pct = _getViaPctFor(key);
-    _setViaPctFor(key, pct);
     viaMap[key] = pct;
   });
-  _pruneViaPctStore([...activeCodes]);
   const acomodacaoMap = {};
   activeCodes.forEach(code=>{
     const key = _normalizeCode(code);
     if(!key) return;
     const acom = _getAcomodacaoFor(key);
-    _setAcomodacaoFor(key, acom);
     acomodacaoMap[key] = acom;
   });
-  _pruneAcomodacaoStore([...activeCodes]);
 
   return {
     codigo,
@@ -3343,6 +3918,9 @@ function getCBHPMPayload(){
     ajuste_porte_an_pct:document.getElementById('cbhpm-aj-an').value||0,
     via_entrada_pcts: viaMap,
     acomodacao_map: acomodacaoMap,
+    // Novos arrays para suportar códigos repetidos com ajustes independentes
+    via_entrada_pcts_array: viaPctArray,
+    acomodacao_array: acomodacaoArray,
   };
 }
 

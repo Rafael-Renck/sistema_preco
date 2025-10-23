@@ -5,6 +5,7 @@ import math
 import re
 import threading
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import click
 from flask import (
@@ -77,6 +78,15 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
 
 # Inicializa o SQLAlchemy para interagir com o banco de dados
 db = SQLAlchemy(app)
+
+# Cache simples em memória para insumos summary (evita queries lentas a cada pageload)
+_insumo_cache = {}
+_insumo_cache_ttl = 300  # 5 minutos
+
+def _clear_insumo_cache():
+    """Limpa o cache de insumos (chamar após importações)"""
+    global _insumo_cache
+    _insumo_cache = {}
 
 PASSWORD_EXPIRATION_DAYS = 90
 PASSWORD_HISTORY_SIZE = int(os.getenv('PASSWORD_HISTORY_SIZE', '5') or '5')
@@ -3798,19 +3808,26 @@ def _apply_insumo_filters(query, filters: dict):
 
 
 def _insumo_summary(model_cls) -> dict:
-    total = db.session.query(func.count(model_cls.id)).scalar() or 0
+    # Cache key baseado no nome da tabela
+    cache_key = f"summary_{model_cls.__tablename__}"
+    now = time.time()
 
+    # Verifica se existe cache válido
+    if cache_key in _insumo_cache:
+        cached_data, cached_time = _insumo_cache[cache_key]
+        if now - cached_time < _insumo_cache_ttl:
+            return cached_data
+
+    # OTIMIZAÇÃO: Executa tudo em uma única query ao invés de 4 queries separadas
     updated_column = None
     for candidate in ('updated_at', 'imported_at'):
         updated_column = getattr(model_cls, candidate, None)
         if updated_column is not None:
             break
-    last_updated = db.session.query(func.max(updated_column)).scalar() if updated_column is not None else None
 
     data_column = getattr(model_cls, 'data_atualizacao', None)
     if data_column is None:
         data_column = getattr(model_cls, 'data_ref', None)
-    last_data = db.session.query(func.max(data_column)).scalar() if data_column is not None else None
 
     version_column = None
     for candidate in ('versao_tabela', 'versao', 'edicao', 'arquivo'):
@@ -3818,25 +3835,46 @@ def _insumo_summary(model_cls) -> dict:
         if version_column is not None:
             break
 
-    latest_version = None
+    # Uma única query com todas as agregações
+    aggregations = [func.count(model_cls.id).label('total')]
+    if updated_column is not None:
+        aggregations.append(func.max(updated_column).label('last_updated'))
+    if data_column is not None:
+        aggregations.append(func.max(data_column).label('last_data'))
     if version_column is not None:
-        latest_version = (
-            db.session.query(version_column)
-            .filter(version_column.isnot(None))
-            .order_by(version_column.desc())
-            .limit(1)
-            .scalar()
-        )
+        aggregations.append(func.max(version_column).label('latest_version'))
 
-    return {
+    row = db.session.query(*aggregations).one()
+
+    total = int(row.total) if row.total else 0
+    last_updated = getattr(row, 'last_updated', None) if hasattr(row, 'last_updated') else None
+    last_data = getattr(row, 'last_data', None) if hasattr(row, 'last_data') else None
+    latest_version = getattr(row, 'latest_version', None) if hasattr(row, 'latest_version') else None
+
+    result = {
         'total': int(total),
         'last_updated': last_updated,
         'last_data_ref': last_data,
         'latest_version': latest_version,
     }
 
+    # Armazena no cache
+    _insumo_cache[cache_key] = (result, now)
+
+    return result
+
 
 def _insumo_distinct_versions(model_cls) -> list[str]:
+    # Cache key baseado no nome da tabela
+    cache_key = f"versions_{model_cls.__tablename__}"
+    now = time.time()
+
+    # Verifica se existe cache válido
+    if cache_key in _insumo_cache:
+        cached_data, cached_time = _insumo_cache[cache_key]
+        if now - cached_time < _insumo_cache_ttl:
+            return cached_data
+
     version_column = None
     for candidate in ('versao_tabela', 'versao', 'edicao', 'arquivo'):
         version_column = getattr(model_cls, candidate, None)
@@ -3853,7 +3891,12 @@ def _insumo_distinct_versions(model_cls) -> list[str]:
         .order_by(version_column)
         .all()
     )
-    return [row[0] for row in rows if row[0]]
+    result = [row[0] for row in rows if row[0]]
+
+    # Armazena no cache
+    _insumo_cache[cache_key] = (result, now)
+
+    return result
 
 
 def _get_teto_map(codigos: list[str]) -> dict[str, 'CbhpmTeto']:
@@ -4569,6 +4612,134 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/health')
+def health_check():
+    """
+    Endpoint de health check / status do sistema
+    Mostra status de banco, cache, tabelas, importações, etc.
+    Acesso público (sem login) para monitoramento externo
+    """
+    import psutil
+    from datetime import datetime
+
+    health_data = {
+        'timestamp': datetime.now().isoformat(),
+        'status': 'healthy',
+        'checks': {}
+    }
+
+    # 1. Database Connection
+    try:
+        db.session.execute(text('SELECT 1')).scalar()
+        health_data['checks']['database'] = {
+            'status': 'ok',
+            'message': 'Conexão com banco de dados OK'
+        }
+    except Exception as e:
+        health_data['status'] = 'unhealthy'
+        health_data['checks']['database'] = {
+            'status': 'error',
+            'message': f'Erro na conexão: {str(e)}'
+        }
+
+    # 2. Disk Space
+    try:
+        disk = psutil.disk_usage('/')
+        disk_percent = disk.percent
+        health_data['checks']['disk'] = {
+            'status': 'ok' if disk_percent < 90 else 'warning',
+            'used_percent': disk_percent,
+            'free_gb': round(disk.free / (1024**3), 2),
+            'total_gb': round(disk.total / (1024**3), 2)
+        }
+    except Exception as e:
+        health_data['checks']['disk'] = {
+            'status': 'error',
+            'message': str(e)
+        }
+
+    # 3. Memory
+    try:
+        mem = psutil.virtual_memory()
+        health_data['checks']['memory'] = {
+            'status': 'ok' if mem.percent < 90 else 'warning',
+            'used_percent': mem.percent,
+            'available_gb': round(mem.available / (1024**3), 2),
+            'total_gb': round(mem.total / (1024**3), 2)
+        }
+    except Exception as e:
+        health_data['checks']['memory'] = {
+            'status': 'error',
+            'message': str(e)
+        }
+
+    # 4. Table Counts
+    try:
+        counts = {}
+        counts['usuarios'] = db.session.query(func.count(Usuario.id)).scalar() or 0
+        counts['operadoras'] = db.session.query(func.count(Operadora.id)).scalar() or 0
+        counts['tabelas'] = db.session.query(func.count(Tabela.id)).scalar() or 0
+        counts['simpro'] = db.session.query(func.count(SimproItemNormalized.id)).scalar() or 0
+        counts['brasindice'] = db.session.query(func.count(BrasItemNormalized.id)).scalar() or 0
+        counts['insumos_index'] = db.session.query(func.count(InsumoIndex.id)).scalar() or 0
+
+        health_data['checks']['tables'] = {
+            'status': 'ok',
+            'counts': counts
+        }
+    except Exception as e:
+        health_data['checks']['tables'] = {
+            'status': 'error',
+            'message': str(e)
+        }
+
+    # 5. Cache Status
+    health_data['checks']['cache'] = {
+        'status': 'ok',
+        'insumo_cache_size': len(_insumo_cache),
+        'ttl_seconds': _insumo_cache_ttl
+    }
+
+    # 6. Recent Import Jobs
+    try:
+        recent_jobs = ImportJob.query.order_by(ImportJob.created_at.desc()).limit(5).all()
+        jobs_data = []
+        for job in recent_jobs:
+            jobs_data.append({
+                'id': job.id,
+                'origem': job.origem,
+                'status': job.status,
+                'versao': job.versao,
+                'created_at': job.created_at.isoformat() if job.created_at else None,
+                'finished_at': job.finished_at.isoformat() if job.finished_at else None
+            })
+
+        health_data['checks']['recent_imports'] = {
+            'status': 'ok',
+            'jobs': jobs_data
+        }
+    except Exception as e:
+        health_data['checks']['recent_imports'] = {
+            'status': 'error',
+            'message': str(e)
+        }
+
+    # Determinar status geral
+    has_errors = any(check.get('status') == 'error' for check in health_data['checks'].values())
+    has_warnings = any(check.get('status') == 'warning' for check in health_data['checks'].values())
+
+    if has_errors:
+        health_data['status'] = 'unhealthy'
+    elif has_warnings:
+        health_data['status'] = 'degraded'
+
+    # Renderizar template ou JSON
+    if request.args.get('format') == 'json':
+        return jsonify(health_data)
+
+    return render_template('health.html', health=health_data)
+
+
 @app.route('/minha-senha', methods=['GET', 'POST'])
 @login_required
 def alterar_senha():
@@ -4663,7 +4834,7 @@ def consulta_comparar():
         codigos.append(s.split(' - ', 1)[0].strip())
     if q.isdigit():
         codigos.append(q)
-    codigos = list(dict.fromkeys(codigos))
+    # Permite códigos duplicados - não remove duplicatas
 
     nomes = [r[0] for r in db.session.query(Tabela.nome).distinct().order_by(Tabela.nome).all()]
     if not tabela_nome and len(nomes) == 1:
@@ -4840,6 +5011,10 @@ def _compute_simulacao_cbhpm(data):
     quantize_money = Decimal('0.01')
     quantize_pct = Decimal('0.01')
 
+    # Suporta arrays de ajustes por índice (para códigos repetidos com ajustes independentes)
+    via_pct_array = data.get('via_entrada_pcts_array') or []
+    acomodacao_array = data.get('acomodacao_array') or []
+
     via_pct_map_raw = data.get('via_entrada_pcts')
     via_pct_map: dict[str, Decimal] = {}
     if isinstance(via_pct_map_raw, dict):
@@ -4871,7 +5046,13 @@ def _compute_simulacao_cbhpm(data):
                 continue
             acomodacao_map[key_norm] = 'apartamento' if val_norm == 'apartamento' else 'enfermaria'
 
-    def _resolve_acomodacao(code_key: str | None) -> str:
+    def _resolve_acomodacao(code_key: str | None, item_index: int | None = None) -> str:
+        # Prioriza acomodação por índice se disponível (para códigos repetidos)
+        if item_index is not None and item_index < len(acomodacao_array):
+            val = str(acomodacao_array[item_index] or '').strip().lower()
+            if val in {'apartamento', 'enfermaria'}:
+                return val
+        # Fallback para mapa por código
         key_norm = str(code_key or '').strip().upper()
         if key_norm and key_norm in acomodacao_map:
             return acomodacao_map[key_norm]
@@ -4880,11 +5061,21 @@ def _compute_simulacao_cbhpm(data):
             return 'apartamento'
         return 'enfermaria'
 
-    def apply_via_entrada(breakdown: dict | None, code_key: str | None):
+    def apply_via_entrada(breakdown: dict | None, code_key: str | None, item_index: int | None = None):
         if not breakdown:
             return breakdown
         normalized = str(code_key or '').strip().upper() or '__default__'
-        pct = via_pct_map.get(normalized, via_pct_map.get('__default__', Decimal('100')))
+        # Prioriza percentual por índice se disponível (para códigos repetidos)
+        if item_index is not None and item_index < len(via_pct_array):
+            pct_raw = via_pct_array[item_index]
+            pct = _as_decimal(pct_raw)
+            if pct is not None:
+                pct = max(Decimal('0'), min(Decimal('100'), pct))
+            else:
+                pct = Decimal('100')
+        else:
+            # Fallback para mapa por código
+            pct = via_pct_map.get(normalized, via_pct_map.get('__default__', Decimal('100')))
         applied_via_map[normalized] = pct
         factor = (pct / Decimal('100')) if pct is not None else Decimal('1')
         breakdown['via_entrada_pct'] = pct
@@ -4943,10 +5134,10 @@ def _compute_simulacao_cbhpm(data):
         breakdown['total'] = total_reduzido
         return breakdown
 
-    def apply_acomodacao(breakdown: dict | None, code_key: str | None):
+    def apply_acomodacao(breakdown: dict | None, code_key: str | None, item_index: int | None = None):
         if not breakdown:
             return breakdown
-        acomodacao_value = _resolve_acomodacao(code_key)
+        acomodacao_value = _resolve_acomodacao(code_key, item_index)
         breakdown['acomodacao'] = acomodacao_value
         if acomodacao_value != 'apartamento':
             return breakdown
@@ -5002,19 +5193,17 @@ def _compute_simulacao_cbhpm(data):
         desc = (item.get('descricao') or '').strip()
         valor = _as_decimal(item.get('valor'))
         tabela_nome = (item.get('tabela_nome') or item.get('tabela') or '').strip()
+        qtd = max(int(item.get('qtd') or 1), 1)
         uf_item = (item.get('uf') or '').strip()
         dtp_map[code] = {
             'codigo': code,
             'descricao': desc,
             'valor': valor,
+            'qtd': qtd,
             'tabela_nome': tabela_nome,
             'uf': uf_item,
         }
-
-    codigos = list(dict.fromkeys(codigos))
     dtp_items = list(dtp_map.values())
-    if dtp_items:
-        codigos = [c for c in codigos if c not in dtp_map]
 
     uf = (data.get('uf') or '').strip() or None
     versao = data.get('versao')
@@ -5030,8 +5219,8 @@ def _compute_simulacao_cbhpm(data):
 
     item = None
     t_ref = None
-
-    target_code = codigo or (codigos[0] if codigos else '')
+    codigos_list = codigos  # Permite códigos duplicados - usa lista de códigos diretamente
+    target_code = codigo or (codigos_list[0] if codigos_list else '')
     if target_code:
         q = (db.session.query(CBHPMItem, Tabela)
              .join(Tabela, CBHPMItem.id_tabela == Tabela.id))
@@ -5105,14 +5294,14 @@ def _compute_simulacao_cbhpm(data):
         cbhpm_results = []
         teto_alerts: list[dict] = []
         d0 = Decimal('0')
-
-        def to_decimal(value):
+        def to_decimal(value, qtd=1):
             val = _as_decimal(value)
-            return val if val is not None else d0
+            val = val if val is not None else d0
+            return val * Decimal(qtd)
 
         acomodacao_out_map: dict[str, str] = {}
-        if codigos:
-            for cod in codigos:
+        if codigos:  # Permite códigos duplicados - verifica se há códigos na lista
+            for cod_idx, cod in enumerate(codigos):
                 it_item = None
                 if versao or cod:
                     qit = (db.session.query(CBHPMItem, Tabela)
@@ -5169,8 +5358,9 @@ def _compute_simulacao_cbhpm(data):
                     ajuste_porte_pct=aj_porte_pct, ajuste_porte_an_pct=aj_an_pct,
                     rules=ruleset_dict
                 )
-                br = apply_via_entrada(br, cod)
-                br = apply_acomodacao(br, cod)
+                # Passa índice para permitir ajustes individuais em códigos repetidos
+                br = apply_via_entrada(br, cod, cod_idx)
+                br = apply_acomodacao(br, cod, cod_idx)
                 item_out = {k: _stringify_for_output(v) for k, v in br.items()}
                 if br.get('applied_rules'):
                     item_out['applied_rules'] = _stringify_for_output(br['applied_rules'])
@@ -5179,7 +5369,7 @@ def _compute_simulacao_cbhpm(data):
                 if br.get('total_final') is not None:
                     item_out['total_final'] = _stringify_for_output(br.get('total_final'))
                 item_out['percentual_via'] = _stringify_for_output(br.get('via_entrada_pct')) if br.get('via_entrada_pct') is not None else item_out.get('percentual_via')
-                item_out.update({'codigo': cod, 'descricao': base_i.procedimento, 'origem': 'cbhpm'})
+                item_out.update({'codigo': cod, 'descricao': base_i.procedimento, 'origem': 'cbhpm', 'item_index': cod_idx})
                 code_norm = str(cod or '').strip().upper()
                 if code_norm:
                     acomodacao_out_map[code_norm] = br.get('acomodacao') or 'enfermaria'
@@ -5202,7 +5392,7 @@ def _compute_simulacao_cbhpm(data):
         if reducoes and len(cbhpm_results) > 1:
             ordered = sorted(
                 enumerate(cbhpm_results),
-                key=lambda pair: pair[1]['totals']['total_porte'],
+                key=lambda pair: pair[1]['totals']['total_porte'], # A ordenação é feita por valor individual
                 reverse=True
             )
             for rank, (idx, entry) in enumerate(ordered):
@@ -5225,6 +5415,7 @@ def _compute_simulacao_cbhpm(data):
                     continue
                 delta = original - adjusted
                 entry['totals']['total_porte'] = adjusted
+                # Atualiza o total do item e o total final com a redução
                 entry['totals']['total'] = entry['totals']['total'] - delta
                 payload_entry = entry['payload']
                 payload_entry['total_porte'] = str(adjusted)
@@ -5241,11 +5432,12 @@ def _compute_simulacao_cbhpm(data):
                 payload_entry['applied_rules'] = applied
 
         if cbhpm_results:
-            codes_to_check = [entry['payload'].get('codigo') for entry in cbhpm_results]
+            # Garante que cada código seja verificado, mesmo que duplicado
+            codes_to_check = [entry['payload'].get('codigo') for entry in cbhpm_results if entry['payload'].get('codigo')]
             teto_map = _get_teto_map(codes_to_check)
             rol_map = _fetch_tuss_rol_map(codes_to_check)
             for entry in cbhpm_results:
-                payload_entry = entry['payload']
+                payload_entry = entry['payload'] # payload_entry é um dicionário único para cada item na lista
                 codigo_item = (payload_entry.get('codigo') or '').strip().upper()
                 if not codigo_item:
                     continue
@@ -5255,7 +5447,8 @@ def _compute_simulacao_cbhpm(data):
                 teto_row = teto_map.get(codigo_item)
                 if not teto_row:
                     continue
-                teto_val = _as_decimal(teto_row.valor_total)
+                # O teto é por procedimento, então o valor é unitário
+                teto_val = _as_decimal(teto_row.valor_total) 
                 calc_total = entry['totals'].get('total_final') or entry['totals'].get('total')
                 if calc_total is None:
                     calc_total = _as_decimal(payload_entry.get('total_final') or payload_entry.get('total'))
@@ -5291,7 +5484,7 @@ def _compute_simulacao_cbhpm(data):
                         'descricao_teto': teto_row.descricao,
                     })
 
-        itens.extend([entry['payload'] for entry in cbhpm_results])
+        itens.extend([entry['payload'] for entry in cbhpm_results]) # Adiciona cada resultado individualmente
 
         for meta in dtp_items:
             val = meta.get('valor')
@@ -5317,15 +5510,14 @@ def _compute_simulacao_cbhpm(data):
                 'auxiliares_detalhe': [],
                 'acomodacao': 'enfermaria',
             })
-
-        sum_porte = sum(to_decimal(item.get('total_porte')) for item in itens)
-        sum_filme = sum(to_decimal(item.get('total_filme')) for item in itens)
-        sum_uco = sum(to_decimal(item.get('total_uco')) for item in itens)
-        sum_an = sum(to_decimal(item.get('total_porte_an')) for item in itens)
-        sum_aux = sum(to_decimal(item.get('total_auxiliares')) for item in itens)
-        sum_total = sum(to_decimal(item.get('total')) for item in itens)
-        sum_total_original = sum(to_decimal(item.get('total_original')) for item in itens)
-        sum_total_final = sum(to_decimal(item.get('total_final') or item.get('total')) for item in itens)
+        sum_porte = sum(to_decimal(item.get('total_porte'), item.get('qtd', 1) if item.get('origem') != 'dtp' else 1) for item in itens)
+        sum_filme = sum(to_decimal(item.get('total_filme'), item.get('qtd', 1) if item.get('origem') != 'dtp' else 1) for item in itens)
+        sum_uco = sum(to_decimal(item.get('total_uco'), item.get('qtd', 1) if item.get('origem') != 'dtp' else 1) for item in itens)
+        sum_an = sum(to_decimal(item.get('total_porte_an'), item.get('qtd', 1) if item.get('origem') != 'dtp' else 1) for item in itens)
+        sum_aux = sum(to_decimal(item.get('total_auxiliares'), item.get('qtd', 1) if item.get('origem') != 'dtp' else 1) for item in itens)
+        sum_total = sum(to_decimal(item.get('total'), 1) for item in itens) # total já tem qtd
+        sum_total_original = sum(to_decimal(item.get('total_original'), 1) for item in itens) # total já tem qtd
+        sum_total_final = sum(to_decimal(item.get('total_final') or item.get('total'), 1) for item in itens) # total já tem qtd
 
         via_out_map = {
             key: str(value)
@@ -6310,7 +6502,7 @@ def api_tuss_rol_lookup():
         raw_codigos.extend([c.strip() for c in codigos_extra.split(',') if c.strip()])
 
     normalized = [_normalize_tuss_codigo(c) for c in raw_codigos if _normalize_tuss_codigo(c)]
-    normalized = list(dict.fromkeys(normalized))
+    # Permite códigos duplicados - não remove duplicatas
 
     if normalized:
         records = (
@@ -6847,8 +7039,8 @@ def tuss_rol_consulta():
         normalized = _normalize_tuss_codigo(original)
         if not normalized:
             continue
-        if normalized not in requested_codes:
-            requested_codes.append(normalized)
+        # Permite códigos duplicados - não verifica se já existe na lista
+        requested_codes.append(normalized)
 
     results: list[dict] = []
     summary = {
@@ -9500,42 +9692,31 @@ def _run_import_job(job_id: str) -> None:
                 )
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
             else:
+                # CORREÇÃO: SIMPRO importa uma vez só, mesmo com múltiplas UFs
+                # As UFs selecionadas são armazenadas no campo uf_referencia codificado
+                # Exemplo: importar para AP,MG,SP gera 3.000 linhas (não 9.000)
                 stage_start = time.perf_counter()
                 base_label = arquivo_label_override or (Path(job.original_filename).stem if job.original_filename else None)
                 if not base_label:
                     base_label = versao or 'simpro'
+
                 target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
-                if not target_ufs:
-                    target_ufs = [None]
-                parts: list[tuple[dict, str | None, str | None]] = []
-                for idx, uf in enumerate(target_ufs):
-                    current_label = base_label
-                    if uf:
-                        current_label = f"{base_label}_{uf}"
-                    partial = _import_simpro(
-                        file_path=file_path,
-                        versao=versao,
-                        fmt=fmt,
-                        map_config=map_config,
-                        encoding=encoding,
-                        truncate=(truncate if idx == 0 else False),
-                        uf_default=uf,
-                        uf_values=[uf] if uf else None,
-                        aliquota_default=aliquota_decimal,
-                        arquivo_label_override=current_label,
-                    )
-                    if partial:
-                        parts.append((partial, uf, current_label))
+
+                # Importa arquivo UMA VEZ, passando todas as UFs
+                result = _import_simpro(
+                    file_path=file_path,
+                    versao=versao,
+                    fmt=fmt,
+                    map_config=map_config,
+                    encoding=encoding,
+                    truncate=truncate,
+                    uf_default=uf_default,
+                    uf_values=target_ufs if target_ufs else None,
+                    aliquota_default=aliquota_decimal,
+                    arquivo_label_override=base_label,
+                )
+
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
-                arquivos = [label for _, _, label in parts if label]
-                result = {
-                    'arquivo': arquivos[0] if arquivos else None,
-                    'arquivos': arquivos,
-                    'linhas_raw': sum(partial.get('linhas_raw') or 0 for partial, _, _ in parts),
-                    'linhas_materializadas': sum(partial.get('linhas_materializadas') or 0 for partial, _, _ in parts),
-                    'load_strategy': next((partial.get('load_strategy') for partial, _, _ in parts if partial.get('load_strategy')), None),
-                    '_partials': parts,
-                }
 
             job.status = ImportJobStatus.SUCCESS.value
             job.message = _job_message_trim(
@@ -9558,32 +9739,20 @@ def _run_import_job(job_id: str) -> None:
             _set_job_metrics(job, metrics)
             db.session.commit()
 
+            # Limpa o cache de insumos após importação bem-sucedida
+            _clear_insumo_cache()
+
             try:
                 post_start = time.perf_counter()
-                partials = result.get('_partials') if origem == 'SIMPRO' else None
-                if partials:
-                    for partial, uf, label in partials:
-                        if isinstance(partial, dict):
-                            label = label or partial.get('arquivo')
-                        if not label:
-                            continue
-                        _post_catalog_ingest(
-                            origem=origem,
-                            arquivo_label=label,
-                            versao=versao,
-                            sequencia_input=sequencia_input,
-                            aliquota_value=aliquota_decimal,
-                            uf_values=[uf] if uf else uf_values,
-                        )
-                else:
-                    _post_catalog_ingest(
-                        origem=origem,
-                        arquivo_label=result.get('arquivo'),
-                        versao=versao,
-                        sequencia_input=sequencia_input,
-                        aliquota_value=aliquota_decimal,
-                        uf_values=uf_values,
-                    )
+                # Consolida catálogo após importação
+                _post_catalog_ingest(
+                    origem=origem,
+                    arquivo_label=result.get('arquivo'),
+                    versao=versao,
+                    sequencia_input=sequencia_input,
+                    aliquota_value=aliquota_decimal,
+                    uf_values=uf_values,
+                )
                 metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
             except Exception as exc:  # noqa: BLE001
                 app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
