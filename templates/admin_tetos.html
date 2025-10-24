@@ -26,6 +26,7 @@
             <tr>
               <th>Código</th>
               <th>Descrição</th>
+              <th>Operadora</th>
               <th class="text-end">Teto</th>
               <th class="text-end">Atualizado em</th>
               <th class="text-end">Ações</th>
@@ -36,10 +37,12 @@
             <tr>
               <td class="fw-semibold">{{ item.codigo }}</td>
               <td>{{ item.descricao }}</td>
+              <td><span class="badge bg-secondary">{{ item.operadora.nome if item.operadora else 'N/A' }}</span></td>
               <td class="text-end">{{ format_brl(item.valor_total) or 'R$ 0,00' }}</td>
               <td class="text-end">{{ item.updated_at.strftime('%d/%m/%Y %H:%M') if item.updated_at else '—' }}</td>
               <td class="text-end">
                 <form method="post" action="{{ url_for('admin_tetos_delete', codigo=item.codigo) }}" onsubmit="return confirm('Remover teto {{ item.codigo }}?');">
+                  <input type="hidden" name="operadora_id" value="{{ item.operadora_id }}">
                   <button class="btn btn-sm btn-outline-danger" type="submit">
                     <i class="bi bi-trash"></i>
                   </button>
@@ -47,7 +50,7 @@
               </td>
             </tr>
             {% else %}
-            <tr><td colspan="5" class="text-center text-secondary py-4">Nenhum teto cadastrado.</td></tr>
+            <tr><td colspan="6" class="text-center text-secondary py-4">Nenhum teto cadastrado.</td></tr>
             {% endfor %}
           </tbody>
         </table>
@@ -78,6 +81,21 @@
       <h6 class="mb-3">Importar / Atualizar</h6>
       <form method="post" action="{{ url_for('admin_tetos_import') }}" enctype="multipart/form-data" class="row g-2">
         <div class="col-12">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}" {% if op.id == current_operadora_id %}selected{% endif %}>
+                {{ op.nome }}
+              </option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+          <div class="form-text">Selecione para qual operadora os tetos serão importados</div>
+        </div>
+        <div class="col-12">
           <label class="form-label">Arquivo (.csv/.xlsx)</label>
           <input class="form-control" type="file" name="arquivo" accept=".csv,.xlsx" required>
         </div>
@@ -88,6 +106,87 @@
       </form>
       <p class="small text-muted mt-2 mb-0">
         Informe as colunas <code>codigo</code>, <code>descricao</code> e <code>valor_total</code>. Valores aceitam vírgula ou ponto e duplicados consideram a última ocorrência.
+      </p>
+    </div>
+
+    <div class="card p-3 mb-3">
+      <h6 class="mb-3">Copiar Tetos entre Operadoras</h6>
+      <form method="post" action="{{ url_for('admin_tetos_copy') }}" class="row g-2" onsubmit="return confirm('Confirma a cópia de tetos entre operadoras? Os tetos existentes na operadora destino serão substituídos.');">
+        <div class="col-12">
+          <label class="form-label">Operadora Origem</label>
+          <select class="form-select" name="operadora_origem_id" required>
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}">{{ op.nome }}</option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Operadora Destino</label>
+          <select class="form-select" name="operadora_destino_id" required>
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}">{{ op.nome }}</option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+        </div>
+        <div class="col-12">
+          <button class="btn btn-warning w-100" type="submit">
+            <i class="bi bi-arrow-left-right"></i> Copiar Tetos
+          </button>
+        </div>
+      </form>
+      <p class="small text-muted mt-2 mb-0">
+        Esta ação copiará todos os tetos da operadora origem para a operadora destino. Tetos duplicados serão substituídos.
+      </p>
+    </div>
+
+    <div class="card p-3 mb-3">
+      <h6 class="mb-3">Copiar Procedimentos/DTPs entre Operadoras</h6>
+      <form method="post" action="{{ url_for('admin_procedimentos_copy') }}" class="row g-2" onsubmit="return confirm('Confirma a cópia de procedimentos entre operadoras? Isso pode demorar alguns minutos.');">
+        <div class="col-12">
+          <label class="form-label">Operadora Origem</label>
+          <select class="form-select" name="operadora_origem_id" required>
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}">{{ op.nome }}</option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Operadora Destino</label>
+          <select class="form-select" name="operadora_destino_id" required>
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}">{{ op.nome }}</option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Tabela (Opcional)</label>
+          <input type="text" class="form-control" name="tabela_nome" placeholder="Deixe vazio para copiar todas">
+          <div class="form-text">Especifique o nome de uma tabela DTP para copiar apenas ela, ou deixe vazio para copiar todas</div>
+        </div>
+        <div class="col-12">
+          <button class="btn btn-warning w-100" type="submit">
+            <i class="bi bi-arrow-left-right"></i> Copiar Procedimentos/DTPs
+          </button>
+        </div>
+      </form>
+      <p class="small text-muted mt-2 mb-0">
+        Esta ação copiará todos os procedimentos e suas tabelas da operadora origem para a operadora destino.
       </p>
     </div>
 
@@ -191,6 +290,7 @@
       {% endif %}
       <form method="post" action="{{ url_for('admin_tetos_import') }}" class="d-grid gap-2">
         <input type="hidden" name="token" value="{{ preview.token }}">
+        <input type="hidden" name="operadora_id" value="{{ preview.operadora_id or preview.meta.operadora_id or current_operadora_id }}">
         <button class="btn btn-success" type="submit" {% if not preview.rows %}disabled{% endif %}>Importar / Atualizar</button>
         <a class="btn btn-outline-secondary" href="{{ url_for('admin_tetos') }}">Descartar</a>
       </form>

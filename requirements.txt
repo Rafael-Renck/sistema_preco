@@ -13,3 +13,4 @@ WeasyPrint==61.2
 alembic==1.13.3
 pytest==8.3.2
 psutil
+cachetools==5.3.3

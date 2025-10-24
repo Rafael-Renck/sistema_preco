@@ -24,5 +24,5 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-CMD ["gunicorn", "-w", "3", "-b", "0.0.0.0:8000", "app:app"]
+CMD ["gunicorn", "-w", "3", "--max-requests", "1000", "--max-requests-jitter", "100", "--timeout", "120", "--worker-class", "sync", "-b", "0.0.0.0:8000", "app:app"]
 

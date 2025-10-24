@@ -919,6 +919,21 @@
           </select>
         </div>
 
+        <div class="col-12 col-lg-4">
+          <label class="form-label">Operadora (para tetos CBHPM)</label>
+          <select class="form-select" id="cbhpm-operadora">
+            {% if operadoras_list %}
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}" {% if op.id == current_operadora_id %}selected{% endif %}>
+                {{ op.nome }}
+              </option>
+              {% endfor %}
+            {% else %}
+              <option value="">Nenhuma operadora cadastrada</option>
+            {% endif %}
+          </select>
+        </div>
+
         <div class="col-6 col-lg-3">
           <label class="form-label">Tabela de Porte (hint)</label>
           <select class="form-select" id="cbhpm-porte">
@@ -3903,6 +3918,10 @@ function getCBHPMPayload(){
     acomodacaoMap[key] = acom;
   });
 
+  // Operadora ID
+  const operadoraSelect = document.getElementById('cbhpm-operadora');
+  const operadoraId = operadoraSelect ? parseInt(operadoraSelect.value) : null;
+
   return {
     codigo,
     codigos,
@@ -3921,6 +3940,8 @@ function getCBHPMPayload(){
     // Novos arrays para suportar códigos repetidos com ajustes independentes
     via_entrada_pcts_array: viaPctArray,
     acomodacao_array: acomodacaoArray,
+    // Multi-operadora: incluir operadora_id
+    operadora_id: operadoraId,
   };
 }
 
@@ -3934,6 +3955,7 @@ function setCBHPMPayload(data){
   setValue('cbhpm-codigo', data.codigo || '');
   setValue('cbhpm-uf', data.uf || '');
   setValue('cbhpm-versao', data.versao || '');
+  setValue('cbhpm-operadora', data.operadora_id || '');
   setValue('cbhpm-porte', data.porte_tab || '');
   setValue('cbhpm-porte-an', data.porte_an_tab || '');
   setValue('cbhpm-uco', data.uco_valor || '');

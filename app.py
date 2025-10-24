@@ -52,6 +52,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from werkzeug.security import generate_password_hash, check_password_hash
+from cachetools import TTLCache
 # --- 1. CONFIGURAÇÃO INICIAL ---
 # Inicializa a aplicação Flask
 load_dotenv()
@@ -70,23 +71,35 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
 )
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Otimizações de connection pool para múltiplos acessos
 engine_options = dict(app.config.get('SQLALCHEMY_ENGINE_OPTIONS') or {})
 connect_args = dict(engine_options.get('connect_args') or {})
 connect_args.setdefault('local_infile', 1)
 engine_options['connect_args'] = connect_args
+
+# Pool otimizado para ~25 usuários simultâneos
+engine_options.setdefault('pool_size', 10)           # Conexões mantidas no pool
+engine_options.setdefault('max_overflow', 20)        # Conexões extras em picos (total: 30)
+engine_options.setdefault('pool_recycle', 3600)      # Recicla conexões após 1h
+engine_options.setdefault('pool_pre_ping', True)     # Verifica conexão antes de usar
+engine_options.setdefault('pool_timeout', 30)        # Timeout ao aguardar conexão
+
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
 
 # Inicializa o SQLAlchemy para interagir com o banco de dados
 db = SQLAlchemy(app)
 
-# Cache simples em memória para insumos summary (evita queries lentas a cada pageload)
-_insumo_cache = {}
-_insumo_cache_ttl = 300  # 5 minutos
+# Cache com limite de memória (TTL Cache) para múltiplos acessos
+# maxsize limita quantidade de itens, ttl limita tempo de vida
+_insumo_cache_ttl = 300  # 5 minutos (para compatibilidade)
+_insumo_cache = TTLCache(maxsize=1000, ttl=_insumo_cache_ttl)
+_teto_cache = TTLCache(maxsize=500, ttl=600)     # 500 itens, 10 minutos
+_rol_cache = TTLCache(maxsize=2000, ttl=900)     # 2000 itens, 15 minutos
 
 def _clear_insumo_cache():
     """Limpa o cache de insumos (chamar após importações)"""
     global _insumo_cache
-    _insumo_cache = {}
+    _insumo_cache.clear()
 
 PASSWORD_EXPIRATION_DAYS = 90
 PASSWORD_HISTORY_SIZE = int(os.getenv('PASSWORD_HISTORY_SIZE', '5') or '5')
@@ -341,6 +354,9 @@ class ContractSummary(db.Model):
     inflator_deflator = db.Column(db.String(120), nullable=True)
     filme_radiologico = db.Column(db.String(120), nullable=True)
     observacoes = db.Column(db.Text, nullable=True)
+    # Multi-operadora: cada contrato pertence a uma operadora
+    operadora_id = db.Column(db.Integer, db.ForeignKey('operadoras.id', ondelete='CASCADE'),
+                             nullable=False, default=1, index=True)
     created_at = db.Column(
         db.DateTime,
         nullable=False,
@@ -352,6 +368,9 @@ class ContractSummary(db.Model):
         server_default=text('CURRENT_TIMESTAMP'),
         server_onupdate=text('CURRENT_TIMESTAMP'),
     )
+
+    # Relacionamento
+    operadora = db.relationship('Operadora', backref='contratos')
 
 
 class AuditLog(db.Model):
@@ -494,6 +513,12 @@ class Procedimento(db.Model):
     uf = db.Column(db.String(2), nullable=True)
     # Chave estrangeira para ligar à tabela de preços
     id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
+    # Multi-operadora: cada procedimento/DTP pode ter valores específicos por operadora
+    operadora_id = db.Column(db.Integer, db.ForeignKey('operadoras.id', ondelete='CASCADE'),
+                             nullable=False, default=1)
+
+    # Relacionamento
+    operadora = db.relationship('Operadora', backref='procedimentos')
 
 
 class CBHPMItem(db.Model):
@@ -555,6 +580,7 @@ class CbhpmTeto(db.Model):
     __tablename__ = 'cbhpm_teto'
 
     codigo = db.Column(db.String(20), primary_key=True)
+    operadora_id = db.Column(db.Integer, db.ForeignKey('operadoras.id', ondelete='CASCADE'), primary_key=True, nullable=False)
     descricao = db.Column(db.String(255), nullable=False)
     valor_total = db.Column(db.Numeric(15, 2), nullable=False)
     updated_at = db.Column(
@@ -564,8 +590,12 @@ class CbhpmTeto(db.Model):
         server_onupdate=text('CURRENT_TIMESTAMP'),
     )
 
+    # Relacionamento
+    operadora = db.relationship('Operadora', backref='tetos_cbhpm')
+
     __table_args__ = (
         db.Index('idx_cbhpm_teto_descricao', 'descricao'),
+        db.Index('idx_cbhpm_teto_operadora', 'operadora_id'),
     )
 
 
@@ -2610,6 +2640,9 @@ def _snapshot_teto_jobs() -> list[SimpleNamespace]:
 def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str) -> None:
     _update_teto_job(job_id, status='running', started_at=datetime.utcnow(), message='Processando registros…')
     try:
+        # Multi-operadora: obter operadora_id do payload
+        operadora_id = preview_payload.get('operadora_id', 1)
+
         rows_raw = preview_payload.get('rows') or []
         rows = []
         for row in rows_raw:
@@ -2621,12 +2654,15 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
                 'codigo': cod,
                 'descricao': (row.get('descricao') or '').strip()[:255],
                 'valor_total': val,
+                'operadora_id': operadora_id,  # Multi-operadora
             })
         codes = [row['codigo'] for row in rows]
         with app.app_context():
-            existing: set[str] = set()
+            existing: set[tuple[str, int]] = set()
             if codes:
-                existing = {c for (c,) in db.session.query(CbhpmTeto.codigo).filter(CbhpmTeto.codigo.in_(codes)).all()}
+                # Multi-operadora: verificar existentes por (codigo, operadora_id)
+                existing = {(c, o) for (c, o) in db.session.query(CbhpmTeto.codigo, CbhpmTeto.operadora_id)
+                           .filter(CbhpmTeto.codigo.in_(codes), CbhpmTeto.operadora_id == operadora_id).all()}
             if rows:
                 chunk_size = 800
                 for start in range(0, len(rows), chunk_size):
@@ -2644,7 +2680,8 @@ def _run_teto_import_job(job_id: str, preview_payload: dict, confirm_token: str)
                     db.session.execute(upsert_stmt)
                     db.session.commit()
             db.session.remove()
-            inserted = len([code for code in codes if code not in existing])
+            # Multi-operadora: contar inseridos/atualizados por (codigo, operadora_id)
+            inserted = len([code for code in codes if (code, operadora_id) not in existing])
             updated = len(codes) - inserted
             error_count = len(preview_payload.get('errors', []))
             _update_teto_job(
@@ -3899,12 +3936,50 @@ def _insumo_distinct_versions(model_cls) -> list[str]:
     return result
 
 
-def _get_teto_map(codigos: list[str]) -> dict[str, 'CbhpmTeto']:
+def _get_teto_map(codigos: list[str], operadora_id: int | None = None) -> dict[str, 'CbhpmTeto']:
+    """
+    Retorna mapa de tetos CBHPM por código
+
+    Args:
+        codigos: Lista de códigos CBHPM
+        operadora_id: ID da operadora (obrigatório para multi-operadora)
+    """
     unique_codes = {str(c or '').strip().upper() for c in codigos if str(c or '').strip()}
     if not unique_codes:
         return {}
-    rows = CbhpmTeto.query.filter(CbhpmTeto.codigo.in_(unique_codes)).all()
+
+    query = CbhpmTeto.query.filter(CbhpmTeto.codigo.in_(unique_codes))
+
+    # Se operadora_id fornecida, filtrar por ela
+    if operadora_id:
+        query = query.filter(CbhpmTeto.operadora_id == operadora_id)
+
+    rows = query.all()
     return {row.codigo.upper(): row for row in rows}
+
+
+def _get_user_operadoras_list():
+    """
+    Retorna lista de operadoras ativas filtradas pelo usuário logado.
+
+    Se o usuário tiver operadoras associadas, retorna apenas as operadoras dele.
+    Se não tiver operadoras associadas (admin geral), retorna todas as operadoras ativas.
+
+    Returns:
+        List[Operadora]: Lista de operadoras ativas que o usuário pode acessar
+    """
+    # Buscar todas as operadoras ativas
+    query = Operadora.query.filter_by(status='Ativa').order_by(Operadora.nome)
+
+    # Se o usuário tem operadoras específicas associadas, filtrar por elas
+    if hasattr(g, 'current_user') and g.current_user:
+        user_operadoras = g.current_user.operadoras
+        if user_operadoras:
+            # Filtrar apenas pelas operadoras do usuário
+            operadora_ids = [op.id for op in user_operadoras]
+            query = query.filter(Operadora.id.in_(operadora_ids))
+
+    return query.all()
 
 
 def _load_data_local_infile(engine, table_name: str, columns: list[str], file_path: Path, delimiter: str,
@@ -5052,6 +5127,11 @@ def consulta_comparar():
                               .distinct().order_by(Tabela.nome).all()]
         else:
             q_prest = db.session.query(Procedimento.prestador)                .join(Tabela, Procedimento.id_tabela == Tabela.id)                .filter(Tabela.nome == tabela_nome)
+
+            # Multi-operadora: filtrar prestadores por operadora_id
+            if current_operadora_id:
+                q_prest = q_prest.filter(Procedimento.operadora_id == current_operadora_id)
+
             if selected_uf:
                 q_prest = q_prest.filter(or_(Tabela.uf == selected_uf, Procedimento.uf == selected_uf))
             prestadores_disp = [r[0] for r in q_prest
@@ -5093,6 +5173,11 @@ def consulta_comparar():
                     entry["values"][ver] = v
         else:
             query = db.session.query(Procedimento, Procedimento.prestador)                .join(Tabela, Procedimento.id_tabela == Tabela.id)                .filter(Tabela.nome == tabela_nome)
+
+            # Multi-operadora: filtrar procedimentos por operadora_id
+            if current_operadora_id:
+                query = query.filter(Procedimento.operadora_id == current_operadora_id)
+
             if selected_uf:
                 query = query.filter(or_(Tabela.uf == selected_uf, Procedimento.uf == selected_uf))
             if selected_prestadores:
@@ -5144,6 +5229,11 @@ def consulta_comparar():
     porte_an_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='porte_anestesico').order_by(Tabela.nome).all()]
     dtp_list = [t.nome for t in Tabela.query.filter_by(tipo_tabela='diarias_taxas_pacotes').order_by(Tabela.nome).all()]
     cbhpm_list_all = [r[0] for r in db.session.query(Tabela.nome).filter(Tabela.tipo_tabela=='cbhpm').distinct().order_by(Tabela.nome).all()]
+
+    # Multi-operadora: buscar lista de operadoras ativas (filtrada pelo usuário)
+    operadoras_list = _get_user_operadoras_list()
+    current_operadora_id = session.get('operadora_id')
+
     ruleset_dict, ruleset_model = _get_active_cbhpm_ruleset(return_model=True)
     rules_meta = {
         'nome': ruleset_model.nome if ruleset_model else 'Padrão',
@@ -5193,7 +5283,9 @@ def consulta_comparar():
         porte_list=porte_list, porte_an_list=porte_an_list,
         cbhpm_list_all=cbhpm_list_all, dtp_list=dtp_list,
         restore_cbhpm_payload=restore_cbhpm_payload,
-        cbhpm_rules_info=rules_meta
+        cbhpm_rules_info=rules_meta,
+        operadoras_list=operadoras_list,
+        current_operadora_id=current_operadora_id
     )
 
 
@@ -5414,6 +5506,12 @@ def _compute_simulacao_cbhpm(data):
     incid_in = _as_decimal(data.get('incidencias'))
     aj_porte_pct = _as_decimal(data.get('ajuste_porte_pct')) or Decimal('0')
     aj_an_pct = _as_decimal(data.get('ajuste_porte_an_pct')) or Decimal('0')
+
+    # Multi-operadora: obter operadora_id do request ou da sessão
+    operadora_id = data.get('operadora_id')
+    if not operadora_id:
+        operadora_id = session.get('operadora_id')
+
     if not codigo and not codigos and not dtp_items:
         return {"error": 'Informe "codigo" ou a lista "codigos".'}, 400
 
@@ -5634,7 +5732,7 @@ def _compute_simulacao_cbhpm(data):
         if cbhpm_results:
             # Garante que cada código seja verificado, mesmo que duplicado
             codes_to_check = [entry['payload'].get('codigo') for entry in cbhpm_results if entry['payload'].get('codigo')]
-            teto_map = _get_teto_map(codes_to_check)
+            teto_map = _get_teto_map(codes_to_check, operadora_id=operadora_id)
             rol_map = _fetch_tuss_rol_map(codes_to_check)
             for entry in cbhpm_results:
                 payload_entry = entry['payload'] # payload_entry é um dicionário único para cada item na lista
@@ -5800,7 +5898,7 @@ def _compute_simulacao_cbhpm(data):
         rol_single = rol_lookup.get(codigo) or next(iter(rol_lookup.values()), None)
         if rol_single:
             resp['rol'] = rol_single
-        teto_row = _get_teto_map([codigo]).get(codigo.strip().upper())
+        teto_row = _get_teto_map([codigo], operadora_id=operadora_id).get(codigo.strip().upper())
         if teto_row:
             teto_val = _as_decimal(teto_row.valor_total)
             calc_total = _as_decimal(resp.get('total_final') or resp.get('total'))
@@ -5862,6 +5960,7 @@ def api_simulacao_cbhpm():
             'via_entrada_pct': data.get('via_entrada_pct') or '',
             'ajuste_porte_pct': data.get('ajuste_porte_pct') or '',
             'ajuste_porte_an_pct': data.get('ajuste_porte_an_pct') or '',
+            'operadora_id': data.get('operadora_id') or session.get('operadora_id'),
         }
         label_parts = []
         codigo_label = (restore_payload.get('codigo') or '').strip()
@@ -6453,17 +6552,29 @@ def export_simulacao_xlsx():
 @login_required
 def api_simulacao_dtp():
     """Pesquisa itens em 'Diárias, Taxas e Pacotes' por tabela e termo (código ou descrição).
-    Parâmetros: tabela_nome (obrig.), q (código ou parte da descrição), uf (opcional)
+    Parâmetros: tabela_nome (obrig.), q (código ou parte da descrição), uf (opcional), operadora_id (opcional)
     """
     tabela_nome = request.args.get('tabela_nome') or ''
     q = (request.args.get('q') or '').strip()
     uf = (request.args.get('uf') or '').strip() or None
+
+    # Multi-operadora: obter operadora_id do request ou da sessão
+    operadora_id = request.args.get('operadora_id')
+    if not operadora_id:
+        operadora_id = session.get('operadora_id')
+
     if not tabela_nome:
         return jsonify({'itens': [], 'total': '0'})
     t = Tabela.query.filter_by(nome=tabela_nome, tipo_tabela='diarias_taxas_pacotes').first()
     if not t:
         return jsonify({'itens': [], 'total': '0'})
+
     query = db.session.query(Procedimento).filter(Procedimento.id_tabela == t.id)
+
+    # Multi-operadora: filtrar por operadora_id se fornecido
+    if operadora_id:
+        query = query.filter(Procedimento.operadora_id == operadora_id)
+
     if uf:
         query = query.filter(or_(Procedimento.uf == uf, t.uf == uf))
     if q:
@@ -6480,11 +6591,17 @@ def api_simulacao_dtp():
 def api_prestadores_por_codigo():
     """Retorna a lista de prestadores que possuem o código informado
     dentro da tabela selecionada e UF opcional.
-    Parâmetros: tabela_nome, codigo, uf (opcional)
+    Parâmetros: tabela_nome, codigo, uf (opcional), operadora_id (opcional)
     """
     tabela_nome = request.args.get('tabela_nome')
     codigo = (request.args.get('codigo') or '').strip()
     uf = request.args.get('uf')
+
+    # Multi-operadora: obter operadora_id do request ou da sessão
+    operadora_id = request.args.get('operadora_id')
+    if not operadora_id:
+        operadora_id = session.get('operadora_id')
+
     if not tabela_nome or not codigo:
         return jsonify([])
 
@@ -6494,6 +6611,11 @@ def api_prestadores_por_codigo():
 
     q = db.session.query(Procedimento.prestador).join(Tabela, Procedimento.id_tabela == Tabela.id)
     q = q.filter(Tabela.nome == tabela_nome)
+
+    # Multi-operadora: filtrar por operadora_id se fornecido
+    if operadora_id:
+        q = q.filter(Procedimento.operadora_id == operadora_id)
+
     if uf:
         q = q.filter(or_(Tabela.uf == uf, Procedimento.uf == uf))
     # Match por igualdade ou prefixo
@@ -6751,8 +6873,43 @@ def api_tuss_rol_item(codigo: str):
 @app.route('/gerenciar-usuarios')
 @admin_required
 def gerenciar_usuarios():
-    usuarios = Usuario.query.all()
-    return render_template('gerenciar-usuarios.html', usuarios=usuarios)
+    # Filtros de busca
+    nome_filter = request.args.get('nome', '').strip()
+    operadora_filter = request.args.get('operadora_id', '').strip()
+
+    # Query base
+    query = Usuario.query
+
+    # Filtro por nome
+    if nome_filter:
+        query = query.filter(
+            or_(
+                Usuario.nome.ilike(f'%{nome_filter}%'),
+                Usuario.email.ilike(f'%{nome_filter}%')
+            )
+        )
+
+    # Filtro por operadora
+    if operadora_filter:
+        try:
+            operadora_id = int(operadora_filter)
+            # Join com a tabela de relacionamento usuario_operadoras
+            query = query.join(Usuario.operadoras).filter(Operadora.id == operadora_id)
+        except (TypeError, ValueError):
+            pass
+
+    usuarios = query.order_by(Usuario.nome).all()
+
+    # Lista de operadoras para o filtro
+    operadoras_list = Operadora.query.filter_by(status='Ativa').order_by(Operadora.nome).all()
+
+    return render_template(
+        'gerenciar-usuarios.html',
+        usuarios=usuarios,
+        operadoras_list=operadoras_list,
+        nome_filter=nome_filter,
+        operadora_filter=operadora_filter
+    )
 
 
 @app.route('/gerenciar-operadoras')
@@ -6778,6 +6935,26 @@ def contratos_resumo():
     erro = None
     form_data: dict[str, str | None] = {}
 
+    # Multi-operadora: obter operadora_id do usuário logado
+    user_operadora_id = None
+    if hasattr(g, 'current_user') and g.current_user and g.current_user.operadoras:
+        # Usuário com operadoras específicas - usar primeira operadora
+        user_operadora_id = g.current_user.operadoras[0].id
+
+    # Operadora selecionada (para admins) ou do usuário
+    selected_operadora_id = request.args.get('operadora_id')
+    if selected_operadora_id:
+        try:
+            selected_operadora_id = int(selected_operadora_id)
+        except (TypeError, ValueError):
+            selected_operadora_id = None
+
+    # Se usuário tem operadora específica, forçar usar ela
+    if user_operadora_id:
+        selected_operadora_id = user_operadora_id
+    elif not selected_operadora_id:
+        selected_operadora_id = session.get('operadora_id', 1)
+
     if request.method == 'POST':
         form = request.form or {}
         record_id_raw = (form.get('record_id') or '').strip()
@@ -6788,6 +6965,20 @@ def contratos_resumo():
         inflator_deflator = (form.get('inflator_deflator') or '').strip() or None
         filme_radiologico = (form.get('filme_radiologico') or '').strip() or None
         observacoes = (form.get('observacoes') or '').strip() or None
+        operadora_id_form = (form.get('operadora_id') or '').strip()
+
+        # Validar operadora do formulário
+        if operadora_id_form:
+            try:
+                operadora_id_form = int(operadora_id_form)
+            except (TypeError, ValueError):
+                operadora_id_form = selected_operadora_id
+        else:
+            operadora_id_form = selected_operadora_id
+
+        # SEGURANÇA: Se usuário tem operadora específica, forçar usar ela
+        if user_operadora_id:
+            operadora_id_form = user_operadora_id
 
         valor_uco = None
         if valor_uco_raw:
@@ -6805,6 +6996,9 @@ def contratos_resumo():
                     resumo = ContractSummary.query.get(record_id)
                     if not resumo:
                         erro = 'Registro não encontrado.'
+                    # SEGURANÇA: Verificar se usuário tem acesso a este contrato
+                    elif user_operadora_id and resumo.operadora_id != user_operadora_id:
+                        erro = 'Você não tem permissão para editar este contrato.'
                     else:
                         resumo.prestador = prestador
                         resumo.tabela_honorarios = tabela_honorarios
@@ -6813,9 +7007,10 @@ def contratos_resumo():
                         resumo.inflator_deflator = inflator_deflator
                         resumo.filme_radiologico = filme_radiologico
                         resumo.observacoes = observacoes
+                        resumo.operadora_id = operadora_id_form
                         db.session.commit()
                         flash('Resumo atualizado com sucesso.', 'success')
-                        return redirect(url_for('contratos_resumo'))
+                        return redirect(url_for('contratos_resumo', operadora_id=operadora_id_form))
                 else:
                     resumo = ContractSummary(
                         prestador=prestador,
@@ -6825,11 +7020,12 @@ def contratos_resumo():
                         inflator_deflator=inflator_deflator,
                         filme_radiologico=filme_radiologico,
                         observacoes=observacoes,
+                        operadora_id=operadora_id_form,
                     )
                     db.session.add(resumo)
                     db.session.commit()
                     flash('Resumo cadastrado com sucesso.', 'success')
-                    return redirect(url_for('contratos_resumo'))
+                    return redirect(url_for('contratos_resumo', operadora_id=operadora_id_form))
             except ValueError:
                 erro = 'Identificador inválido.'
             except Exception as exc:
@@ -6854,6 +7050,10 @@ def contratos_resumo():
                 resumo = ContractSummary.query.get(int(edit_id))
             except (TypeError, ValueError):
                 resumo = None
+            # SEGURANÇA: Verificar se usuário tem acesso a este contrato
+            if resumo and user_operadora_id and resumo.operadora_id != user_operadora_id:
+                flash('Você não tem permissão para editar este contrato.', 'danger')
+                resumo = None
             if resumo:
                 valor_uco_display = ''
                 if resumo.valor_uco is not None:
@@ -6870,9 +7070,17 @@ def contratos_resumo():
                     'inflator_deflator': resumo.inflator_deflator or '',
                     'filme_radiologico': resumo.filme_radiologico or '',
                     'observacoes': resumo.observacoes or '',
+                    'operadora_id': resumo.operadora_id,
                 }
 
-    registros = ContractSummary.query.order_by(ContractSummary.prestador.asc(), ContractSummary.id.asc()).all()
+    # Multi-operadora: Filtrar registros por operadora
+    query = ContractSummary.query
+    if selected_operadora_id:
+        query = query.filter_by(operadora_id=selected_operadora_id)
+    registros = query.order_by(ContractSummary.prestador.asc(), ContractSummary.id.asc()).all()
+
+    # Lista de operadoras (filtrada pelo usuário)
+    operadoras_list = _get_user_operadoras_list()
 
     modal_prefill = {
         'record_id': form_data.get('record_id'),
@@ -6883,6 +7091,7 @@ def contratos_resumo():
         'inflator_deflator': form_data.get('inflator_deflator', ''),
         'filme_radiologico': form_data.get('filme_radiologico', ''),
         'observacoes': form_data.get('observacoes', ''),
+        'operadora_id': form_data.get('operadora_id', selected_operadora_id),
     }
     modal_open = False
     if request.method == 'POST' and (erro or form_data.get('record_id')):
@@ -6897,6 +7106,9 @@ def contratos_resumo():
         erro=erro,
         modal_prefill=modal_prefill,
         modal_open=modal_open,
+        operadoras_list=operadoras_list,
+        selected_operadora_id=selected_operadora_id,
+        user_has_specific_operadora=(user_operadora_id is not None),
     )
 
 
@@ -6905,10 +7117,21 @@ def contratos_resumo():
 @feature_required('contratos')
 def contratos_resumo_excluir(cid: int):
     resumo = ContractSummary.query.get_or_404(cid)
+
+    # SEGURANÇA: Verificar se usuário tem acesso a este contrato
+    user_operadora_id = None
+    if hasattr(g, 'current_user') and g.current_user and g.current_user.operadoras:
+        user_operadora_id = g.current_user.operadoras[0].id
+
+    if user_operadora_id and resumo.operadora_id != user_operadora_id:
+        flash('Você não tem permissão para excluir este contrato.', 'danger')
+        return redirect(url_for('contratos_resumo'))
+
+    operadora_id = resumo.operadora_id
     db.session.delete(resumo)
     db.session.commit()
     flash('Resumo removido com sucesso.', 'success')
-    return redirect(url_for('contratos_resumo'))
+    return redirect(url_for('contratos_resumo', operadora_id=operadora_id))
 
 
 @app.route('/admin/tetos')
@@ -6944,6 +7167,10 @@ def admin_tetos():
 
     teto_jobs = _snapshot_teto_jobs()
 
+    # Multi-operadora: buscar lista de operadoras ativas (filtrada pelo usuário)
+    operadoras_list = _get_user_operadoras_list()
+    current_operadora_id = session.get('operadora_id', 1)
+
     return render_template(
         'admin_tetos.html',
         tetos=tetos,
@@ -6955,12 +7182,24 @@ def admin_tetos():
         preview=preview_payload,
         format_brl=_format_brl,
         teto_jobs=teto_jobs,
+        operadoras_list=operadoras_list,
+        current_operadora_id=current_operadora_id,
     )
 
 
 @app.route('/admin/tetos/import', methods=['POST'])
 @admin_required
 def admin_tetos_import():
+    # Multi-operadora: capturar operadora_id do formulário
+    operadora_id = request.form.get('operadora_id')
+    if operadora_id:
+        try:
+            operadora_id = int(operadora_id)
+        except (TypeError, ValueError):
+            operadora_id = 1
+    else:
+        operadora_id = 1
+
     confirm_token = (request.form.get('token') or '').strip()
     if confirm_token:
         preview_payload = _load_teto_preview(confirm_token)
@@ -6968,6 +7207,8 @@ def admin_tetos_import():
             _discard_teto_preview(confirm_token)
             flash('Pré-visualização expirada ou vazia. Envie o arquivo novamente.', 'warning')
             return redirect(url_for('admin_tetos'))
+        # Passa operadora_id para o job
+        preview_payload['operadora_id'] = operadora_id
         job_id = _start_teto_import_job(preview_payload, confirm_token)
         flash(f'Importação agendada (Job {job_id}). Atualize esta página para acompanhar o status.', 'info')
         return redirect(url_for('admin_tetos'))
@@ -7000,8 +7241,9 @@ def admin_tetos_import():
         'duplicate_count': parsed['duplicate_count'],
         'error_count': len(parsed['errors']),
         'generated_at': datetime.utcnow().isoformat(),
+        'operadora_id': operadora_id,  # Multi-operadora: salvar operadora_id no preview
     }
-    token = _store_teto_preview({'rows': parsed['rows'], 'meta': meta, 'errors': parsed['errors']})
+    token = _store_teto_preview({'rows': parsed['rows'], 'meta': meta, 'errors': parsed['errors'], 'operadora_id': operadora_id})
     if parsed['errors']:
         flash(f"Pré-visualização gerada com {parsed['valid_count']} registro(s) válido(s) e {len(parsed['errors'])} aviso(s).", 'warning')
     else:
@@ -7022,6 +7264,169 @@ def admin_tetos_template_download():
     return response
 
 
+@app.route('/admin/tetos/copy', methods=['POST'])
+@admin_required
+def admin_tetos_copy():
+    """Copia todos os tetos de uma operadora para outra"""
+    operadora_origem_id = request.form.get('operadora_origem_id')
+    operadora_destino_id = request.form.get('operadora_destino_id')
+
+    if not operadora_origem_id or not operadora_destino_id:
+        flash('Selecione as operadoras origem e destino.', 'danger')
+        return redirect(url_for('admin_tetos'))
+
+    try:
+        operadora_origem_id = int(operadora_origem_id)
+        operadora_destino_id = int(operadora_destino_id)
+    except (TypeError, ValueError):
+        flash('IDs de operadoras inválidos.', 'danger')
+        return redirect(url_for('admin_tetos'))
+
+    if operadora_origem_id == operadora_destino_id:
+        flash('As operadoras origem e destino devem ser diferentes.', 'warning')
+        return redirect(url_for('admin_tetos'))
+
+    # Verificar se operadoras existem
+    operadora_origem = Operadora.query.get(operadora_origem_id)
+    operadora_destino = Operadora.query.get(operadora_destino_id)
+
+    if not operadora_origem or not operadora_destino:
+        flash('Operadora não encontrada.', 'danger')
+        return redirect(url_for('admin_tetos'))
+
+    # Buscar todos os tetos da operadora origem
+    tetos_origem = CbhpmTeto.query.filter_by(operadora_id=operadora_origem_id).all()
+
+    if not tetos_origem:
+        flash(f'Nenhum teto encontrado para a operadora {operadora_origem.nome}.', 'warning')
+        return redirect(url_for('admin_tetos'))
+
+    # Copiar tetos para operadora destino (upsert)
+    copied = 0
+    updated = 0
+
+    for teto in tetos_origem:
+        # Verificar se já existe teto com esse código na operadora destino
+        existing = CbhpmTeto.query.filter_by(
+            codigo=teto.codigo,
+            operadora_id=operadora_destino_id
+        ).first()
+
+        if existing:
+            # Atualizar
+            existing.descricao = teto.descricao
+            existing.valor_total = teto.valor_total
+            updated += 1
+        else:
+            # Inserir novo
+            novo_teto = CbhpmTeto(
+                codigo=teto.codigo,
+                operadora_id=operadora_destino_id,
+                descricao=teto.descricao,
+                valor_total=teto.valor_total
+            )
+            db.session.add(novo_teto)
+            copied += 1
+
+    db.session.commit()
+    flash(f'Cópia concluída: {copied} tetos copiados, {updated} atualizados de {operadora_origem.nome} para {operadora_destino.nome}.', 'success')
+    return redirect(url_for('admin_tetos'))
+
+
+@app.route('/admin/procedimentos/copy', methods=['POST'])
+@admin_required
+def admin_procedimentos_copy():
+    """Copia todos os procedimentos/DTPs de uma operadora para outra"""
+    operadora_origem_id = request.form.get('operadora_origem_id')
+    operadora_destino_id = request.form.get('operadora_destino_id')
+    tabela_nome = request.form.get('tabela_nome')  # Opcional: copiar apenas de uma tabela específica
+
+    if not operadora_origem_id or not operadora_destino_id:
+        flash('Selecione as operadoras origem e destino.', 'danger')
+        return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+    try:
+        operadora_origem_id = int(operadora_origem_id)
+        operadora_destino_id = int(operadora_destino_id)
+    except (TypeError, ValueError):
+        flash('IDs de operadoras inválidos.', 'danger')
+        return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+    if operadora_origem_id == operadora_destino_id:
+        flash('As operadoras origem e destino devem ser diferentes.', 'warning')
+        return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+    # Verificar se operadoras existem
+    operadora_origem = Operadora.query.get(operadora_origem_id)
+    operadora_destino = Operadora.query.get(operadora_destino_id)
+
+    if not operadora_origem or not operadora_destino:
+        flash('Operadora não encontrada.', 'danger')
+        return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+    # Buscar procedimentos da operadora origem
+    query = Procedimento.query.filter_by(operadora_id=operadora_origem_id)
+
+    # Se especificou tabela, filtrar por ela
+    if tabela_nome:
+        tabela_ids = [t.id for t in Tabela.query.filter_by(nome=tabela_nome, id_operadora=operadora_origem_id).all()]
+        if tabela_ids:
+            query = query.filter(Procedimento.id_tabela.in_(tabela_ids))
+
+    procedimentos_origem = query.all()
+
+    if not procedimentos_origem:
+        flash(f'Nenhum procedimento encontrado para a operadora {operadora_origem.nome}.', 'warning')
+        return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+    # Primeiro, copiar/criar tabelas correspondentes na operadora destino
+    tabelas_map = {}  # Mapeia id_tabela_origem -> id_tabela_destino
+    for proc in procedimentos_origem:
+        tabela_origem = proc.tabela
+        if tabela_origem.id not in tabelas_map:
+            # Verificar se já existe tabela com mesmo nome na operadora destino
+            tabela_destino = Tabela.query.filter_by(
+                nome=tabela_origem.nome,
+                id_operadora=operadora_destino_id
+            ).first()
+
+            if not tabela_destino:
+                # Criar nova tabela na operadora destino
+                tabela_destino = Tabela(
+                    nome=tabela_origem.nome,
+                    prestador=tabela_origem.prestador,
+                    tipo_tabela=tabela_origem.tipo_tabela,
+                    uf=tabela_origem.uf,
+                    data_vigencia=tabela_origem.data_vigencia,
+                    id_operadora=operadora_destino_id
+                )
+                db.session.add(tabela_destino)
+                db.session.flush()  # Obter ID
+
+            tabelas_map[tabela_origem.id] = tabela_destino.id
+
+    # Copiar procedimentos
+    copied = 0
+    for proc in procedimentos_origem:
+        novo_proc = Procedimento(
+            codigo=proc.codigo,
+            descricao=proc.descricao,
+            valor=proc.valor,
+            prestador=proc.prestador,
+            uf=proc.uf,
+            id_tabela=tabelas_map[proc.id_tabela],
+            operadora_id=operadora_destino_id
+        )
+        db.session.add(novo_proc)
+        copied += 1
+
+    db.session.commit()
+
+    tabela_msg = f' da tabela {tabela_nome}' if tabela_nome else ''
+    flash(f'Cópia concluída: {copied} procedimentos{tabela_msg} copiados de {operadora_origem.nome} para {operadora_destino.nome}.', 'success')
+    return redirect(request.referrer or url_for('gerenciar_tabelas'))
+
+
 @app.route('/admin/tetos/<codigo>/delete', methods=['POST'])
 @admin_required
 def admin_tetos_delete(codigo: str):
@@ -7029,13 +7434,29 @@ def admin_tetos_delete(codigo: str):
     if not codigo_norm:
         flash('Código inválido.', 'danger')
         return redirect(url_for('admin_tetos'))
-    row = CbhpmTeto.query.get(codigo_norm)
+
+    # Multi-operadora: obter operadora_id do form ou query param
+    operadora_id = request.form.get('operadora_id') or request.args.get('operadora_id')
+    if operadora_id:
+        try:
+            operadora_id = int(operadora_id)
+        except (TypeError, ValueError):
+            operadora_id = None
+
+    # Buscar por PK composta (codigo, operadora_id)
+    if operadora_id:
+        row = CbhpmTeto.query.filter_by(codigo=codigo_norm, operadora_id=operadora_id).first()
+    else:
+        # Fallback: busca qualquer registro com esse código (compatibilidade)
+        row = CbhpmTeto.query.filter_by(codigo=codigo_norm).first()
+
     if not row:
         flash('Registro não encontrado.', 'warning')
         return redirect(url_for('admin_tetos'))
+
     db.session.delete(row)
     db.session.commit()
-    flash(f'Teto {codigo_norm} removido com sucesso.', 'success')
+    flash(f'Teto {codigo_norm} (operadora {row.operadora.nome}) removido com sucesso.', 'success')
     return redirect(url_for('admin_tetos'))
 
 
@@ -9068,7 +9489,11 @@ def importar_diarias_taxas_pacotes():
                 Tabela.nome == nome_tabela,
                 Tabela.id_operadora == int(operadora_id)
             )
-            db.session.query(Procedimento).filter(Procedimento.id_tabela.in_(subq)).delete(synchronize_session=False)
+            # Multi-operadora: deletar apenas procedimentos da operadora correta
+            db.session.query(Procedimento).filter(
+                Procedimento.id_tabela.in_(subq),
+                Procedimento.operadora_id == int(operadora_id)
+            ).delete(synchronize_session=False)
             db.session.query(Tabela).filter(
                 Tabela.nome == nome_tabela,
                 Tabela.id_operadora == int(operadora_id)
@@ -9106,7 +9531,8 @@ def importar_diarias_taxas_pacotes():
                 valor=valor,
                 prestador=prest_item or None,
                 uf=uf_item or None,
-                id_tabela=tab.id
+                id_tabela=tab.id,
+                operadora_id=int(operadora_id)  # Multi-operadora
             ))
 
         db.session.commit()

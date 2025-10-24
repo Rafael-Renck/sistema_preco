@@ -91,6 +91,13 @@
         <small class="text-muted">Use a busca rápida para filtrar por prestador, tabela ou palavras-chave.</small>
       </div>
       <div class="d-flex flex-wrap gap-2">
+        {% if not user_has_specific_operadora %}
+        <select class="form-select form-select-sm" style="width:auto;" id="operadoraFilter" onchange="window.location.href='/contratos-resumo?operadora_id=' + this.value">
+          {% for op in operadoras_list %}
+          <option value="{{ op.id }}" {% if op.id == selected_operadora_id %}selected{% endif %}>{{ op.nome }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
         <div class="input-group input-group-sm" style="min-width:240px;">
           <span class="input-group-text"><i class="bi bi-search"></i></span>
           <input id="contratosSearch" class="form-control" placeholder="Buscar por prestador, tabela ou observação">
@@ -108,6 +115,9 @@
         <thead class="table-light">
           <tr>
             <th class="text-nowrap">Prestador</th>
+            {% if not user_has_specific_operadora %}
+            <th>Operadora</th>
+            {% endif %}
             <th>Tabela Honorários</th>
             <th>Tabela Portes</th>
             <th class="text-end">Valor UCO</th>
@@ -134,6 +144,9 @@
                   <div class="small text-muted">{{ resumo.observacoes[:50] }}{% if resumo.observacoes|length > 50 %}...{% endif %}</div>
                 {% endif %}
               </td>
+              {% if not user_has_specific_operadora %}
+              <td><span class="badge bg-secondary">{{ resumo.operadora.nome if resumo.operadora else 'N/A' }}</span></td>
+              {% endif %}
               <td>{{ resumo.tabela_honorarios or '—' }}</td>
               <td>{{ resumo.tabela_portes or '—' }}</td>
               <td class="text-end">{{ resumo.valor_uco|brl if resumo.valor_uco is not none else '—' }}</td>
@@ -177,7 +190,7 @@
             </tr>
           {% else %}
             <tr>
-              <td colspan="8" class="text-center text-muted py-4">Nenhum contrato cadastrado até o momento.</td>
+              <td colspan="{% if user_has_specific_operadora %}8{% else %}9{% endif %}" class="text-center text-muted py-4">Nenhum contrato cadastrado até o momento.</td>
             </tr>
           {% endfor %}
         </tbody>
@@ -196,7 +209,22 @@
       </div>
       <div class="modal-body">
         <input type="hidden" name="record_id" id="contratoRecordId" value="">
+        {% if not user_has_specific_operadora %}
+        <input type="hidden" name="operadora_id" id="contratoOperadoraId" value="{{ selected_operadora_id }}">
+        {% else %}
+        <input type="hidden" name="operadora_id" value="{{ selected_operadora_id }}">
+        {% endif %}
         <div class="row g-3">
+          {% if not user_has_specific_operadora and operadoras_list|length > 1 %}
+          <div class="col-12">
+            <label class="form-label">Operadora <span class="text-danger">*</span></label>
+            <select class="form-select" name="operadora_id" id="contratoOperadoraSelect" required>
+              {% for op in operadoras_list %}
+              <option value="{{ op.id }}" {% if op.id == selected_operadora_id %}selected{% endif %}>{{ op.nome }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
           <div class="col-12 col-lg-6">
             <label class="form-label">Prestador <span class="text-danger">*</span></label>
             <input class="form-control" name="prestador" id="contratoPrestador" required>

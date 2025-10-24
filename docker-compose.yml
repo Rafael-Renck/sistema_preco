@@ -11,6 +11,12 @@ services:
       --default-authentication-plugin=mysql_native_password
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=384M
+      --innodb-log-file-size=96M
+      --max-connections=100
+      --table-open-cache=2000
+      --tmp-table-size=64M
+      --max-heap-table-size=64M
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-operadora_saude}
@@ -23,6 +29,12 @@ services:
       retries: 10
     volumes:
       - db_data:/var/lib/mysql
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 512M
 
   # =======================
   # DEV: sua app apontando para o db local
@@ -38,6 +50,12 @@ services:
         condition: service_healthy
     ports:
       - "8000:8000"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
     # volumes:
     #   - .:/app
     # command: ["flask", "run", "--host=0.0.0.0", "--port=8000"]
