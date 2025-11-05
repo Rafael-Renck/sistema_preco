@@ -445,16 +445,15 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
 (function(){
   // ===== INICIALIZAÇÃO DE ELEMENTOS DO DOM =====
-  // Elementos principais
   // Elementos da página
   const form = document.getElementById('insumoFilters');
   const tbody = document.getElementById('resultadoBody');
   const resumo = document.getElementById('resultadoResumo');
-  const loading = document.getElementById('resultadoLoading');
 
-  // FORÇA O SPINNER A ESTAR OCULTO NO INÍCIO
-  if(loading) {
-    loading.classList.add('d-none');
+  // Garante que o spinner esteja oculto no início
+  const initialLoading = document.getElementById('resultadoLoading');
+  if(initialLoading) {
+    initialLoading.classList.add('d-none');
     console.log('✅ SPINNER INICIALMENTE OCULTO');
   } else {
     console.error('❌ SPINNER NÃO ENCONTRADO!');
@@ -500,16 +499,22 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
    * @param {boolean} state - true para mostrar, false para ocultar
    */
   function toggleLoading(state) {
-    if(!loading) {
-      console.error('⚠️ Elemento de loading não encontrado!');
+    const el = document.getElementById('resultadoLoading');
+    if(!el) {
+      console.error('⚠️ Elemento resultadoLoading não encontrado no DOM!');
       return;
     }
-    if(state) {
-      loading.classList.remove('d-none');
-      console.log('✅ SPINNER MOSTRADO');
-    } else {
-      loading.classList.add('d-none');
-      console.log('✅ SPINNER OCULTADO');
+
+    try {
+      if(state) {
+        el.classList.remove('d-none');
+        console.log('✅ SPINNER MOSTRADO');
+      } else {
+        el.classList.add('d-none');
+        console.log('✅ SPINNER OCULTADO - Classes:', el.className);
+      }
+    } catch(e) {
+      console.error('Erro ao alterar visibilidade do spinner:', e);
     }
   }
 
@@ -727,62 +732,78 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     isLoading = true;
     toggleLoading(true);
 
+    // Cria AbortController para timeout
+    const controller = new AbortController();
+    let timeoutId = null;
+
     try {
-      // Cria AbortController para timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 segundos de timeout
+      // Define timeout de 30 segundos
+      timeoutId = setTimeout(() => {
+        console.log('⏱️ Timeout de 30s acionado, abortando requisição');
+        controller.abort();
+      }, 30000);
 
-      try {
-        // Requisição à API
-        const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`, {
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
+      // Requisição à API
+      console.log('🔄 Iniciando requisição para:', `{{ url_for('insumos_search') }}?${params.toString()}`);
+      const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`, {
+        signal: controller.signal
+      });
 
-        if(!response.ok) throw new Error('Falha ao buscar itens');
+      clearTimeout(timeoutId);
+      console.log('✅ Resposta recebida, status:', response.status);
 
-        // Parse da resposta JSON
-        const payload = await response.json();
-        const items = payload.items || [];
-        const pagination = payload.pagination || {};
-        const total = Number(pagination.total || 0);
-
-        // Atualiza variáveis de paginação
-        page = Number(pagination.page || 1);
-        totalPages = Number(pagination.pages || 0);
-
-        // Renderiza linhas na tabela
-        renderRows(items);
-
-        // Atualiza texto de resumo
-        if(total > 0) {
-          const start = ((page - 1) * Number(pagination.per_page || 0)) + 1;
-          const end = start + items.length - 1;
-          resumo.textContent = `Mostrando ${start}–${end} de ${total.toLocaleString('pt-BR')} itens`;
-        } else {
-          resumo.textContent = 'Nenhum item encontrado';
-        }
-
-        // Atualiza estado dos botões de paginação
-        btnPrev.disabled = page <= 1;
-        btnNext.disabled = !totalPages || page >= totalPages;
-      } catch(fetchErr) {
-        clearTimeout(timeoutId);
-        if(fetchErr.name === 'AbortError') {
-          throw new Error('Requisição expirou (timeout de 30s)');
-        }
-        throw fetchErr;
+      if(!response.ok) {
+        throw new Error(`Erro HTTP ${response.status}: ${response.statusText}`);
       }
+
+      // Parse da resposta JSON
+      const payload = await response.json();
+      const items = payload.items || [];
+      const pagination = payload.pagination || {};
+      const total = Number(pagination.total || 0);
+
+      // Atualiza variáveis de paginação
+      page = Number(pagination.page || 1);
+      totalPages = Number(pagination.pages || 0);
+
+      console.log('📊 Dados recebidos:', {items: items.length, total, pages: totalPages});
+
+      // Renderiza linhas na tabela
+      renderRows(items);
+
+      // Atualiza texto de resumo
+      if(total > 0) {
+        const start = ((page - 1) * Number(pagination.per_page || 0)) + 1;
+        const end = start + items.length - 1;
+        resumo.textContent = `Mostrando ${start}–${end} de ${total.toLocaleString('pt-BR')} itens`;
+      } else {
+        resumo.textContent = 'Nenhum item encontrado';
+      }
+
+      // Atualiza estado dos botões de paginação
+      btnPrev.disabled = page <= 1;
+      btnNext.disabled = !totalPages || page >= totalPages;
+
+      console.log('✅ Renderização concluída com sucesso');
     } catch(err) {
+      // Limpa timeout em caso de erro
+      if(timeoutId) clearTimeout(timeoutId);
+
       // Trata erros
-      console.error('Erro ao carregar itens:', err);
-      resumo.textContent = '❌ ' + err.message;
-      tbody.innerHTML = '<tr><td colspan="10" class="text-center text-danger py-4">Erro ao carregar itens</td></tr>';
+      let mensagemErro = err.message;
+      if(err.name === 'AbortError') {
+        mensagemErro = 'Requisição expirou (timeout de 30s)';
+      }
+
+      console.error('❌ Erro ao carregar itens:', err);
+      resumo.textContent = '❌ ' + mensagemErro;
+      tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">Erro ao carregar: ${mensagemErro}</td></tr>`;
     } finally {
       // Remove spinner SEMPRE e reseta flag de loading
       isLoading = false;
+      if(timeoutId) clearTimeout(timeoutId);
       toggleLoading(false);
-      console.log('✅ Carregamento finalizado');
+      console.log('✅ Carregamento finalizado, spinner ocultado');
     }
   }
 
