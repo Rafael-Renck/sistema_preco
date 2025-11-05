@@ -518,13 +518,14 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
           clearTimeout(spinnerFallbackTimeout);
         }
 
-        // Define fallback: se após 35s o spinner ainda estiver visível, ocultá-lo forçadamente
+        // Define fallback: se após 20s o spinner ainda estiver visível, ocultá-lo forçadamente
         spinnerFallbackTimeout = setTimeout(() => {
-          console.warn('⚠️ FALLBACK: Spinner visível por mais de 35s, ocultando forçadamente');
+          console.warn('⚠️ FALLBACK: Spinner visível por mais de 20s, ocultando forçadamente');
           el.classList.add('d-none');
           el.style.display = 'none';
           isLoading = false;
-        }, 35000);
+          resumo.textContent = '⚠️ A requisição demorou muito. Tente novamente.';
+        }, 20000);
       } else {
         // Oculta spinner
         el.classList.add('d-none');
@@ -761,11 +762,11 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     let timeoutId = null;
 
     try {
-      // Define timeout de 30 segundos
+      // Define timeout de 15 segundos para resposta rápida
       timeoutId = setTimeout(() => {
-        console.log('⏱️ Timeout de 30s acionado, abortando requisição');
+        console.log('⏱️ Timeout de 15s acionado, abortando requisição');
         controller.abort();
-      }, 30000);
+      }, 15000);
 
       // Requisição à API
       console.log('🔄 Iniciando requisição para:', `{{ url_for('insumos_search') }}?${params.toString()}`);
@@ -816,7 +817,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       // Trata erros
       let mensagemErro = err.message;
       if(err.name === 'AbortError') {
-        mensagemErro = 'Requisição expirou (timeout de 30s)';
+        mensagemErro = 'Requisição expirou (timeout de 15s). A API está lenta.';
       }
 
       console.error('❌ Erro ao carregar itens:', err);
