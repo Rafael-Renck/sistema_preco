@@ -1,0 +1,24 @@
+{# Macro de Alerta Reutilizável #}
+{% macro alert(message, type='info', dismissible=True, icon=None, class='') %}
+  {% set type_class = {
+    'success': 'alert-success',
+    'danger': 'alert-danger',
+    'warning': 'alert-warning',
+    'info': 'alert-info'
+  }.get(type, 'alert-info') %}
+
+  {% set icon_default = {
+    'success': 'check-circle',
+    'danger': 'exclamation-circle',
+    'warning': 'exclamation-triangle',
+    'info': 'info-circle'
+  }.get(type, 'info-circle') %}
+
+  <div class="alert {{ type_class }} {{ 'alert-dismissible fade show' if dismissible else '' }} {{ class }}" role="alert">
+    <i class="bi bi-{{ icon or icon_default }} me-2"></i>
+    {{ message | safe }}
+    {% if dismissible %}
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
+    {% endif %}
+  </div>
+{% endmacro %}

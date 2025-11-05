@@ -1,0 +1,27 @@
+{# Macro de Card Reutilizável #}
+{% macro card(title=None, body=None, footer=None, icon=None, variant='default', class='') %}
+  <div class="card {{ variant }} {{ class }}">
+    {% if title %}
+      <div class="card-header">
+        {% if icon %}<i class="bi bi-{{ icon }} me-2"></i>{% endif %}
+        {{ title }}
+      </div>
+    {% endif %}
+
+    {% if body %}
+      <div class="card-body">
+        {{ body | safe }}
+      </div>
+    {% else %}
+      <div class="card-body">
+        {{ caller() }}
+      </div>
+    {% endif %}
+
+    {% if footer %}
+      <div class="card-footer">
+        {{ footer | safe }}
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}

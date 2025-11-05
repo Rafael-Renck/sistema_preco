@@ -1,0 +1,60 @@
+{# Macro de Paginação #}
+{% macro pagination(current_page, total_pages, base_url) %}
+  {% if total_pages > 1 %}
+    <nav aria-label="Paginação" class="mt-4">
+      <ul class="pagination justify-content-center">
+        {% if current_page > 1 %}
+          <li class="page-item">
+            <a class="page-link" href="{{ base_url }}?page=1" aria-label="Primeira página">
+              <i class="bi bi-chevron-double-left"></i>
+            </a>
+          </li>
+          <li class="page-item">
+            <a class="page-link" href="{{ base_url }}?page={{ current_page - 1 }}" aria-label="Página anterior">
+              <i class="bi bi-chevron-left"></i>
+            </a>
+          </li>
+        {% else %}
+          <li class="page-item disabled">
+            <span class="page-link"><i class="bi bi-chevron-double-left"></i></span>
+          </li>
+          <li class="page-item disabled">
+            <span class="page-link"><i class="bi bi-chevron-left"></i></span>
+          </li>
+        {% endif %}
+
+        {% for page_num in range(max(1, current_page - 2), min(total_pages + 1, current_page + 3)) %}
+          {% if page_num == current_page %}
+            <li class="page-item active" aria-current="page">
+              <span class="page-link">{{ page_num }}</span>
+            </li>
+          {% else %}
+            <li class="page-item">
+              <a class="page-link" href="{{ base_url }}?page={{ page_num }}">{{ page_num }}</a>
+            </li>
+          {% endif %}
+        {% endfor %}
+
+        {% if current_page < total_pages %}
+          <li class="page-item">
+            <a class="page-link" href="{{ base_url }}?page={{ current_page + 1 }}" aria-label="Próxima página">
+              <i class="bi bi-chevron-right"></i>
+            </a>
+          </li>
+          <li class="page-item">
+            <a class="page-link" href="{{ base_url }}?page={{ total_pages }}" aria-label="Última página">
+              <i class="bi bi-chevron-double-right"></i>
+            </a>
+          </li>
+        {% else %}
+          <li class="page-item disabled">
+            <span class="page-link"><i class="bi bi-chevron-right"></i></span>
+          </li>
+          <li class="page-item disabled">
+            <span class="page-link"><i class="bi bi-chevron-double-right"></i></span>
+          </li>
+        {% endif %}
+      </ul>
+    </nav>
+  {% endif %}
+{% endmacro %}

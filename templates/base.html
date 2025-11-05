@@ -5,8 +5,339 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}{% endblock %} · Murta PriceHealth</title>
 
+  <!-- Bootstrap (MUST load first) -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet"/>
+
+  <!-- Refactored Main CSS -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}" />
+
+  <style>
+    /* === ESTILOS DE COMPATIBILIDADE === */
+    /* Garantir que o conteúdo das páginas antigas funcione com o novo layout */
+
+    .content-area {
+      max-width: 100%;
+      width: 100%;
+    }
+
+    /* Manter estilos das páginas antigas funcionando */
+    .tbl-wrap {
+      background: #fff;
+      border: 1px solid var(--border-color, #e5e7eb);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    table.table-clean {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    table.table-clean thead th {
+      background: var(--gray-50, #f9fafb);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 2px solid var(--border-color, #e5e7eb);
+      color: #475569;
+      font-weight: 600;
+      padding: 14px 16px;
+      text-align: left;
+    }
+
+    table.table-clean tbody tr:nth-child(odd) {
+      background: #e7f3ff;
+    }
+
+    table.table-clean tbody tr:nth-child(even) {
+      background: #eef7ff;
+    }
+
+    table.table-clean tbody tr:hover {
+      background: rgba(14, 165, 233, 0.08);
+    }
+
+    table.table-clean td,
+    table.table-clean th {
+      padding: 14px 16px;
+      vertical-align: middle;
+      font-size: 0.875rem;
+    }
+
+    /* Ações nas tabelas */
+    .td-actions i {
+      font-size: 1.05rem;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+
+    .td-actions i:hover {
+      transform: scale(1.2);
+    }
+
+    .act-sync { color: var(--success, #10b981); }
+    .act-upload { color: var(--brand-primary, #0ea5e9); }
+    .act-view { color: #10b981; }
+    .act-edit { color: var(--warning, #f59e0b); }
+    .act-more { color: var(--info, #6366f1); }
+    .act-danger { color: var(--danger, #ef4444); }
+
+    .muted { color: var(--gray-500, #6b7280); }
+    .nowrap { white-space: nowrap; }
+
+    /* Cards antigos compatíveis */
+    .card {
+      background: white;
+      border: 1px solid var(--border-color, #e5e7eb);
+      border-radius: 14px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border-color, #e5e7eb);
+      background: var(--gray-50, #f9fafb);
+      font-weight: 600;
+    }
+
+    .card-body {
+      padding: 1.5rem;
+    }
+
+    /* Forms compatíveis */
+    .form-control,
+    .form-select {
+      border-radius: 8px;
+      border: 1.5px solid var(--border-color, #e5e7eb);
+      padding: 0.5rem 0.75rem;
+      transition: all 0.2s;
+    }
+
+    .form-control:focus,
+    .form-select:focus {
+      border-color: var(--brand-primary, #0ea5e9);
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+      outline: none;
+    }
+
+    .form-label {
+      font-weight: 600;
+      color: var(--gray-700, #374151);
+      margin-bottom: 0.5rem;
+      font-size: 0.875rem;
+    }
+
+    /* Botões Bootstrap compatíveis */
+    .btn {
+      border-radius: 8px;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      transition: all 0.2s;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+      border: none;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+    }
+
+    .btn-success {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      border: none;
+    }
+
+    .btn-danger {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+      border: none;
+    }
+
+    .btn-warning {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      border: none;
+    }
+
+    /* Alerts modernos */
+    .alert {
+      border-radius: 10px;
+      border: none;
+      border-left: 4px solid;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .alert-success {
+      background: var(--success-light, #d1fae5);
+      border-left-color: var(--success, #10b981);
+      color: #065f46;
+    }
+
+    .alert-danger {
+      background: var(--danger-light, #fee2e2);
+      border-left-color: var(--danger, #ef4444);
+      color: #991b1b;
+    }
+
+    .alert-warning {
+      background: var(--warning-light, #fef3c7);
+      border-left-color: var(--warning, #f59e0b);
+      color: #92400e;
+    }
+
+    .alert-info {
+      background: var(--info-light, #e0e7ff);
+      border-left-color: var(--info, #6366f1);
+      color: #3730a3;
+    }
+
+    /* Badges */
+    .badge {
+      border-radius: 20px;
+      padding: 0.25rem 0.75rem;
+      font-weight: 600;
+      font-size: 0.75rem;
+    }
+
+    /* Modais */
+    .modal-content {
+      border-radius: 14px;
+      border: none;
+      box-shadow: var(--shadow-2xl);
+    }
+
+    .modal-header {
+      background: var(--gray-50, #f9fafb);
+      border-bottom: 1px solid var(--border-color, #e5e7eb);
+      border-radius: 14px 14px 0 0;
+    }
+
+    .modal-title {
+      font-weight: 700;
+      color: var(--gray-900, #111827);
+    }
+
+    /* Paginação */
+    .pagination .page-link {
+      border-radius: 8px;
+      margin: 0 2px;
+      border: 1px solid var(--border-color, #e5e7eb);
+      color: var(--gray-700, #374151);
+    }
+
+    .pagination .page-link:hover {
+      background: var(--gray-50, #f9fafb);
+      border-color: var(--brand-primary, #0ea5e9);
+    }
+
+    .pagination .page-item.active .page-link {
+      background: var(--brand-primary, #0ea5e9);
+      border-color: var(--brand-primary, #0ea5e9);
+    }
+
+    /* Page header dentro do content */
+    .page-header {
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 2px solid var(--border-color, #e5e7eb);
+    }
+
+    .page-header h4 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--gray-900, #111827);
+      margin: 0;
+    }
+
+    /* Section titles */
+    .section-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--gray-900, #111827);
+      margin-bottom: 0.5rem;
+    }
+
+    .soft {
+      color: var(--gray-600, #4b5563);
+      font-size: 0.875rem;
+      line-height: 1.5;
+    }
+
+    /* Garantir que row e col do Bootstrap funcionem */
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      margin-right: -12px;
+      margin-left: -12px;
+    }
+
+    .row > * {
+      padding-right: 12px;
+      padding-left: 12px;
+    }
+
+    /* Form text */
+    .form-text {
+      font-size: 0.875rem;
+      color: var(--gray-500, #6b7280);
+      margin-top: 0.5rem;
+    }
+
+    .form-text code {
+      background: var(--gray-100, #f3f4f6);
+      padding: 0.125rem 0.375rem;
+      border-radius: 4px;
+      font-size: 0.8125rem;
+      color: var(--brand-primary, #0ea5e9);
+    }
+
+    /* Table responsive */
+    .table-responsive {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    /* Ajuste para ícones lucide (se existirem) */
+    [data-lucide] {
+      width: 1rem;
+      height: 1rem;
+      display: inline-block;
+    }
+
+    /* Badge com texto */
+    .text-bg-info-subtle {
+      background-color: var(--info-light, #e0e7ff);
+      color: var(--info, #6366f1);
+    }
+
+    .badge.rounded-pill {
+      border-radius: 50rem;
+    }
+
+    /* Responsivo - ajustar navbar em telas pequenas */
+    @media (max-width: 768px) {
+      .modern-navbar {
+        padding: 0 1rem;
+      }
+
+      .page-title {
+        font-size: 1.25rem;
+      }
+
+      .content-area {
+        padding: 1rem;
+      }
+
+      .page-header h4 {
+        font-size: 1.25rem;
+      }
+    }
+  </style>
 
   <style>
     :root{
@@ -76,124 +407,209 @@
       {% block content_auth %}{% endblock %}
     </div>
   {% else %}
-    <div class="app">
-      <!-- Sidebar -->
-      <aside class="app-sidebar">
-        <a class="brand" href="{{ url_for('dashboard') }}">
-          <img class="brand-logo" src="{{ url_for('static', filename='logo-menu.png') }}" alt="Murta Consultoria"/>
-        </a>
-
-        {% set is_admin = (session_perfil == 'adm') %}
-        {% set has_insumos = (session_feature_insumos or is_admin) %}
-        {% set has_consulta = (session_feature_consulta or is_admin) %}
-        {% set has_contratos = (session_feature_contratos or is_admin) %}
-        {% set has_tuss_nav = (session_feature_tuss_rol or is_admin) %}
-        <div class="side-group">
-          <div class="side-title">{{ 'Gerencias' if is_admin else 'Menu' }}</div>
-          <a class="side-item {% if request.endpoint=='dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">
-            <i class="bi bi-grid"></i><span>Painel</span>
-          </a>
-          {% if has_consulta %}
-            <a class="side-item {% if request.endpoint=='consulta_comparar' %}active{% endif %}" href="{{ url_for('consulta_comparar') }}">
-              <i class="bi bi-search"></i><span>Consulta &amp; Comparar</span>
-            </a>
-          {% endif %}
-          {% if has_tuss_nav %}
-            <a class="side-item {% if request.endpoint=='tuss_rol_consulta' %}active{% endif %}" href="{{ url_for('tuss_rol_consulta') }}">
-              <i class="bi bi-clipboard-check"></i><span>TUSS x ROL</span>
-            </a>
-          {% endif %}
-          {% set insumos_active = request.endpoint and request.endpoint.startswith('insumos_') %}
-          {% if has_insumos %}
-            <a class="side-item {% if insumos_active %}active{% endif %}" href="{{ url_for('insumos_dashboard') }}">
-              <i class="bi bi-box-arrow-in-down"></i><span>Simpro &amp; Brasíndice</span>
-            </a>
-          {% endif %}
-          {% if has_contratos %}
-            <a class="side-item {% if request.endpoint=='contratos_resumo' %}active{% endif %}" href="{{ url_for('contratos_resumo') }}">
-              <i class="bi bi-briefcase"></i><span>Contratos</span>
-            </a>
-          {% endif %}
-        </div>
-
-        {% if is_admin %}
-        <div class="side-group">
-          <div class="side-title">Cadastros</div>
-          <a class="side-item {% if request.endpoint=='gerenciar_operadoras' %}active{% endif %}" href="{{ url_for('gerenciar_operadoras') }}"><i class="bi bi-building"></i><span>Operadoras</span></a>
-          <a class="side-item {% if request.endpoint=='gerenciar_tabelas' %}active{% endif %}" href="{{ url_for('gerenciar_tabelas') }}"><i class="bi bi-table"></i><span>Tabelas</span></a>
-          <a class="side-item {% if request.endpoint and request.endpoint.startswith('admin_tetos') %}active{% endif %}" href="{{ url_for('admin_tetos') }}"><i class="bi bi-speedometer2"></i><span>Teto de Valores</span></a>
-          <a class="side-item {% if request.endpoint=='gerenciar_usuarios' %}active{% endif %}" href="{{ url_for('gerenciar_usuarios') }}"><i class="bi bi-people"></i><span>Usuarios</span></a>
-          <a class="side-item {% if request.endpoint=='admin_tuss_rol' %}active{% endif %}" href="{{ url_for('admin_tuss_rol') }}"><i class="bi bi-clipboard-check"></i><span>TUSS x ROL</span></a>
-          <a class="side-item {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}"><i class="bi bi-sliders"></i><span>Regras CBHPM</span></a>
-          <a class="side-item {% if request.endpoint=='admin_audit_trail' %}active{% endif %}" href="{{ url_for('admin_audit_trail') }}"><i class="bi bi-activity"></i><span>Auditoria</span></a>
-          <a class="side-item {% if request.endpoint=='health_check' %}active{% endif %}" href="{{ url_for('health_check') }}"><i class="bi bi-heart-pulse"></i><span>Status do Sistema</span></a>
-        </div>
-        {% endif %}
-
-      </aside>
-
-      <!-- Main -->
-      <section class="app-main">
-        <div class="topbar">
-          <span class="fw-semibold">{{ session_nome or 'Usuário' }}</span>
-          <div class="avatar">{{ (session_nome[:1] if session_nome) or 'U' }}</div>
-          <a class="btn btn-sm btn-outline-primary" href="{{ url_for('alterar_senha') }}">
-            <i class="bi bi-key me-1"></i> Alterar senha
-          </a>
-          <a class="btn btn-sm btn-outline-danger" href="{{ url_for('logout') }}">
-            <i class="bi bi-box-arrow-right me-1"></i> Sair
+    <!-- Layout Moderno -->
+    <div class="modern-layout">
+      <!-- Sidebar Moderna -->
+      <aside class="modern-sidebar">
+        <div class="sidebar-header">
+          <a class="sidebar-logo" href="{{ url_for('dashboard') }}">
+            <img src="{{ url_for('static', filename='logo-menu.png') }}" alt="Murta"/>
+            <span class="sidebar-logo-text">PriceHealth</span>
           </a>
         </div>
 
-        <div class="content-wrap">
-          <div class="page-head">
-            <h5 class="mb-0">{% block page_title %}{% endblock %}</h5>
-            <div class="searchbar">
-              <i class="bi bi-search"></i>
-              <input id="globalSearch" placeholder="BUSCAR POR NOME OU EMAIL" />
+        <nav class="sidebar-nav">
+          {% set is_admin = (session_perfil == 'adm') %}
+          {% set has_insumos = (session_feature_insumos or is_admin) %}
+          {% set has_consulta = (session_feature_consulta or is_admin) %}
+          {% set has_contratos = (session_feature_contratos or is_admin) %}
+          {% set has_tuss_nav = (session_feature_tuss_rol or is_admin) %}
+
+          <div class="nav-section">
+            <div class="nav-section-title">{{ 'Gerenciamento' if is_admin else 'Principal' }}</div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='dashboard' %}active{% endif %}" href="{{ url_for('dashboard') }}">
+                <i class="bi bi-grid-fill nav-icon"></i>
+                <span class="nav-text">Painel</span>
+              </a>
+            </div>
+            {% if has_consulta %}
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='consulta_comparar' %}active{% endif %}" href="{{ url_for('consulta_comparar') }}">
+                <i class="bi bi-search nav-icon"></i>
+                <span class="nav-text">Consulta & Comparar</span>
+              </a>
+            </div>
+            {% endif %}
+            {% if has_tuss_nav %}
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='tuss_rol_consulta' %}active{% endif %}" href="{{ url_for('tuss_rol_consulta') }}">
+                <i class="bi bi-clipboard-check nav-icon"></i>
+                <span class="nav-text">TUSS x ROL</span>
+              </a>
+            </div>
+            {% endif %}
+            {% set insumos_active = request.endpoint and request.endpoint.startswith('insumos_') %}
+            {% if has_insumos %}
+            <div class="nav-item">
+              <a class="nav-link {% if insumos_active %}active{% endif %}" href="{{ url_for('insumos_dashboard') }}">
+                <i class="bi bi-box-arrow-in-down nav-icon"></i>
+                <span class="nav-text">Simpro & Brasíndice</span>
+              </a>
+            </div>
+            {% endif %}
+            {% if has_contratos %}
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='contratos_resumo' %}active{% endif %}" href="{{ url_for('contratos_resumo') }}">
+                <i class="bi bi-briefcase-fill nav-icon"></i>
+                <span class="nav-text">Contratos</span>
+              </a>
+            </div>
+            {% endif %}
+          </div>
+
+          {% if is_admin %}
+          <div class="nav-section">
+            <div class="nav-section-title">Administração</div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='gerenciar_operadoras' %}active{% endif %}" href="{{ url_for('gerenciar_operadoras') }}">
+                <i class="bi bi-building nav-icon"></i>
+                <span class="nav-text">Operadoras</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='gerenciar_tabelas' %}active{% endif %}" href="{{ url_for('gerenciar_tabelas') }}">
+                <i class="bi bi-table nav-icon"></i>
+                <span class="nav-text">Tabelas</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint and request.endpoint.startswith('admin_tetos') %}active{% endif %}" href="{{ url_for('admin_tetos') }}">
+                <i class="bi bi-speedometer2 nav-icon"></i>
+                <span class="nav-text">Teto de Valores</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='gerenciar_usuarios' %}active{% endif %}" href="{{ url_for('gerenciar_usuarios') }}">
+                <i class="bi bi-people-fill nav-icon"></i>
+                <span class="nav-text">Usuários</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='admin_tuss_rol' %}active{% endif %}" href="{{ url_for('admin_tuss_rol') }}">
+                <i class="bi bi-clipboard-data nav-icon"></i>
+                <span class="nav-text">TUSS x ROL Admin</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='cbhpm_rules' or request.endpoint=='cbhpm_rules_new' or request.endpoint=='cbhpm_rules_edit' %}active{% endif %}" href="{{ url_for('cbhpm_rules') }}">
+                <i class="bi bi-sliders nav-icon"></i>
+                <span class="nav-text">Regras CBHPM</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='admin_audit_trail' %}active{% endif %}" href="{{ url_for('admin_audit_trail') }}">
+                <i class="bi bi-activity nav-icon"></i>
+                <span class="nav-text">Auditoria</span>
+              </a>
+            </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='health_check' %}active{% endif %}" href="{{ url_for('health_check') }}">
+                <i class="bi bi-heart-pulse-fill nav-icon"></i>
+                <span class="nav-text">Status do Sistema</span>
+              </a>
             </div>
           </div>
+          {% endif %}
+        </nav>
 
-          <div class="content">
-            {% with messages = get_flashed_messages(with_categories=True) %}
-              {% if messages %}
-                <div class="mb-3">
-                  {% for category, message in messages %}
-                    <div class="alert alert-{{ category }} mb-2" role="alert">{{ message }}</div>
-                  {% endfor %}
-                </div>
-              {% endif %}
-            {% endwith %}
-            {% block content %}{% endblock %}
+        <div class="sidebar-footer">
+          <div class="user-profile">
+            <div class="user-avatar">{{ (session_nome[:1] if session_nome) or 'U' }}</div>
+            <div class="user-info">
+              <div class="user-name">{{ session_nome or 'Usuário' }}</div>
+              <div class="user-role">{{ 'Administrador' if is_admin else 'Usuário' }}</div>
+            </div>
           </div>
         </div>
-        <footer class="app-footer">
-          © Price Health — Todos os direitos reservados. Desenvolvido por Equipe de TI.
-        </footer>
-      </section>
+      </aside>
+
+      <!-- Conteúdo Principal -->
+      <main class="modern-main">
+        <nav class="modern-navbar">
+          <div class="navbar-left">
+            <h1 class="page-title">{% block page_title %}{% endblock %}</h1>
+          </div>
+          <div class="navbar-right">
+            <div class="search-box">
+              <i class="bi bi-search search-icon"></i>
+              <input type="text" class="search-input" id="globalSearch" placeholder="Buscar..."/>
+            </div>
+            <div class="navbar-actions">
+              <a href="{{ url_for('alterar_senha') }}" class="btn-modern btn-outline btn-sm">
+                <i class="bi bi-key"></i>
+                <span class="d-none d-lg-inline">Alterar Senha</span>
+              </a>
+              <a href="{{ url_for('logout') }}" class="btn-modern btn-danger btn-sm">
+                <i class="bi bi-box-arrow-right"></i>
+                <span class="d-none d-lg-inline">Sair</span>
+              </a>
+            </div>
+          </div>
+        </nav>
+
+        <div class="content-area animate-fade-in">
+          {% with messages = get_flashed_messages(with_categories=True) %}
+            {% if messages %}
+              <div style="margin-bottom: 2rem;">
+                {% for category, message in messages %}
+                  {% if category == 'success' %}
+                    {% set border_color = 'var(--success)' %}
+                  {% elif category == 'danger' %}
+                    {% set border_color = 'var(--danger)' %}
+                  {% elif category == 'warning' %}
+                    {% set border_color = 'var(--warning)' %}
+                  {% else %}
+                    {% set border_color = 'var(--info)' %}
+                  {% endif %}
+                  <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert" style="border-radius: 10px; border-left: 4px solid {{ border_color }};">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                  </div>
+                {% endfor %}
+              </div>
+            {% endif %}
+          {% endwith %}
+          {% block content %}{% endblock %}
+        </div>
+      </main>
     </div>
   {% endif %}
 
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+  <!-- Refactored JavaScript Core -->
+  <script type="module" src="{{ url_for('static', filename='js/core/main.js') }}"></script>
+
+  <!-- Password toggle functionality -->
   <script>
     document.addEventListener('DOMContentLoaded', function () {
       document.querySelectorAll('[data-toggle-password]').forEach(function (btn) {
         btn.addEventListener('click', function () {
           const targetSelector = btn.getAttribute('data-target');
-          if (!targetSelector) {
-            return;
-          }
+          if (!targetSelector) return;
           const input = document.querySelector(targetSelector);
-          if (!input) {
-            return;
-          }
+          if (!input) return;
+
           const newType = input.type === 'password' ? 'text' : 'password';
           input.type = newType;
+
           const icon = btn.querySelector('i');
           if (icon) {
             icon.classList.toggle('bi-eye');
             icon.classList.toggle('bi-eye-slash');
           }
+
           btn.setAttribute('aria-pressed', newType === 'text');
           try {
             input.focus({ preventScroll: true });
@@ -204,6 +620,7 @@
       });
     });
   </script>
+
   {% block scripts %}{% endblock %}
 </body>
 </html>

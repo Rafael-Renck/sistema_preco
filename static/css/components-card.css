@@ -1,0 +1,94 @@
+/* === CARDS === */
+
+.card {
+  background: white;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm, 0 1px 2px 0 rgba(0, 0, 0, 0.05));
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-md, 0 4px 6px -1px rgba(0, 0, 0, 0.1));
+}
+
+.card-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  background: var(--gray-50, #f9fafb);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card-header i {
+  font-size: 1.25rem;
+  color: var(--brand-primary, #0ea5e9);
+}
+
+.card-body {
+  padding: 1.5rem;
+}
+
+.card-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color, #e5e7eb);
+  background: var(--gray-50, #f9fafb);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Card variants */
+.card.card-primary {
+  border-left: 4px solid var(--brand-primary, #0ea5e9);
+}
+
+.card.card-success {
+  border-left: 4px solid var(--success, #10b981);
+}
+
+.card.card-danger {
+  border-left: 4px solid var(--danger, #ef4444);
+}
+
+.card.card-warning {
+  border-left: 4px solid var(--warning, #f59e0b);
+}
+
+.card.card-info {
+  border-left: 4px solid var(--info, #6366f1);
+}
+
+/* Card list */
+.card-list {
+  list-style: none;
+}
+
+.card-list li {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border-color, #e5e7eb);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.card-list li:last-child {
+  border-bottom: none;
+}
+
+/* Card grid */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+@media (max-width: 768px) {
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+}

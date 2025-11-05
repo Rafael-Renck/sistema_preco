@@ -1,0 +1,250 @@
+/* === LAYOUT E GRID === */
+
+/* Container responsivo */
+.container, .container-fluid {
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.container {
+  max-width: 100%;
+}
+
+@media (min-width: 640px) {
+  .container {
+    max-width: 640px;
+  }
+}
+
+@media (min-width: 768px) {
+  .container {
+    max-width: 720px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .container {
+    max-width: 960px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .container {
+    max-width: 1200px;
+  }
+}
+
+/* Grid System */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-right: -0.5rem;
+  margin-left: -0.5rem;
+}
+
+.row > * {
+  flex-shrink: 0;
+  width: 100%;
+  padding-right: 0.5rem;
+  padding-left: 0.5rem;
+}
+
+/* Colunas */
+.col {
+  flex: 1 0 0%;
+}
+
+@for $i from 1 through 12 {
+  .col-#{$i} {
+    flex: 0 0 calc((100% / 12) * #{$i});
+  }
+}
+
+/* Responsive columns */
+@media (min-width: 768px) {
+  @for $i from 1 through 12 {
+    .col-md-#{$i} {
+      flex: 0 0 calc((100% / 12) * #{$i});
+    }
+  }
+}
+
+@media (min-width: 1024px) {
+  @for $i from 1 through 12 {
+    .col-lg-#{$i} {
+      flex: 0 0 calc((100% / 12) * #{$i});
+    }
+  }
+}
+
+/* Flexbox utilities */
+.d-flex {
+  display: flex;
+}
+
+.d-grid {
+  display: grid;
+}
+
+.flex-wrap {
+  flex-wrap: wrap;
+}
+
+.flex-nowrap {
+  flex-wrap: nowrap;
+}
+
+.flex-column {
+  flex-direction: column;
+}
+
+.flex-row {
+  flex-direction: row;
+}
+
+.justify-content-start {
+  justify-content: flex-start;
+}
+
+.justify-content-end {
+  justify-content: flex-end;
+}
+
+.justify-content-center {
+  justify-content: center;
+}
+
+.justify-content-between {
+  justify-content: space-between;
+}
+
+.justify-content-around {
+  justify-content: space-around;
+}
+
+.align-items-start {
+  align-items: flex-start;
+}
+
+.align-items-center {
+  align-items: center;
+}
+
+.align-items-end {
+  align-items: flex-end;
+}
+
+.align-items-stretch {
+  align-items: stretch;
+}
+
+.gap-1 {
+  gap: 0.25rem;
+}
+
+.gap-2 {
+  gap: 0.5rem;
+}
+
+.gap-3 {
+  gap: 1rem;
+}
+
+.gap-4 {
+  gap: 1.5rem;
+}
+
+.gap-5 {
+  gap: 2rem;
+}
+
+/* Display utilities */
+.d-none {
+  display: none;
+}
+
+.d-block {
+  display: block;
+}
+
+.d-inline {
+  display: inline;
+}
+
+.d-inline-block {
+  display: inline-block;
+}
+
+.d-table {
+  display: table;
+}
+
+.d-table-cell {
+  display: table-cell;
+}
+
+/* Overflow */
+.overflow-hidden {
+  overflow: hidden;
+}
+
+.overflow-auto {
+  overflow: auto;
+}
+
+.overflow-x-auto {
+  overflow-x: auto;
+}
+
+.overflow-y-auto {
+  overflow-y: auto;
+}
+
+/* Position */
+.position-relative {
+  position: relative;
+}
+
+.position-absolute {
+  position: absolute;
+}
+
+.position-fixed {
+  position: fixed;
+}
+
+.position-sticky {
+  position: sticky;
+}
+
+/* Z-index */
+.z-1 {
+  z-index: 1;
+}
+
+.z-10 {
+  z-index: 10;
+}
+
+.z-20 {
+  z-index: 20;
+}
+
+.z-30 {
+  z-index: 30;
+}
+
+.z-40 {
+  z-index: 40;
+}
+
+.z-50 {
+  z-index: 50;
+}
+
+.z-auto {
+  z-index: auto;
+}

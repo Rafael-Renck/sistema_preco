@@ -1,0 +1,26 @@
+{# Macro de Grupo de Formulário #}
+{% macro form_group(name, label, type='text', placeholder='', value='', required=False, help_text='', error=None, class='') %}
+  <div class="mb-3 {{ class }}">
+    <label for="{{ name }}" class="form-label">
+      {{ label }}
+      {% if required %}<span class="text-danger">*</span>{% endif %}
+    </label>
+
+    {% if type == 'textarea' %}
+      <textarea class="form-control {% if error %}is-invalid{% endif %}" id="{{ name }}" name="{{ name }}" placeholder="{{ placeholder }}" {% if required %}required{% endif %}>{{ value }}</textarea>
+    {% elif type == 'select' %}
+      <select class="form-select {% if error %}is-invalid{% endif %}" id="{{ name }}" name="{{ name }}" {% if required %}required{% endif %}>
+        <option value="">{{ placeholder or 'Selecione...' }}</option>
+        {{ caller() }}
+      </select>
+    {% else %}
+      <input type="{{ type }}" class="form-control {% if error %}is-invalid{% endif %}" id="{{ name }}" name="{{ name }}" placeholder="{{ placeholder }}" value="{{ value }}" {% if required %}required{% endif %} />
+    {% endif %}
+
+    {% if error %}
+      <div class="invalid-feedback d-block">{{ error }}</div>
+    {% elif help_text %}
+      <small class="form-text text-muted d-block mt-1">{{ help_text }}</small>
+    {% endif %}
+  </div>
+{% endmacro %}

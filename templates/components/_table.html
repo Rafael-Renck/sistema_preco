@@ -1,0 +1,31 @@
+{# Macro de Tabela Reutilizável #}
+{% macro table(columns, rows, striped=True, hover=True, class='') %}
+  <div class="table-responsive">
+    <table class="table {% if striped %}table-striped{% endif %} {% if hover %}table-hover{% endif %} {{ class }}">
+      <thead class="table-light">
+        <tr>
+          {% for column in columns %}
+            <th class="{% if column.sortable %}cursor-pointer{% endif %}">{{ column.label }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% if rows %}
+          {% for row in rows %}
+            <tr>
+              {% for column in columns %}
+                <td>{{ row.get(column.key, '-') }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        {% else %}
+          <tr>
+            <td colspan="{{ columns|length }}" class="text-center text-muted py-4">
+              <i class="bi bi-inbox"></i> Nenhum registro encontrado
+            </td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+{% endmacro %}

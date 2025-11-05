@@ -1,0 +1,33 @@
+{# Macro de Botão Reutilizável #}
+{% macro button(text, href=None, type='button', variant='primary', size='md', icon=None, disabled=False, full_width=False, onclick=None, data_attrs={}) %}
+  {% set size_class = {
+    'sm': 'btn-sm',
+    'md': '',
+    'lg': 'btn-lg'
+  }.get(size, '') %}
+
+  {% set variant_class = {
+    'primary': 'btn btn-primary',
+    'secondary': 'btn btn-secondary',
+    'success': 'btn btn-success',
+    'danger': 'btn btn-danger',
+    'warning': 'btn btn-warning',
+    'outline': 'btn btn-outline-primary',
+    'outline-danger': 'btn btn-outline-danger',
+    'outline-secondary': 'btn btn-outline-secondary'
+  }.get(variant, 'btn btn-primary') %}
+
+  {% set width_class = 'd-grid gap-2' if full_width else '' %}
+
+  {% if href %}
+    <a href="{{ href }}" class="{{ variant_class }} {{ size_class }} {{ width_class }}" {% if disabled %}disabled{% endif %} {% for k, v in data_attrs.items() %}data-{{ k }}="{{ v }}"{% endfor %}>
+      {% if icon %}<i class="bi bi-{{ icon }} me-2"></i>{% endif %}
+      {{ text }}
+    </a>
+  {% else %}
+    <button type="{{ type }}" class="{{ variant_class }} {{ size_class }} {{ width_class }}" {% if disabled %}disabled{% endif %} {% if onclick %}onclick="{{ onclick }}"{% endif %} {% for k, v in data_attrs.items() %}data-{{ k }}="{{ v }}"{% endfor %}>
+      {% if icon %}<i class="bi bi-{{ icon }} me-2"></i>{% endif %}
+      {{ text }}
+    </button>
+  {% endif %}
+{% endmacro %}

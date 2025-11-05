@@ -1,0 +1,18 @@
+{# Macro de Badge/Rótulo #}
+{% macro badge(text, variant='primary', icon=None, class='') %}
+  {% set variant_class = {
+    'primary': 'badge bg-primary',
+    'secondary': 'badge bg-secondary',
+    'success': 'badge bg-success',
+    'danger': 'badge bg-danger',
+    'warning': 'badge bg-warning text-dark',
+    'info': 'badge bg-info',
+    'light': 'badge bg-light text-dark',
+    'dark': 'badge bg-dark'
+  }.get(variant, 'badge bg-primary') %}
+
+  <span class="{{ variant_class }} {{ class }}">
+    {% if icon %}<i class="bi bi-{{ icon }} me-1"></i>{% endif %}
+    {{ text }}
+  </span>
+{% endmacro %}

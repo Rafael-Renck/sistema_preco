@@ -1,0 +1,32 @@
+{# Macro de Modal Reutilizável #}
+{% macro modal(id, title, body, footer=None, size='', icon=None, centered=True) %}
+  {% set size_class = {
+    'sm': 'modal-sm',
+    'lg': 'modal-lg',
+    'xl': 'modal-xl'
+  }.get(size, '') %}
+
+  <div class="modal fade" id="{{ id }}" tabindex="-1" aria-labelledby="{{ id }}Label" aria-hidden="true">
+    <div class="modal-dialog {{ size_class }} {% if centered %}modal-dialog-centered{% endif %}">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h1 class="modal-title fs-5" id="{{ id }}Label">
+            {% if icon %}<i class="bi bi-{{ icon }} me-2"></i>{% endif %}
+            {{ title }}
+          </h1>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
+        </div>
+
+        <div class="modal-body">
+          {{ body | safe }}
+        </div>
+
+        {% if footer %}
+          <div class="modal-footer">
+            {{ footer | safe }}
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endmacro %}

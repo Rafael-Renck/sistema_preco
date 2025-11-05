@@ -1,0 +1,176 @@
+/* === MAIN CSS - REFACTORED FRONTEND === */
+/* Imports all CSS modules in the correct order */
+
+/* 1. Design System & Variables */
+@import url('./variables.css');
+@import url('./design-system.css');
+
+/* 2. Base & Reset */
+@import url('./reset.css');
+@import url('./typography.css');
+
+/* 3. Layout System */
+@import url('./layout.css');
+@import url('./spacing.css');
+
+/* 4. Components */
+@import url('./components-button.css');
+@import url('./components-form.css');
+@import url('./components-card.css');
+@import url('./components-table.css');
+@import url('./components-alert.css');
+@import url('./components-badge.css');
+@import url('./components-modal.css');
+
+/* 5. Utilities & Effects */
+@import url('./animations.css');
+@import url('./utilities.css');
+@import url('./modern-design.css');
+
+/* === GLOBAL STYLES === */
+
+html, body {
+  height: 100%;
+  background: var(--bg, #f1f2f5);
+  color: var(--ink, #0f172a);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Application Layout */
+.app {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 100vh;
+}
+
+.app-sidebar {
+  background: linear-gradient(180deg, var(--sidebar-bg, #1c2530), var(--sidebar-bg-2, #2a3440));
+  color: var(--sidebar-ink, #cbd5e1);
+  padding: 18px 12px;
+}
+
+.app-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  background: var(--shell, #ede9df);
+  border-bottom: 1px solid #ddd;
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.content-wrap {
+  background: var(--shell, #ede9df);
+  padding: 20px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.content {
+  background: var(--card, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius, 14px);
+  padding: 18px;
+}
+
+.app-footer {
+  margin-top: auto;
+  background: var(--shell, #ede9df);
+  border-top: 1px solid var(--border, #e5e7eb);
+  padding: 12px 20px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--muted, #6b7280);
+}
+
+/* Responsive Grid */
+@media (max-width: 1100px) {
+  .app {
+    grid-template-columns: 78px 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .app-sidebar {
+    position: fixed;
+    left: -260px;
+    top: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 100;
+    transition: left 0.3s ease;
+  }
+
+  .app-sidebar.open {
+    left: 0;
+  }
+
+  .topbar {
+    padding: 10px;
+  }
+
+  .content-wrap {
+    padding: 1rem;
+  }
+
+  .content {
+    padding: 1rem;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-300, #d1d5db);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400, #9ca3af);
+}
+
+/* Print styles */
+@media print {
+  .app-sidebar,
+  .topbar,
+  .no-print {
+    display: none;
+  }
+
+  .content-wrap {
+    background: white;
+    padding: 0;
+  }
+
+  .content {
+    border: none;
+    box-shadow: none;
+  }
+
+  body {
+    background: white;
+  }
+}
