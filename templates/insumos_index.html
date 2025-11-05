@@ -283,6 +283,17 @@
     to { transform: rotate(360deg); }
   }
 
+  /* ===== SPINNER LOADING ===== */
+  #resultadoLoading {
+    display: none !important;  /* Garante que spinner fica oculto por padrão */
+    visibility: hidden !important;
+  }
+
+  #resultadoLoading.visible {
+    display: flex !important;  /* Mostra quando classe visible é adicionada */
+    visibility: visible !important;
+  }
+
   /* ===== CONTAINER PRINCIPAL ===== */
   .insumos-container {
     display: block;
@@ -453,6 +464,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   // Garante que o spinner esteja oculto no início
   const initialLoading = document.getElementById('resultadoLoading');
   if(initialLoading) {
+    initialLoading.classList.remove('visible');
     initialLoading.classList.add('d-none');
     console.log('✅ SPINNER INICIALMENTE OCULTO');
   } else {
@@ -508,9 +520,9 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
     try {
       if(state) {
-        // Mostra spinner
+        // Mostra spinner adicionando classe visible
+        el.classList.add('visible');
         el.classList.remove('d-none');
-        el.style.display = 'flex';  // Força visibilidade
         console.log('✅ SPINNER MOSTRADO - Elemento visível');
 
         // Limpa fallback anterior se existir
@@ -521,15 +533,15 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         // Define fallback: se após 20s o spinner ainda estiver visível, ocultá-lo forçadamente
         spinnerFallbackTimeout = setTimeout(() => {
           console.warn('⚠️ FALLBACK: Spinner visível por mais de 20s, ocultando forçadamente');
+          el.classList.remove('visible');
           el.classList.add('d-none');
-          el.style.display = 'none';
           isLoading = false;
           resumo.textContent = '⚠️ A requisição demorou muito. Tente novamente.';
         }, 20000);
       } else {
-        // Oculta spinner
+        // Oculta spinner removendo classe visible
+        el.classList.remove('visible');
         el.classList.add('d-none');
-        el.style.display = 'none';  // Força ocultação
         console.log('✅ SPINNER OCULTADO');
 
         // Limpa fallback
