@@ -493,6 +493,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   let currentDetail = null;        // Item atualmente visualizado
   let currentSimilares = [];       // Itens similares
   let isLoading = false;           // Flag para evitar requisições simultâneas
+  let spinnerFallbackTimeout = null;  // Fallback para forçar ocultação do spinner
 
   /**
    * Alterna a visibilidade do spinner de carregamento
@@ -507,14 +508,37 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
     try {
       if(state) {
+        // Mostra spinner
         el.classList.remove('d-none');
-        console.log('✅ SPINNER MOSTRADO');
+        el.style.display = 'flex';  // Força visibilidade
+        console.log('✅ SPINNER MOSTRADO - Elemento visível');
+
+        // Limpa fallback anterior se existir
+        if(spinnerFallbackTimeout) {
+          clearTimeout(spinnerFallbackTimeout);
+        }
+
+        // Define fallback: se após 35s o spinner ainda estiver visível, ocultá-lo forçadamente
+        spinnerFallbackTimeout = setTimeout(() => {
+          console.warn('⚠️ FALLBACK: Spinner visível por mais de 35s, ocultando forçadamente');
+          el.classList.add('d-none');
+          el.style.display = 'none';
+          isLoading = false;
+        }, 35000);
       } else {
+        // Oculta spinner
         el.classList.add('d-none');
-        console.log('✅ SPINNER OCULTADO - Classes:', el.className);
+        el.style.display = 'none';  // Força ocultação
+        console.log('✅ SPINNER OCULTADO');
+
+        // Limpa fallback
+        if(spinnerFallbackTimeout) {
+          clearTimeout(spinnerFallbackTimeout);
+          spinnerFallbackTimeout = null;
+        }
       }
     } catch(e) {
-      console.error('Erro ao alterar visibilidade do spinner:', e);
+      console.error('❌ Erro ao alterar visibilidade do spinner:', e);
     }
   }
 
