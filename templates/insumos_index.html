@@ -755,6 +755,13 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     // Coleta filtros e mostra spinner
     const params = getFilters();
     isLoading = true;
+
+    // Desabilita botões
+    const btnBuscar = document.getElementById('btnBuscar');
+    if(btnBuscar) btnBuscar.disabled = true;
+    btnPrev.disabled = true;
+    btnNext.disabled = true;
+
     toggleLoading(true);
 
     // Cria AbortController para timeout
@@ -828,7 +835,12 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       isLoading = false;
       if(timeoutId) clearTimeout(timeoutId);
       toggleLoading(false);
-      console.log('✅ Carregamento finalizado, spinner ocultado');
+
+      // Reabilita botões
+      const btnBuscar = document.getElementById('btnBuscar');
+      if(btnBuscar) btnBuscar.disabled = false;
+
+      console.log('✅ Carregamento finalizado, spinner ocultado, botões habilitados');
     }
   }
 
@@ -837,6 +849,15 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   /** Submissão do formulário de filtros */
   form.addEventListener('submit', (evt) => {
     evt.preventDefault();
+
+    // Valida UF antes de submeter
+    const ufSel = document.getElementById('fUf').value.trim();
+    if(!ufSel) {
+      alert('⚠️ Selecione uma UF para buscar');
+      document.getElementById('fUf').focus();
+      return;
+    }
+
     page = 1;  // Volta à primeira página
     carregar();
   });
