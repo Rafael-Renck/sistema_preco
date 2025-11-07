@@ -632,10 +632,23 @@
     Toast.success('Preparando impressão...');
   }
 
+  // Wait for Chart.js to be loaded
+  function waitForChart(callback, maxAttempts = 50) {
+    if (typeof Chart !== 'undefined') {
+      callback();
+    } else if (maxAttempts > 0) {
+      setTimeout(() => waitForChart(callback, maxAttempts - 1), 100);
+    } else {
+      console.error('❌ Chart.js não foi carregado');
+    }
+  }
+
   // Initialize on load
   document.addEventListener('DOMContentLoaded', function() {
-    initCharts();
-    console.log('✅ Analytics Dashboard inicializado');
+    waitForChart(() => {
+      initCharts();
+      console.log('✅ Analytics Dashboard inicializado');
+    });
   });
 </script>
 
