@@ -4541,6 +4541,128 @@ def dashboard():
     return render_template('index.html')
 
 
+@app.route('/analytics')
+@login_required
+def analytics_dashboard():
+    """Dashboard Analytics Executivo com métricas e gráficos"""
+
+    # Coleta de dados para o dashboard
+    analytics_data = {
+        'summary': {},
+        'charts': {},
+        'tables': {}
+    }
+
+    # 1. Estatísticas gerais
+    try:
+        analytics_data['summary'] = {
+            'total_operadoras': Operadora.query.count(),
+            'total_procedures': Procedimento.query.count(),
+            'total_versoes': Tabela.query.distinct(Tabela.tipo).count(),
+            'total_usuarios': Usuario.query.count(),
+        }
+    except Exception as e:
+        print(f'Erro ao coletar estatísticas gerais: {e}')
+        analytics_data['summary'] = {}
+
+    # 2. Dados de procedures por versão
+    try:
+        procedures_by_version = db.session.query(
+            Tabela.tipo,
+            func.count(Procedimento.id).label('count')
+        ).join(Procedimento, Procedimento.tabela_id == Tabela.id)\
+         .group_by(Tabela.tipo).all()
+
+        analytics_data['charts']['procedures_by_version'] = {
+            'labels': [t[0] for t in procedures_by_version],
+            'data': [int(t[1]) for t in procedures_by_version]
+        }
+    except Exception as e:
+        print(f'Erro ao coletar procedures por versão: {e}')
+        analytics_data['charts']['procedures_by_version'] = {'labels': [], 'data': []}
+
+    # 3. Top 10 procedimentos por frequência de busca (baseado em audit log)
+    try:
+        top_procedures = db.session.query(
+            Procedimento.codigo,
+            Procedimento.descricao,
+            func.count(AuditLog.id).label('access_count')
+        ).join(AuditLog, AuditLog.descricao.ilike(f'%{Procedimento.codigo}%'))\
+         .group_by(Procedimento.id)\
+         .order_by(func.count(AuditLog.id).desc())\
+         .limit(10).all()
+
+        analytics_data['tables']['top_procedures'] = [
+            {
+                'codigo': p[0],
+                'descricao': p[1][:50] + '...' if len(p[1]) > 50 else p[1],
+                'acessos': int(p[2])
+            }
+            for p in top_procedures
+        ]
+    except Exception as e:
+        print(f'Erro ao coletar top procedures: {e}')
+        analytics_data['tables']['top_procedures'] = []
+
+    # 4. Atividade por tipo de ação
+    try:
+        activity_by_action = db.session.query(
+            AuditLog.acao,
+            func.count(AuditLog.id).label('count')
+        ).group_by(AuditLog.acao)\
+         .order_by(func.count(AuditLog.id).desc())\
+         .limit(8).all()
+
+        analytics_data['charts']['activity_by_action'] = {
+            'labels': [a[0] for a in activity_by_action],
+            'data': [int(a[1]) for a in activity_by_action]
+        }
+    except Exception as e:
+        print(f'Erro ao coletar atividade: {e}')
+        analytics_data['charts']['activity_by_action'] = {'labels': [], 'data': []}
+
+    # 5. Operadoras com mais acessos
+    try:
+        top_operadoras = db.session.query(
+            Operadora.nome,
+            func.count(AuditLog.id).label('access_count')
+        ).join(Usuario, Usuario.operadora_id == Operadora.id)\
+         .join(AuditLog, AuditLog.usuario_id == Usuario.id)\
+         .group_by(Operadora.id)\
+         .order_by(func.count(AuditLog.id).desc())\
+         .limit(10).all()
+
+        analytics_data['tables']['top_operadoras'] = [
+            {
+                'nome': o[0],
+                'acessos': int(o[1])
+            }
+            for o in top_operadoras
+        ]
+    except Exception as e:
+        print(f'Erro ao coletar top operadoras: {e}')
+        analytics_data['tables']['top_operadoras'] = []
+
+    # 6. Timeline de importações
+    try:
+        recent_imports = db.session.query(
+            ImportJob.created_at.cast(db.Date).label('data'),
+            func.count(ImportJob.id).label('count')
+        ).filter(ImportJob.created_at >= datetime.utcnow() - timedelta(days=30))\
+         .group_by(ImportJob.created_at.cast(db.Date))\
+         .order_by(ImportJob.created_at.cast(db.Date)).all()
+
+        analytics_data['charts']['imports_timeline'] = {
+            'labels': [str(d[0]) for d in recent_imports],
+            'data': [int(d[1]) for d in recent_imports]
+        }
+    except Exception as e:
+        print(f'Erro ao coletar timeline de importações: {e}')
+        analytics_data['charts']['imports_timeline'] = {'labels': [], 'data': []}
+
+    return render_template('analytics_dashboard.html', analytics=analytics_data)
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     erro = None
@@ -10312,6 +10434,16 @@ def date_br(value):
         return value.strftime('%d/%m/%Y') if value else '-'
     except Exception:
         return str(value) if value else '-'
+
+
+@app.template_filter('string_format')
+def string_format(value, format_str):
+    """Format a number with thousand separators (e.g., 1,000)"""
+    try:
+        num = int(value)
+        return format(num, ',')
+    except (ValueError, TypeError):
+        return str(value)
 
 
 @app.route('/tabelas/<int:tid>/itens')

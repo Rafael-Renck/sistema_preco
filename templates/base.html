@@ -433,6 +433,14 @@
                 <span class="nav-text">Painel</span>
               </a>
             </div>
+
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint=='analytics_dashboard' %}active{% endif %}" href="{{ url_for('analytics_dashboard') }}">
+                <i class="bi bi-graph-up nav-icon"></i>
+                <span class="nav-text">Analytics</span>
+              </a>
+            </div>
+
             {% if has_consulta %}
             <div class="nav-item">
               <a class="nav-link {% if request.endpoint=='consulta_comparar' %}active{% endif %}" href="{{ url_for('consulta_comparar') }}">
