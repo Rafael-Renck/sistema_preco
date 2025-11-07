@@ -106,6 +106,33 @@
     transform: translateY(-2px);
   }
 
+  .layout-grid{
+    display:flex;
+    flex-direction:column;
+    gap:1.5rem;
+  }
+
+  .summary-bar{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.5rem 1rem;
+    align-items:center;
+    margin-bottom:1rem;
+  }
+  .summary-chip{
+    display:inline-flex;
+    align-items:center;
+    gap:.35rem;
+    padding:.45rem .85rem;
+    border-radius:999px;
+    border:1px solid rgba(37, 99, 235, 0.2);
+    background:#fff;
+    font-size:.85rem;
+    font-weight:500;
+    color:var(--tech-dark);
+    box-shadow:0 4px 12px rgba(37, 99, 235, 0.08);
+  }
+
   .card-toolbar{
     display:flex;
     align-items:center;
@@ -240,6 +267,25 @@
   .nav-pills .nav-link.active{
     background: var(--tech-primary);
     box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+  }
+
+  .advanced-toggle{
+    display:inline-flex;
+    align-items:center;
+    gap:0.35rem;
+    font-weight:600;
+    color:var(--tech-primary);
+    text-decoration:none;
+  }
+  .advanced-toggle:hover{
+    color:var(--tech-primary-light);
+    text-decoration:none;
+  }
+  .advanced-box{
+    border:1px dashed rgba(37, 99, 235, 0.2);
+    background:rgba(37, 99, 235, 0.02);
+    border-radius:12px;
+    padding:1rem 1.25rem;
   }
 
   .meta{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
@@ -601,7 +647,6 @@
   color: var(--tech-gray);
   font-weight: 500;
 }
-
 /* 📱 Responsive improvements */
 @media (max-width: 768px) {
   .card {
@@ -615,6 +660,8 @@
 {% endblock %}
 
 {% block content %}
+
+<div class="layout-grid">
 
 {# ================= Toolbar ================= #}
 <div class="card mb-3">
@@ -697,367 +744,383 @@
 
       {% if is_cbhpm %}
         <div class="col-12">
-          <div class="alert alert-info py-2 mb-2 d-flex align-items-center gap-2">
+          <div class="alert alert-info py-2 mb-0 d-flex align-items-center gap-2">
             <i data-lucide="info"></i>
             <div>CBHPM detectado para a tabela selecionada. Marque as <strong>versões</strong> para comparar.</div>
           </div>
         </div>
-        <div class="col-12">
-          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-            <div class="soft">Versões disponíveis <span class="mini-label" id="versoesCount" aria-live="polite"></span></div>
-            <div class="d-flex flex-wrap gap-2">
-              <div class="input-group input-group-sm" style="width:220px;">
-                <span class="input-group-text"><i data-lucide="search"></i></span>
-                <input type="search" class="form-control" id="filtroVersoes" placeholder="Filtrar versões..." aria-label="Filtrar versões">
+      {% endif %}
+
+      {% set has_advanced_filters = (is_cbhpm and versoes_disp) or (not is_cbhpm and prestadores_disp) %}
+      {% set advanced_open = (selected_versoes and selected_versoes|length) or (selected_prestadores and selected_prestadores|length) %}
+      {% if has_advanced_filters %}
+      <div class="col-12">
+        <button class="btn btn-link advanced-toggle px-0" type="button"
+                data-bs-toggle="collapse" data-bs-target="#advancedFilters"
+                aria-expanded="{{ 'true' if advanced_open else 'false' }}"
+                aria-controls="advancedFilters">
+          <i data-lucide="sliders-horizontal"></i> Filtros avançados
+        </button>
+        <div class="collapse{% if advanced_open %} show{% endif %}" id="advancedFilters">
+          <div class="advanced-box mt-2">
+            {% if is_cbhpm and versoes_disp %}
+              <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                <div class="soft small">Versões disponíveis <span class="mini-label" id="versoesCount" aria-live="polite"></span></div>
+                <div class="d-flex flex-wrap gap-2">
+                  <div class="input-group input-group-sm" style="width:220px;">
+                    <span class="input-group-text"><i data-lucide="search"></i></span>
+                    <input type="search" class="form-control" id="filtroVersoes" placeholder="Filtrar versões..." aria-label="Filtrar versões">
+                  </div>
+                  <button id="btnMarkAllVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="check-square"></i> Marcar todas</button>
+                  <button id="btnClearVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="eraser"></i> Limpar</button>
+                </div>
               </div>
-              <button id="btnMarkAllVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="check-square"></i> Marcar todas</button>
-              <button id="btnClearVersoes" type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="eraser"></i> Limpar</button>
-            </div>
-          </div>
-          <div class="row g-2 check-grid" id="versoesChecklist">
-            {% for v in versoes_disp %}
-            <div class="col-12 col-sm-6 col-md-4 col-lg-3">
-              <div class="form-check">
-                <input class="form-check-input ver-chk" type="checkbox" name="versoes" id="ver{{ loop.index }}" value="{{ v }}" {% if v in (selected_versoes or []) %}checked{% endif %}>
-                <label class="form-check-label" for="ver{{ loop.index }}">{{ v }}</label>
+              <div class="row g-2 check-grid" id="versoesChecklist">
+                {% for v in versoes_disp %}
+                <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+                  <div class="form-check">
+                    <input class="form-check-input ver-chk" type="checkbox" name="versoes" id="ver{{ loop.index }}" value="{{ v }}" {% if v in (selected_versoes or []) %}checked{% endif %}>
+                    <label class="form-check-label" for="ver{{ loop.index }}">{{ v }}</label>
+                  </div>
+                </div>
+                {% endfor %}
               </div>
-            </div>
-            {% endfor %}
+            {% elif prestadores_disp %}
+              <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+                <div class="soft small">Prestadores <span class="mini-label" id="prestadoresCount" aria-live="polite"></span></div>
+                <div class="input-group input-group-sm" style="width:220px;">
+                  <span class="input-group-text"><i data-lucide="search"></i></span>
+                  <input type="search" class="form-control" id="filtroPrestadores" placeholder="Filtrar prestadores..." aria-label="Filtrar prestadores">
+                </div>
+              </div>
+              <div class="row g-2 check-grid" id="prestadoresChecklist">
+                {% for p in prestadores_disp %}
+                <div class="col-12 col-sm-6 col-md-4 col-lg-3">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="prestadores" id="pr{{ loop.index }}" value="{{ p }}" {% if p in (selected_prestadores or []) %}checked{% endif %}>
+                    <label class="form-check-label" for="pr{{ loop.index }}">{{ p }}</label>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            {% else %}
+              <div class="soft small">Nenhum filtro avançado disponível para a combinação atual.</div>
+            {% endif %}
           </div>
         </div>
-      {% else %}
-        {% if prestadores_disp %}
-        <div class="col-12">
-          <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
-            <div class="soft">Prestadores <span class="mini-label" id="prestadoresCount" aria-live="polite"></span></div>
-            <div class="d-flex flex-wrap gap-2">
-              <div class="input-group input-group-sm" style="width:220px;">
-                <span class="input-group-text"><i data-lucide="search"></i></span>
-                <input type="search" class="form-control" id="filtroPrestadores" placeholder="Filtrar prestadores..." aria-label="Filtrar prestadores">
-              </div>
-            </div>
-          </div>
-          <div class="row g-2 check-grid" id="prestadoresChecklist">
-            {% for p in prestadores_disp %}
-            <div class="col-12 col-sm-6 col-md-4 col-lg-3">
-              <div class="form-check">
-                <input class="form-check-input" type="checkbox" name="prestadores" id="pr{{ loop.index }}" value="{{ p }}" {% if p in (selected_prestadores or []) %}checked{% endif %}>
-                <label class="form-check-label" for="pr{{ loop.index }}">{{ p }}</label>
-              </div>
-            </div>
-            {% endfor %}
-          </div>
-        </div>
-        {% endif %}
+      </div>
       {% endif %}
     </form>
   </div>
 </div>
 
 {# ================= Resultados ================= #}
-{% if show_results %}
-  {% set all_cols = columns or [] %}
-  {% set display_cols = (all_cols[:3] if is_cbhpm else all_cols) %}
-  {% set display_len = display_cols|length %}
-
-  <div class="card p-2 mb-3">
-    <div class="d-flex align-items-center justify-content-between px-2">
-      <div class="meta">
-        <span class="section-title">Resultados</span>
-        <span class="chip">Tabela: <strong class="ms-1">{{ tabela_nome or '-' }}</strong></span>
-        {% if selected_uf %}<span class="chip">UF: <strong class="ms-1">{{ selected_uf }}</strong></span>{% endif %}
-        {% if is_cbhpm %}
-          <span class="chip">Mostrando {{ display_len }} de {{ (columns|length) if columns else 0 }} versões</span>
-        {% else %}
-          <span class="chip">Colunas exibidas: {{ display_len }}</span>
-        {% endif %}
-      </div>
-      <div class="d-flex gap-2">
-        <button id="btnCopyResults"  type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="clipboard-copy"></i> Copiar</button>
-        <button id="btnExportCSV"   type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="download"></i> Exportar CSV</button>
-        <button id="btnRadarOportunidades" type="button" class="btn btn-sm btn-outline-success btn-icon">
-          <i data-lucide="radar"></i> Radar de oportunidades
-        </button>
-      </div>
-    </div>
-
-    <div class="table-responsive mt-2" style="max-height:70vh">
-      <table class="table table-sm table-hover table-smart table-sticky-first align-middle mb-0">
-        <thead class="table-light">
-          <tr>
-            <th style="width:130px;">Código</th>
-            <th>Descrição</th>
-            {% if show_tuss_rol %}
-            <th class="text-center">ROL ANS</th>
+<div class="row gy-4 align-items-start">
+  <div class="col-12 col-xl-8 order-1">
+    {% if show_results %}
+      {% set all_cols = columns or [] %}
+      {% set display_cols = (all_cols[:3] if is_cbhpm else all_cols) %}
+      {% set display_len = display_cols|length %}
+      <div class="card p-3">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <div class="summary-bar">
+            <span class="summary-chip"><i data-lucide="layers"></i>{{ tabela_nome or '-' }}</span>
+            <span class="summary-chip"><i data-lucide="map-pin"></i>{{ selected_uf or 'Todas as UFs' }}</span>
+            {% if is_cbhpm %}
+              <span class="summary-chip"><i data-lucide="columns-2"></i>Versões: {{ display_len }}</span>
+            {% elif all_cols %}
+              <span class="summary-chip"><i data-lucide="columns-2"></i>Colunas: {{ display_len }}</span>
             {% endif %}
-            {% for c in display_cols %}<th class="text-end">{{ c }}</th>{% endfor %}
-            <th class="text-end">Mín</th>
-            <th class="text-end">Média</th>
-            <th class="text-end">Máx</th>
-            {% if is_cbhpm %}<th class="text-center" title="Detalhar"><i data-lucide="list-ordered"></i></th>{% else %}<th class="text-end">N</th>{% endif %}
-          </tr>
-        </thead>
-        <tbody id="results-body">
-          {% for r in (rows or []) %}
-            {% set vals = (r['values'] if r and (r['values'] is defined) else []) %}
-            <tr>
-              <td>
-                <div class="d-flex align-items-center gap-2">
-                  <a href="#" class="js-open-detalhe" data-codigo="{{ r['codigo'] }}">{{ r['codigo'] }}</a>
-                  <button type="button" class="btn btn-sm btn-outline-success btn-icon js-add-combo" data-codigo="{{ r['codigo'] }}" data-descricao="{{ r['descricao']|e }}" title="Adicionar ao combo">
-                    <i data-lucide="plus"></i>
-                  </button>
-                </div>
-              </td>
-              <td>{{ r['descricao'] }}</td>
-              {% if show_tuss_rol %}
-                {% set rol = r.get('rol') %}
-                <td class="text-center">
-                  {% if rol %}
-                    {% if rol.consta %}
-                      <span class="badge text-bg-success" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Sim</span>
-                    {% else %}
-                      <span class="badge text-bg-secondary" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Não</span>
-                    {% endif %}
-                  {% else %}
-                    <span class="text-muted">-</span>
-                  {% endif %}
-                </td>
-              {% endif %}
-              {% for i in range(display_len) %}
-                {% set v = (vals[i] if i < (vals|length) else None) %}
-                <td class="text-end">{{ v|brl if v is not none else '-' }}</td>
-              {% endfor %}
-              <td class="text-end fw-semibold">{{ r['min']|brl if r['min'] is not none else '-' }}</td>
-              <td class="text-end">{{ r['avg']|brl if r['avg'] is not none else '-' }}</td>
-              <td class="text-end fw-semibold">{{ r['max']|brl if r['max'] is not none else '-' }}</td>
-              {% if is_cbhpm %}
-                <td class="text-center">
-                  <button type="button" class="btn btn-sm btn-outline-primary js-open-detalhe" data-codigo="{{ r['codigo'] }}" title="Ver todas as versões">
-                    <i data-lucide="list-ordered"></i>
-                  </button>
-                </td>
-              {% else %}
-                <td class="text-end">{{ r['count'] }}</td>
-              {% endif %}
-            </tr>
-          {% endfor %}
-          {% if not rows %}
-            <tr>
-              {% set total_cols = 6 + display_len + (1 if show_tuss_rol else 0) %}
-              <td colspan="{{ total_cols }}">
-                <div class="empty"><i data-lucide="search-x"></i> Sem resultados para os filtros atuais.</div>
-              </td>
-            </tr>
-          {% endif %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-{% endif %}
-
-{# ================= Simulador ================= #}
-<div class="card p-3">
-  <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
-    <div>
-      <div class="section-title">Simulador</div>
-      <div class="soft">CBHPM e Diárias/Taxas/Pacotes</div>
-    </div>
-    <div class="d-flex align-items-center gap-2">
-      <button type="button" class="btn btn-outline-success btn-sm btn-icon" id="btnOpenComboModal">
-        <i data-lucide="puzzle"></i> Combos de procedimento
-      </button>
-      <ul class="nav nav-pills">
-        <li class="nav-item">
-          <button class="nav-link active btn-icon" data-bs-toggle="pill" data-bs-target="#tab-cbhpm" type="button">
-            <i data-lucide="stethoscope"></i> CBHPM
-          </button>
-        </li>
-        <li class="nav-item">
-          <button class="nav-link btn-icon" data-bs-toggle="pill" data-bs-target="#tab-dtp" type="button">
-            <i data-lucide="folder-cog"></i> Diárias/Taxas/Pacotes
-          </button>
-        </li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="d-flex flex-wrap gap-2 align-items-center mt-2" id="cbhpmScenarioControls">
-    <button type="button" class="btn btn-outline-secondary btn-icon btn-sm" id="btnSaveScenario">
-      <i data-lucide="bookmark-plus"></i> Salvar cenário
-    </button>
-    <div class="input-group input-group-sm" style="max-width:360px;">
-      <span class="input-group-text"><i data-lucide="archive"></i></span>
-      <select class="form-select" id="cbhpmSavedList">
-        <option value="">Cenários salvos...</option>
-      </select>
-      <button class="btn btn-outline-primary" type="button" id="btnApplyScenario">Aplicar</button>
-      <button class="btn btn-outline-danger" type="button" id="btnDeleteScenario">Excluir</button>
-    </div>
-  </div>
-
-  <div class="tab-content mt-3">
-    {# ==== CBHPM ==== #}
-    <div class="tab-pane fade show active" id="tab-cbhpm">
-      <form id="form-cbhpm" class="row g-3" autocomplete="off">
-        <div class="col-12 col-lg-6">
-          <label class="form-label">Código (ou "código - descrição")</label>
-          <input class="form-control" id="cbhpm-codigo" placeholder="Ex: 12345 ou 12345 - texto">
-        </div>
-        <div class="col-6 col-lg-2">
-          <label class="form-label">UF</label>
-          <select class="form-select" id="cbhpm-uf">
-            <option value="">(opcional)</option>
-            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="col-6 col-lg-4">
-          <label class="form-label">Versão (nome da tabela CBHPM)</label>
-          <select class="form-select" id="cbhpm-versao">
-            <option value="">Automática</option>
-            {% for v in cbhpm_list_all %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
-          </select>
-        </div>
-
-        <div class="col-12 col-lg-4">
-          <label class="form-label">Operadora (para tetos CBHPM)</label>
-          <select class="form-select" id="cbhpm-operadora">
-            {% if operadoras_list %}
-              {% for op in operadoras_list %}
-              <option value="{{ op.id }}" {% if op.id == current_operadora_id %}selected{% endif %}>
-                {{ op.nome }}
-              </option>
-              {% endfor %}
-            {% else %}
-              <option value="">Nenhuma operadora cadastrada</option>
-            {% endif %}
-          </select>
-        </div>
-
-        <div class="col-6 col-lg-3">
-          <label class="form-label">Tabela de Porte (hint)</label>
-          <select class="form-select" id="cbhpm-porte">
-            <option value="">Automático</option>
-            {% for p in porte_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="col-6 col-lg-3">
-          <label class="form-label">Tabela Porte AN (hint)</label>
-          <select class="form-select" id="cbhpm-porte-an">
-            <option value="">Automático</option>
-            {% for p in porte_an_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="col-6 col-lg-2">
-          <label class="form-label">Ajuste Porte %</label>
-          <input class="form-control" id="cbhpm-aj-porte" type="number" step="0.01" value="0">
-        </div>
-        <div class="col-6 col-lg-2">
-          <label class="form-label">Ajuste Porte AN %</label>
-          <input class="form-control" id="cbhpm-aj-an" type="number" step="0.01" value="0">
-        </div>
-        <div class="col-6 col-lg-1">
-          <label class="form-label">UCO (R$)</label>
-          <input class="form-control" id="cbhpm-uco" placeholder="ex: 0,55">
-        </div>
-        <div class="col-6 col-lg-1">
-          <label class="form-label">Filme (R$)</label>
-          <input class="form-control" id="cbhpm-filme" placeholder="ex: 10,00">
-        </div>
-        <div class="col-6 col-lg-2">
-          <label class="form-label">Incidências</label>
-          <input class="form-control" id="cbhpm-incid" placeholder="ex: 2">
-        </div>
-
-        <div class="col-12">
-          <label class="form-label">Pacote (múltiplos códigos, 1 por linha)</label>
-          <textarea class="form-control" id="cbhpm-pacote" rows="2" placeholder="30101012&#10;30101013"></textarea>
-          <div class="mt-2 border rounded-3 bg-light p-3" id="cbhpm-dtp-helper">
-            <div class="d-flex flex-wrap gap-2 align-items-end">
-              <div class="flex-grow-1">
-                <label class="mini-label" for="cbhpm-dtp-tabela">Tabela DTP (Diarias/Taxas/Pacotes)</label>
-                <select class="form-select form-select-sm" id="cbhpm-dtp-tabela">
-                  <option value="">Selecione...</option>
-                  {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
-                </select>
-              </div>
-              <div style="min-width:120px">
-                <label class="mini-label" for="cbhpm-dtp-uf">UF</label>
-                <select class="form-select form-select-sm" id="cbhpm-dtp-uf">
-                  <option value="">(todas)</option>
-                  {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
-                </select>
-              </div>
-              <div class="flex-grow-1">
-                <label class="mini-label" for="cbhpm-dtp-q">Buscar termo</label>
-                <input class="form-control form-control-sm" id="cbhpm-dtp-q" placeholder="Ex.: diaria, 3010">
-              </div>
-              <div>
-                <button type="button" class="btn btn-sm btn-outline-primary btn-icon" id="btnCbhpmDtpBuscar"><i data-lucide="search"></i> Buscar DTP</button>
-              </div>
-            </div>
-            <div class="mt-3" id="cbhpm-dtp-results" style="max-height:230px; overflow:auto;"></div>
-            <div class="mt-2" id="cbhpm-dtp-selected" hidden>
-              <div class="mini-label mb-1">Itens DTP adicionados</div>
-              <div class="d-flex flex-wrap gap-2" id="cbhpm-dtp-selected-list"></div>
-            </div>
+            <span class="summary-chip"><i data-lucide="table"></i>{{ (rows or [])|length }} resultados</span>
+          </div>
+          <div class="d-flex gap-2">
+            <button id="btnCopyResults"  type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="clipboard-copy"></i> Copiar</button>
+            <button id="btnExportCSV"   type="button" class="btn btn-sm btn-outline-secondary btn-icon"><i data-lucide="download"></i> Exportar CSV</button>
+            <button id="btnRadarOportunidades" type="button" class="btn btn-sm btn-outline-success btn-icon">
+              <i data-lucide="radar"></i> Radar de oportunidades
+            </button>
           </div>
         </div>
+        <div class="table-responsive mt-3" style="max-height:70vh">
+          <table class="table table-sm table-hover table-smart table-sticky-first align-middle mb-0">
+            <thead class="table-light">
+              <tr>
+                <th style="width:130px;">Código</th>
+                <th>Descrição</th>
+                {% if show_tuss_rol %}
+                <th class="text-center">ROL ANS</th>
+                {% endif %}
+                {% for c in display_cols %}<th class="text-end">{{ c }}</th>{% endfor %}
+                <th class="text-end">Mín</th>
+                <th class="text-end">Média</th>
+                <th class="text-end">Máx</th>
+                {% if is_cbhpm %}<th class="text-center" title="Detalhar"><i data-lucide="list-ordered"></i></th>{% else %}<th class="text-end">N</th>{% endif %}
+              </tr>
+            </thead>
+            <tbody id="results-body">
+              {% for r in (rows or []) %}
+                {% set vals = (r['values'] if r and (r['values'] is defined) else []) %}
+                <tr>
+                  <td>
+                    <div class="d-flex align-items-center gap-2">
+                      <a href="#" class="js-open-detalhe" data-codigo="{{ r['codigo'] }}">{{ r['codigo'] }}</a>
+                      <button type="button" class="btn btn-sm btn-outline-success btn-icon js-add-combo" data-codigo="{{ r['codigo'] }}" data-descricao="{{ r['descricao']|e }}" title="Adicionar ao combo">
+                        <i data-lucide="plus"></i>
+                      </button>
+                    </div>
+                  </td>
+                  <td>{{ r['descricao'] }}</td>
+                  {% if show_tuss_rol %}
+                    {% set rol = r.get('rol') %}
+                    <td class="text-center">
+                      {% if rol %}
+                        {% if rol.consta %}
+                          <span class="badge text-bg-success" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Sim</span>
+                        {% else %}
+                          <span class="badge text-bg-secondary" {% if rol.descricao %}title="{{ rol.descricao }}"{% endif %}>Não</span>
+                        {% endif %}
+                      {% else %}
+                        <span class="text-muted">-</span>
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                  {% for i in range(display_len) %}
+                    {% set v = (vals[i] if i < (vals|length) else None) %}
+                    <td class="text-end">{{ v|brl if v is not none else '-' }}</td>
+                  {% endfor %}
+                  <td class="text-end fw-semibold">{{ r['min']|brl if r['min'] is not none else '-' }}</td>
+                  <td class="text-end">{{ r['avg']|brl if r['avg'] is not none else '-' }}</td>
+                  <td class="text-end fw-semibold">{{ r['max']|brl if r['max'] is not none else '-' }}</td>
+                  {% if is_cbhpm %}
+                    <td class="text-center">
+                      <button type="button" class="btn btn-sm btn-outline-primary js-open-detalhe" data-codigo="{{ r['codigo'] }}" title="Ver todas as versões">
+                        <i data-lucide="list-ordered"></i>
+                      </button>
+                    </td>
+                  {% else %}
+                    <td class="text-end">{{ r['count'] }}</td>
+                  {% endif %}
+                </tr>
+              {% endfor %}
+              {% if not rows %}
+                <tr>
+                  {% set total_cols = 6 + display_len + (1 if show_tuss_rol else 0) %}
+                  <td colspan="{{ total_cols }}">
+                    <div class="empty"><i data-lucide="search-x"></i> Sem resultados para os filtros atuais.</div>
+                  </td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% else %}
+      <div class="card p-5 text-center soft">
+        <i data-lucide="search"></i>
+        <div class="mt-2">Use os filtros acima para iniciar uma consulta.</div>
+      </div>
+    {% endif %}
+  </div>
+  <div class="col-12 col-xl-4 order-2 order-xl-2">
+    <div class="card p-3 h-100">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div>
+          <div class="section-title">Simulador</div>
+          <div class="soft">CBHPM e Diárias/Taxas/Pacotes</div>
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <button type="button" class="btn btn-outline-success btn-sm btn-icon" id="btnOpenComboModal">
+            <i data-lucide="puzzle"></i> Combos de procedimento
+          </button>
+          <ul class="nav nav-pills">
+            <li class="nav-item">
+              <button class="nav-link active btn-icon" data-bs-toggle="pill" data-bs-target="#tab-cbhpm" type="button">
+                <i data-lucide="stethoscope"></i> CBHPM
+              </button>
+            </li>
+            <li class="nav-item">
+              <button class="nav-link btn-icon" data-bs-toggle="pill" data-bs-target="#tab-dtp" type="button">
+                <i data-lucide="folder-cog"></i> Diárias/Taxas/Pacotes
+              </button>
+            </li>
+          </ul>
+        </div>
+      </div>
 
-        <div class="col-12 d-flex gap-2">
-  <button class="btn btn-primary btn-icon" type="button" id="btnSimularCBHPM">
-    <i class="bi bi-calculator"></i> Simular
-  </button>
-
-  <!-- NOVOS -->
-  <button class="btn btn-outline-success btn-icon" type="button" id="btnExportCBHPMXLSX">
-    <i class="bi bi-file-earmark-excel"></i> Exportar XLSX
-  </button>
-  <button class="btn btn-outline-danger btn-icon" type="button" id="btnExportCBHPMPDF">
-    <i class="bi bi-filetype-pdf"></i> Exportar PDF
-  </button>
-  <!-- /NOVOS -->
-
-  <button class="btn btn-outline-secondary btn-icon" type="reset">
-    <i class="bi bi-arrow-counterclockwise"></i> Limpar
-  </button>
-</div>
-
-      </form>
-
-      <div id="cbhpm-out" class="mt-3"></div>
-    </div>
-
-    {# ==== DTP ==== #}
-    <div class="tab-pane fade" id="tab-dtp">
-      <form id="form-dtp" class="row g-3" autocomplete="off">
-        <div class="col-12 col-lg-5">
-          <label class="form-label">Tabela DTP (Diárias/Taxas/Pacotes)</label>
-          <select class="form-select" id="dtp-tabela">
-            <option value="">Selecione...</option>
-            {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+      <div class="d-flex flex-wrap gap-2 align-items-center mt-2" id="cbhpmScenarioControls">
+        <button type="button" class="btn btn-outline-secondary btn-icon btn-sm" id="btnSaveScenario">
+          <i data-lucide="bookmark-plus"></i> Salvar cenário
+        </button>
+        <div class="input-group input-group-sm" style="max-width:360px;">
+          <span class="input-group-text"><i data-lucide="archive"></i></span>
+          <select class="form-select" id="cbhpmSavedList">
+            <option value="">Cenários salvos...</option>
           </select>
+          <button class="btn btn-outline-primary" type="button" id="btnApplyScenario">Aplicar</button>
+          <button class="btn btn-outline-danger" type="button" id="btnDeleteScenario">Excluir</button>
         </div>
-        <div class="col-6 col-lg-2">
-          <label class="form-label">UF</label>
-          <select class="form-select" id="dtp-uf">
-            <option value="">(opcional)</option>
-            {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
-          </select>
-        </div>
-        <div class="col-12 col-lg-5">
-          <label class="form-label">Termo (código ou parte da descrição)</label>
-          <input class="form-control" id="dtp-q" placeholder="Ex.: 3010 ou diária enfermaria">
-        </div>
-        <div class="col-12 d-flex gap-2">
-          <button class="btn btn-primary btn-icon" type="button" id="btnBuscarDTP"><i data-lucide="search"></i> Buscar</button>
-          <button class="btn btn-outline-secondary btn-icon" type="reset"><i data-lucide="rotate-ccw"></i> Limpar</button>
-        </div>
-      </form>
+      </div>
 
-      <div id="dtp-out" class="mt-3"></div>
+      <div class="tab-content mt-3">
+        {# ==== CBHPM ==== #}
+        <div class="tab-pane fade show active" id="tab-cbhpm">
+          <form id="form-cbhpm" class="row g-3" autocomplete="off">
+            <div class="col-12 col-lg-6">
+              <label class="form-label">Código (ou "código - descrição")</label>
+              <input class="form-control" id="cbhpm-codigo" placeholder="Ex: 12345 ou 12345 - texto">
+            </div>
+            <div class="col-6 col-lg-2">
+              <label class="form-label">UF</label>
+              <select class="form-select" id="cbhpm-uf">
+                <option value="">(opcional)</option>
+                {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-6 col-lg-4">
+              <label class="form-label">Versão (nome da tabela CBHPM)</label>
+              <select class="form-select" id="cbhpm-versao">
+                <option value="">Automática</option>
+                {% for v in cbhpm_list_all %}<option value="{{ v }}">{{ v }}</option>{% endfor %}
+              </select>
+            </div>
+
+            <div class="col-12 col-lg-4">
+              <label class="form-label">Operadora (para tetos CBHPM)</label>
+              <select class="form-select" id="cbhpm-operadora">
+                {% if operadoras_list %}
+                  {% for op in operadoras_list %}
+                  <option value="{{ op.id }}" {% if op.id == current_operadora_id %}selected{% endif %}>
+                    {{ op.nome }}
+                  </option>
+                  {% endfor %}
+                {% else %}
+                  <option value="">Nenhuma operadora cadastrada</option>
+                {% endif %}
+              </select>
+            </div>
+
+            <div class="col-6 col-lg-3">
+              <label class="form-label">Tabela de Porte (hint)</label>
+              <select class="form-select" id="cbhpm-porte">
+                <option value="">Automático</option>
+                {% for p in porte_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-6 col-lg-3">
+              <label class="form-label">Tabela Porte AN (hint)</label>
+              <select class="form-select" id="cbhpm-porte-an">
+                <option value="">Automático</option>
+                {% for p in porte_an_list %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-6 col-lg-2">
+              <label class="form-label">Ajuste Porte %</label>
+              <input class="form-control" id="cbhpm-aj-porte" type="number" step="0.01" value="0">
+            </div>
+            <div class="col-6 col-lg-2">
+              <label class="form-label">Ajuste Porte AN %</label>
+              <input class="form-control" id="cbhpm-aj-an" type="number" step="0.01" value="0">
+            </div>
+            <div class="col-6 col-lg-1">
+              <label class="form-label">UCO (R$)</label>
+              <input class="form-control" id="cbhpm-uco" placeholder="ex: 0,55">
+            </div>
+            <div class="col-6 col-lg-1">
+              <label class="form-label">Filme (R$)</label>
+              <input class="form-control" id="cbhpm-filme" placeholder="ex: 10,00">
+            </div>
+            <div class="col-6 col-lg-2">
+              <label class="form-label">Incidências</label>
+              <input class="form-control" id="cbhpm-incid" placeholder="ex: 2">
+            </div>
+
+            <div class="col-12">
+              <label class="form-label">Pacote (múltiplos códigos, 1 por linha)</label>
+              <textarea class="form-control" id="cbhpm-pacote" rows="2" placeholder="30101012&#10;30101013"></textarea>
+              <div class="mt-2 border rounded-3 bg-light p-3" id="cbhpm-dtp-helper">
+                <div class="d-flex flex-wrap gap-2 align-items-end">
+                  <div class="flex-grow-1">
+                    <label class="mini-label" for="cbhpm-dtp-tabela">Tabela DTP (Diarias/Taxas/Pacotes)</label>
+                    <select class="form-select form-select-sm" id="cbhpm-dtp-tabela">
+                      <option value="">Selecione...</option>
+                      {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+                    </select>
+                  </div>
+                  <div style="min-width:120px">
+                    <label class="mini-label" for="cbhpm-dtp-uf">UF</label>
+                    <select class="form-select form-select-sm" id="cbhpm-dtp-uf">
+                      <option value="">(todas)</option>
+                      {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+                    </select>
+                  </div>
+                  <div class="flex-grow-1">
+                    <label class="mini-label" for="cbhpm-dtp-q">Buscar termo</label>
+                    <input class="form-control form-control-sm" id="cbhpm-dtp-q" placeholder="Ex.: diaria, 3010">
+                  </div>
+                  <div>
+                    <button type="button" class="btn btn-sm btn-outline-primary btn-icon" id="btnCbhpmDtpBuscar"><i data-lucide="search"></i> Buscar DTP</button>
+                  </div>
+                </div>
+                <div class="mt-3" id="cbhpm-dtp-results" style="max-height:230px; overflow:auto;"></div>
+                <div class="mt-2" id="cbhpm-dtp-selected" hidden>
+                  <div class="mini-label mb-1">Itens DTP adicionados</div>
+                  <div class="d-flex flex-wrap gap-2" id="cbhpm-dtp-selected-list"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-12 d-flex gap-2">
+              <button class="btn btn-primary btn-icon" type="button" id="btnSimularCBHPM">
+                <i class="bi bi-calculator"></i> Simular
+              </button>
+              <button class="btn btn-outline-success btn-icon" type="button" id="btnExportCBHPMXLSX">
+                <i class="bi bi-file-earmark-excel"></i> Exportar XLSX
+              </button>
+              <button class="btn btn-outline-danger btn-icon" type="button" id="btnExportCBHPMPDF">
+                <i class="bi bi-filetype-pdf"></i> Exportar PDF
+              </button>
+              <button class="btn btn-outline-secondary btn-icon" type="reset">
+                <i class="bi bi-arrow-counterclockwise"></i> Limpar
+              </button>
+            </div>
+          </form>
+
+          <div id="cbhpm-out" class="mt-3"></div>
+        </div>
+
+        {# ==== DTP ==== #}
+        <div class="tab-pane fade" id="tab-dtp">
+          <form id="form-dtp" class="row g-3" autocomplete="off">
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Tabela DTP (Diárias/Taxas/Pacotes)</label>
+              <select class="form-select" id="dtp-tabela">
+                <option value="">Selecione...</option>
+                {% for n in dtp_list %}<option value="{{ n }}">{{ n }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-6 col-lg-2">
+              <label class="form-label">UF</label>
+              <select class="form-select" id="dtp-uf">
+                <option value="">(opcional)</option>
+                {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-lg-5">
+              <label class="form-label">Termo (código ou parte da descrição)</label>
+              <input class="form-control" id="dtp-q" placeholder="Ex.: 3010 ou diária enfermaria">
+            </div>
+            <div class="col-12 d-flex gap-2">
+              <button class="btn btn-primary btn-icon" type="button" id="btnBuscarDTP"><i data-lucide="search"></i> Buscar</button>
+              <button class="btn btn-outline-secondary btn-icon" type="reset"><i data-lucide="rotate-ccw"></i> Limpar</button>
+            </div>
+          </form>
+
+          <div id="dtp-out" class="mt-3"></div>
+        </div>
+      </div>
     </div>
   </div>
+</div>
 </div>
 
 {# ================= Radar de Oportunidades ================= #}
@@ -1258,6 +1321,7 @@
 <script>
 
 'use strict';
+
 const restoreCbhpmPayload = {{ restore_cbhpm_payload|tojson|default('null') }};
 const PROCEDIMENTO_SUGGEST_URL = '/api/procedimentos/suggest';
 const VERSOES_POR_CODIGO_URL = {{ url_for('api_versoes_por_codigo')|tojson }};
@@ -1609,6 +1673,22 @@ function initRadar(){
     showRadarModal();
   });
 }
+
+// Quando o detalheModal fecha, reabrir o radarModal se estava aberto
+(function(){
+  const detalheModalEl = document.getElementById('detalheModal');
+  const radarModalEl = document.getElementById('radarModal');
+  if(detalheModalEl && radarModalEl){
+    detalheModalEl.addEventListener('hidden.bs.modal', ()=>{
+      // Verificar se o radarModal estava aberto antes (usando radarState)
+      if(window.radarState && window.radarState.modal){
+        setTimeout(()=>{
+          window.radarState.modal.show();
+        }, 100);
+      }
+    });
+  }
+})();
 
 /* ===== Combos de procedimento ===== */
 (function(){
@@ -4297,6 +4377,59 @@ document.addEventListener('DOMContentLoaded', ()=>{
   if (restoreCbhpmPayload) {
     setCBHPMPayload(restoreCbhpmPayload);
     setTimeout(()=>{ simularCBHPM(); }, 150);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // FILTRO CBHPM - Bloquear seleção de tabelas DTP/Diárias
+  // ═════════════════════════════════════════════════════════════════════════
+
+  console.log('🔍 Inicializando filtro de tabelas CBHPM...');
+
+  // Encontrar o select de tabela (name="tabela_nome")
+  const selectTabelaNome = document.querySelector('select[name="tabela_nome"]');
+
+  if (selectTabelaNome) {
+    console.log('✅ Select de tabela encontrado');
+
+    // Filtrar opções DTP no dropdown
+    const options = selectTabelaNome.querySelectorAll('option');
+    options.forEach(opt => {
+      const nome = opt.textContent.toUpperCase();
+      const isDTP = nome.includes('DIÁRIAS') || nome.includes('TAXAS') ||
+                    nome.includes('PACOTES') || nome.includes('DTP');
+      if (isDTP && opt.value) {
+        opt.style.display = 'none';  // Esconder opção DTP
+        console.log(`⚠️ Ocultando opção: ${opt.textContent}`);
+      }
+    });
+
+    // Event listener para quando tabela é selecionada
+    selectTabelaNome.addEventListener('change', async (e) => {
+      const tabelaNome = e.target.value;
+
+      if (!tabelaNome) {
+        console.log('ℹ️ Nenhuma tabela selecionada');
+        return;
+      }
+
+      console.log('📊 Tabela selecionada:', tabelaNome);
+
+      // Detectar se alguém conseguir selecionar DTP
+      const isDTP = tabelaNome.toUpperCase().includes('DIÁRIAS') ||
+                    tabelaNome.toUpperCase().includes('TAXAS') ||
+                    tabelaNome.toUpperCase().includes('PACOTES') ||
+                    tabelaNome.toUpperCase().includes('DTP');
+
+      if (isDTP) {
+        alert('⚠️ Tabelas de Diárias, Taxas e Pacotes não são suportadas nesta página.\n\nUse a página "Contratos" para consultar preços DTP.');
+        selectTabelaNome.value = '';
+        console.warn('⚠️ DTP bloqueado');
+      } else {
+        console.log('✅ CBHPM selecionado - continuar');
+      }
+    });
+  } else {
+    console.warn('⚠️ Select de tabela NÃO encontrado');
   }
 });
 </script>

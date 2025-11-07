@@ -1,0 +1,19 @@
+{# Macro para Container de Autenticação (Login, Recuperação de Senha, etc.) #}
+{% macro auth_container(title, logo=None, class='') %}
+  <div class="auth-container {{ class }}">
+    {% if logo %}
+      <div class="auth-header">
+        <img src="{{ logo }}" alt="Logo" class="auth-logo">
+        <h1 class="auth-title">{{ title }}</h1>
+      </div>
+    {% else %}
+      <div class="auth-header">
+        <h1 class="auth-title">{{ title }}</h1>
+      </div>
+    {% endif %}
+
+    <div class="auth-content">
+      {{ caller() }}
+    </div>
+  </div>
+{% endmacro %}

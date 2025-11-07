@@ -1,0 +1,322 @@
+================================================================================
+SISTEMA DE PREÇOS - QUICK REFERENCE
+================================================================================
+
+VISÃO GERAL
+  Aplicação Flask para gerenciar, consultar e comparar tabelas de preços
+  de procedimentos médicos (CBHPM, DTP) com suporte multi-operadora.
+
+TECNOLOGIA
+  Backend:      Flask 3.0.3 + SQLAlchemy ORM
+  Database:     MySQL  
+  Frontend:     HTML5, CSS3, JavaScript ES6+
+  Export:       PDF (ReportLab), Excel (openpyxl, xlsxwriter)
+
+TAMANHO DO PROJETO
+  Linhas:       11.323 (app.py)
+  Funções:      254 (routes + helpers)
+  Templates:    35+ (HTML)
+  CSS:          30+ arquivos
+  JavaScript:   5+ módulos
+  Modelos:      29 tabelas
+
+================================================================================
+ROTAS PRINCIPAIS POR CATEGORIA
+================================================================================
+
+AUTENTICAÇÃO (8 rotas)
+  POST   /login                      - Login
+  GET    /logout                     - Logout
+  POST   /minha-senha                - Trocar senha
+  GET    /health                     - Health check
+
+ADMIN - USUÁRIOS (4 rotas)
+  GET    /gerenciar-usuarios         - Listar
+  POST   /usuarios/novo              - Criar
+  POST   /usuarios/<id>/editar       - Editar
+  GET    /admin/audit-trail          - Auditoria
+
+ADMIN - OPERADORAS (3 rotas)
+  GET    /gerenciar-operadoras       - Listar
+  POST   /operadoras/nova            - Criar
+  POST   /operadoras/<id>/editar     - Editar
+
+ADMIN - TABELAS (10 rotas)
+  GET    /gerenciar-tabelas          - Listar
+  POST   /tabelas/importar/cbhpm     - Importar CBHPM
+  POST   /tabelas/importar/diarias-taxas-pacotes - Importar DTP
+  POST   /tabelas/uco/definir        - Definir UCO
+
+ADMIN - CBHPM TETOS (7 rotas)
+  GET    /admin/tetos                - Gerenciar tetos
+  POST   /admin/tetos/import         - Importar
+  POST   /admin/tetos/copy           - Copiar entre operadoras
+  GET    /cbhpm/regras               - Regras customizáveis
+
+CONSULTA & COMPARAÇÃO (8 rotas + APIs)
+  GET    /                           - Home
+  GET    /consulta-comparar          - Interface
+  GET    /consulta-comparar-novo     - Nova interface (design moderno)
+  POST   /api/simulacao_cbhpm        - Simulação
+  POST   /api/simulacao_cbhpm/pdf    - Exportar PDF
+  POST   /api/simulacao_cbhpm/xlsx   - Exportar Excel
+
+SMART FILTERS - NOVO (3 APIs)
+  GET    /api/tabela-info/<id>       - Detecta tipo (CBHPM vs DTP)
+  GET    /api/prestadores/<id>       - Lista prestadores
+  GET    /api/versoes/<id>           - Lista versões CBHPM
+
+TUSS/ROL (4 rotas)
+  GET    /tuss-rol                   - Busca
+  GET    /admin/tuss-rol             - Admin
+  GET    /api/tuss-rol               - API
+
+INSUMOS (8 rotas)
+  GET    /insumos                    - Página principal
+  GET    /insumos/search             - Buscar
+  POST   /insumos/import             - Importar
+  GET    /insumos/import/jobs        - Status de jobs
+
+CONTRATOS (2 rotas)
+  GET    /contratos-resumo           - Listar
+  POST   /contratos-resumo/<id>/excluir - Deletar
+
+TOTAL: 60+ rotas mapeadas
+
+================================================================================
+MODELOS DE DADOS (29 TABELAS)
+================================================================================
+
+NÚCLEO
+  Usuario, UsuarioSenhaHistorico, AuditLog
+
+ESTRUTURA
+  Operadora, Tabela, Procedimento
+
+CBHPM
+  CBHPMItem, CbhpmTeto, PorteValorItem, PorteAnestesicoValorItem, CBHPMRuleSet
+
+TUSS
+  TussRolCorrelacao
+
+INSUMOS
+  BrasRaw, BrasFixedStage, BrasItemNormalized
+  SimproItem, SimproFixedStage, SimproItemNormalized
+  CatalogoBrasindice, CatalogoSimpro, InsumoIndex, InsumoContextoClinico
+
+PROCESSAMENTO
+  Lote, Publicacao, LinhaHash, ImportJob, UfAliquota
+
+================================================================================
+FEATURES IMPLEMENTADAS
+================================================================================
+
+AUTENTICAÇÃO
+  ✅ Login/Logout
+  ✅ Senhas complexas com histórico
+  ✅ Multi-operadora (isolamento de dados)
+  ✅ Auditoria completa
+
+CRUD
+  ✅ Operadoras
+  ✅ Usuários
+  ✅ Tabelas de preços
+  ✅ Procedimentos
+
+IMPORTAÇÃO
+  ✅ CSV/XLSX
+  ✅ Preview antes de confirmar
+  ✅ Deduplicação (hash)
+  ✅ Jobs assíncronos
+
+CONSULTA & ANÁLISE
+  ✅ Busca de procedimentos
+  ✅ Comparação entre tabelas
+  ✅ Simulação CBHPM (UCO + Porte)
+  ✅ Export PDF/Excel
+  ✅ Filtros avançados
+  ✅ Stats em tempo real
+
+SMART FILTERS (Nov 2025)
+  ✅ Auto-detecção de tipo
+  ✅ Auto-abertura de filtros
+  ✅ Carregamento dinâmico
+  ✅ Renderização dinâmica
+
+DESIGN
+  ✅ 10+ componentes reutilizáveis
+  ✅ Design system moderno
+  ✅ Dark mode nativo
+  ✅ Responsivo
+  ✅ Acessibilidade
+
+================================================================================
+MELHORIAS RECOMENDADAS
+================================================================================
+
+ALTA PRIORIDADE
+  1. Refatorar app.py em Blueprints (2-3 dias)
+  2. Adicionar testes automatizados (1-2 semanas)
+  3. Mobile responsivo completo (3-4 dias)
+
+MÉDIA PRIORIDADE
+  4. Dashboard analytics com gráficos (5-7 dias)
+  5. Documentação OpenAPI/Swagger (2-3 dias)
+  6. Structured logging (2 dias)
+
+BACKLOG
+  7. API REST pública
+  8. Real-time collaboration (WebSockets)
+  9. Machine Learning (previsões, anomalias)
+  10. Mobile app nativa (iOS/Android)
+
+================================================================================
+PROBLEMA: App.py com 11k linhas
+================================================================================
+
+IMPACTO: Dificuldade de manutenção
+
+SOLUÇÃO: Refatorar em Blueprints
+  blueprints/
+    ├── auth.py (login, logout, senhas)
+    ├── admin.py (usuários, operadoras, auditoria)
+    ├── tabelas.py (CRUD de tabelas)
+    ├── consulta.py (comparação, simulação)
+    ├── insumos.py (catálogo, importação)
+    ├── cbhpm.py (tetos, regras)
+    └── api.py (endpoints JSON)
+  
+  models/
+    ├── usuario.py
+    ├── operadora.py
+    ├── tabela.py
+    ├── procedimento.py
+    └── ...
+
+  Benefícios:
+    - Mais fácil de ler e entender
+    - Testes unitários por módulo
+    - Coexistência de versões antigas/novas
+    - Lazy loading de blueprints
+
+================================================================================
+DOCUMENTAÇÃO
+================================================================================
+
+EXISTE MUITA DOCUMENTAÇÃO DISPONÍVEL (30+ arquivos .md):
+
+Arquitetura
+  ✅ ARQUITETURA_SMART_FILTERS.md
+  ✅ SMART_FILTERS_INTEGRATION_COMPLETE.md
+
+Features
+  ✅ SMART_FILTERS_README.md
+  ✅ CONSULTA_COMPARAR_NOVO.md
+  ✅ COMPONENTES_GUIDE.md
+  ✅ COMPONENTS_QUICK_REFERENCE.md
+
+Admin
+  ✅ ADMIN_MULTI_OPERADORA_FINAL.md
+  ✅ MULTI_OPERADORA_PLAN.md
+
+Insumos
+  ✅ INSUMOS_PAGE_DOCUMENTATION.md
+  ✅ INSUMOS_QUICK_START.md
+
+Performance
+  ✅ OTIMIZACAO_MEMORIA.md
+  ✅ OTIMIZACOES_MEMORIA_APLICADAS.md
+
+Setup
+  ✅ INSTALACAO_HEALTH_CHECK.md
+  ✅ .env.example
+
+================================================================================
+STATUS ATUAL
+================================================================================
+
+PRONTO PARA PRODUÇÃO?
+  ✅ Sim, com as seguintes considerações:
+
+Implementado
+  ✅ Autenticação e autorização
+  ✅ Multi-operadora
+  ✅ Auditoria
+  ✅ Importação de dados
+  ✅ Comparação e simulação
+  ✅ Design moderno
+  ✅ Smart filters
+
+Recomendado Antes de Deploy
+  - Refatorar app.py (manutenibilidade)
+  - Adicionar testes (cobertura)
+  - Documentar API (OpenAPI)
+  - Configurar monitoramento (Sentry, etc)
+
+================================================================================
+ESTATÍSTICAS
+================================================================================
+
+Codebase
+  Linhas de código:     11.323
+  Funções:              254
+  Modelos:              29
+  Templates:            35+
+  CSS arquivos:         30+
+  JS módulos:           5+
+
+Documentação
+  Arquivos .md:         30+
+  Linhas de docs:       5.000+
+
+Dependências
+  Backend:              5 principais
+  Frontend:             Vanilla JS (sem frameworks pesados)
+  Exportação:           3 bibliotecas
+
+Performance
+  CSS comprimido:       ~5KB
+  JS comprimido:        ~12KB
+  Total assets:         ~25KB
+
+================================================================================
+PRÓXIMOS PASSOS SUGERIDOS
+================================================================================
+
+Curto Prazo (Esta Semana)
+  □ Revisar docs existentes
+  □ Testar smart filters em staging
+  □ Planejar refactoring em blueprints
+
+Médio Prazo (Este Mês)
+  □ Implementar blueprints
+  □ Adicionar testes automatizados
+  □ Criar dashboard analytics
+
+Longo Prazo (Este Trimestre)
+  □ API REST pública com Swagger
+  □ Real-time features
+  □ Mobile app
+
+================================================================================
+CONTATO & SUPORTE
+================================================================================
+
+Documentação Completa
+  /home/rafaelrenck/code/sistema_precos/CODEBASE_ANALYSIS.md (este arquivo)
+
+Documentação por Tópico
+  - Arquitetura:         ARQUITETURA_SMART_FILTERS.md
+  - Features:            SMART_FILTERS_README.md
+  - Admin:               ADMIN_MULTI_OPERADORA_FINAL.md
+  - Setup:               INSTALACAO_HEALTH_CHECK.md
+
+Código Fonte
+  Aplicação principal:   app.py (11.323 linhas)
+  Templates:             templates/ (35+ arquivos)
+  Assets:                static/ (CSS + JS)
+  Testes:                tests/ (pytest)
+
+================================================================================
+Data: 11 de Novembro de 2025
+Status: Análise Completa e Documentada

@@ -3,6 +3,11 @@
 {% block title %}Simpro & Brasíndice{% endblock %}
 {% block page_title %}Simpro & Brasíndice{% endblock %}
 
+{% block styles %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/toast.css') }}">
+{% endblock %}
+
 {% block content %}
 <!-- Content wrapper com padding e animação -->
 <div class="insumos-container" style="animation: fadeIn 0.5s ease; padding: 0 3rem 2rem 3rem;">
@@ -1014,7 +1019,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     // Valida UF antes de submeter
     const ufSel = document.getElementById('fUf').value.trim();
     if(!ufSel) {
-      alert('⚠️ Selecione uma UF para buscar');
+      Toast.warning('Selecione uma UF para buscar');
       document.getElementById('fUf').focus();
       return;
     }
@@ -1080,7 +1085,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         renderItemDetail(detail);
         modal.show();  // Abre modal com os detalhes
       })
-      .catch(err => alert('Erro ao carregar: ' + err.message));
+      .catch(err => Toast.error('Erro ao carregar detalhes do item'));
   });
 
   /**
@@ -1147,6 +1152,9 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   // Isso isola todo o código em um escopo privado
 })();
 </script>
+
+<!-- Script do Toast -->
+<script src="{{ url_for('static', filename='js/toast.js') }}"></script>
 
 <!-- Script do Autocomplete -->
 <script src="{{ url_for('static', filename='js/autocomplete.js') }}"></script>

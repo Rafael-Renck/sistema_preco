@@ -1,0 +1,278 @@
+/* ========================================
+   AUTHENTICATION PAGES STYLES
+   Login, Password Recovery, etc.
+   ======================================== */
+
+:root {
+  --auth-bg-gradient-start: #001f3f;
+  --auth-bg-gradient-end: #0ea5e9;
+  --auth-container-width: 420px;
+  --auth-container-radius: 16px;
+  --auth-container-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+/* ========================================
+   AUTH WRAPPER
+   ======================================== */
+
+.auth-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--auth-bg-gradient-start) 0%, var(--auth-bg-gradient-end) 100%);
+  padding: 24px;
+}
+
+/* ========================================
+   AUTH CONTAINER
+   ======================================== */
+
+.auth-container {
+  background: white;
+  border-radius: var(--auth-container-radius);
+  box-shadow: var(--auth-container-shadow);
+  width: 100%;
+  max-width: var(--auth-container-width);
+  padding: 2.5rem;
+  animation: slideUp 0.4s ease;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ========================================
+   AUTH HEADER
+   ======================================== */
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.auth-logo {
+  max-width: 200px;
+  height: auto;
+  margin-bottom: 1.5rem;
+}
+
+.auth-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0;
+}
+
+.auth-subtitle {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 0.5rem;
+}
+
+/* ========================================
+   AUTH CONTENT
+   ======================================== */
+
+.auth-content {
+  width: 100%;
+}
+
+.auth-content .form-group {
+  margin-bottom: 1.5rem;
+}
+
+/* ========================================
+   PASSWORD INPUT WITH TOGGLE
+   ======================================== */
+
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-wrapper .form-control {
+  padding-right: 2.75rem;
+  width: 100%;
+}
+
+.btn-toggle-password {
+  position: absolute;
+  right: 0.75rem;
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  padding: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.btn-toggle-password:hover {
+  color: var(--brand-primary, #0ea5e9);
+}
+
+.btn-toggle-password:active {
+  transform: scale(0.95);
+}
+
+/* ========================================
+   AUTH BUTTON
+   ======================================== */
+
+.btn-auth {
+  width: 100%;
+  padding: 0.75rem;
+  background: linear-gradient(135deg, var(--brand-primary, #0ea5e9) 0%, var(--brand-primary-dark, #0284c7) 100%);
+  border: none;
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-top: 0.5rem;
+}
+
+.btn-auth:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(14, 165, 233, 0.3);
+}
+
+.btn-auth:active {
+  transform: translateY(0);
+}
+
+.btn-auth:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ========================================
+   AUTH ALERT/ERROR MESSAGE
+   ======================================== */
+
+.auth-alert {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1.5rem;
+  color: #991b1b;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  animation: slideUp 0.4s ease;
+}
+
+.auth-alert i {
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  margin-top: 0.125rem;
+}
+
+.auth-alert-content {
+  flex: 1;
+}
+
+.auth-alert-title {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+/* ========================================
+   AUTH LINKS/DIVIDER
+   ======================================== */
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  margin: 1.5rem 0;
+  gap: 1rem;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
+}
+
+.auth-divider-text {
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+
+.auth-footer {
+  text-align: center;
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.auth-footer-text {
+  color: #6b7280;
+  font-size: 0.875rem;
+}
+
+.auth-footer-link {
+  color: var(--brand-primary, #0ea5e9);
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.2s ease;
+}
+
+.auth-footer-link:hover {
+  color: var(--brand-primary-dark, #0284c7);
+}
+
+/* ========================================
+   RESPONSIVE DESIGN
+   ======================================== */
+
+@media (max-width: 768px) {
+  .auth-container {
+    padding: 2rem;
+    max-width: 100%;
+  }
+
+  .auth-title {
+    font-size: 1.25rem;
+  }
+
+  .auth-logo {
+    max-width: 150px;
+  }
+}
+
+@media (max-width: 480px) {
+  .auth-wrap {
+    padding: 1rem;
+  }
+
+  .auth-container {
+    padding: 1.5rem;
+  }
+
+  .auth-title {
+    font-size: 1.125rem;
+  }
+
+  .auth-logo {
+    max-width: 120px;
+  }
+}

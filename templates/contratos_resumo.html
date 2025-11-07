@@ -72,11 +72,122 @@
     'record_id': ''
   } %}
 
+  <!-- CONSULTAR PREÇOS DTP -->
+  <div class="card border-info">
+    <div class="card-body">
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <i class="bi bi-search text-info" style="font-size: 1.5rem;"></i>
+        <div>
+          <h5 class="mb-0">Consultar Preços DTP</h5>
+          <small class="text-muted">Busque códigos e preços de Diárias, Taxas e Pacotes por prestador</small>
+        </div>
+      </div>
+
+      <form method="GET" action="{{ url_for('contratos_resumo') }}" class="row g-3">
+        <div class="col-12 col-md-4">
+          <label class="form-label">Tabela DTP</label>
+          <select class="form-select" id="dtp_tabela" name="dtp_tabela" required>
+            <option value="">Selecione uma tabela...</option>
+            {% for tabela in dtp_list %}
+            <option value="{{ tabela.nome }}" data-id="{{ tabela.id }}">{{ tabela.nome }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-12 col-md-4">
+          <label class="form-label">Prestador</label>
+          <select class="form-select" id="dtp_prestador" name="dtp_prestador">
+            <option value="">Selecione um prestador...</option>
+          </select>
+        </div>
+
+        <div class="col-12 col-md-4">
+          <label class="form-label">Código DTP ou Serviço</label>
+          <input type="text" class="form-control" id="dtp_codigo" name="dtp_codigo" placeholder="Ex: 01.01.01 ou código..." autocomplete="off" />
+          <div id="dtpAutocompleteList" style="position: absolute; background: white; border: 1px solid #ddd; border-top: none; display: none; width: 100%; max-height: 200px; overflow-y: auto; z-index: 1000; margin-top: -4px;"></div>
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-info" name="dtp_search" value="1">
+            <i class="bi bi-search me-1"></i>Buscar Preços DTP
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- RESULTADOS DA BUSCA DTP -->
+  {% if dtp_search_params %}
+  <div class="card border-info">
+    <div class="card-header bg-light">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-1">Resultados da Busca DTP</h5>
+          <small class="text-muted">
+            Tabela: <strong>{{ dtp_search_params.tabela }}</strong>
+            {% if dtp_search_params.prestador %}| Prestador: <strong>{{ dtp_search_params.prestador }}</strong>{% endif %}
+            {% if dtp_search_params.codigo %}| Código: <strong>{{ dtp_search_params.codigo }}</strong>{% endif %}
+            | Total: <strong>{{ dtp_search_params.total }}</strong> resultado(s)
+          </small>
+        </div>
+      </div>
+    </div>
+
+    {% if dtp_results %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead class="table-light">
+          <tr>
+            <th class="text-nowrap">Código</th>
+            <th>Descrição</th>
+            <th class="text-nowrap">Prestador</th>
+            <th class="text-end">Valor</th>
+            <th class="text-center">UH</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for proc in dtp_results %}
+          <tr>
+            <td><code class="text-info">{{ proc.codigo }}</code></td>
+            <td>
+              <small>{{ proc.descricao or '—' }}</small>
+            </td>
+            <td>
+              <small>{{ proc.prestador or '—' }}</small>
+            </td>
+            <td class="text-end">
+              <strong>
+                {% if proc.valor %}
+                  {{ (proc.valor|float)|brl }}
+                {% else %}
+                  —
+                {% endif %}
+              </strong>
+            </td>
+            <td class="text-center">
+              <small>{{ proc.uh or '—' }}</small>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card-body">
+      <div class="alert alert-info mb-0">
+        <i class="bi bi-info-circle me-2"></i>
+        Nenhum resultado encontrado com os critérios de busca.
+      </div>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <div class="card">
     <div class="card-body d-flex flex-wrap align-items-center justify-content-between gap-3">
       <div>
         <h5 class="mb-1">Cadastro de contratos</h5>
-        <p class="mb-0 text-muted">Clique em “Novo contrato” ou utilize as ações da tabela para editar registros existentes.</p>
+        <p class="mb-0 text-muted">Clique em "Novo contrato" ou utilize as ações da tabela para editar registros existentes.</p>
       </div>
       <button type="button" class="btn btn-primary" id="btnNovoContrato" data-bs-toggle="modal" data-bs-target="#contratoModal">
         <i class="bi bi-plus-lg me-1"></i>Novo contrato
@@ -362,6 +473,127 @@ document.addEventListener('DOMContentLoaded', () => {
     fillModal(modalData || {});
     contratoModal.show();
   }
+
+  // ========== DTP CÓDIGO AUTOCOMPLETE E DROPDOWN DE PRESTADORES ==========
+  const dtpTabelaSelect = document.getElementById('dtp_tabela');
+  const dtpPrestadorSelect = document.getElementById('dtp_prestador');
+  const dtpCodigoInput = document.getElementById('dtp_codigo');
+  const dtpAutocompleteList = document.getElementById('dtpAutocompleteList');
+  let currentTableId = null;
+  let debounceTimer = null;
+
+  // Quando a tabela DTP é selecionada, obter o ID dela e carregar prestadores
+  dtpTabelaSelect?.addEventListener('change', async function() {
+    const tabelaNome = this.value;
+    const option = this.options[this.selectedIndex];
+
+    if (!tabelaNome) {
+      currentTableId = null;
+      dtpCodigoInput.disabled = false;
+      // Limpar dropdown de prestadores
+      dtpPrestadorSelect.innerHTML = '<option value="">Selecione um prestador...</option>';
+      console.log('❌ Nenhuma tabela selecionada');
+      return;
+    }
+
+    // Obter ID do atributo data-id da opção selecionada
+    currentTableId = option.getAttribute('data-id');
+
+    if (!currentTableId) {
+      console.error('❌ ID da tabela não encontrado');
+      dtpPrestadorSelect.innerHTML = '<option value="">Erro ao carregar prestadores</option>';
+      return;
+    }
+
+    console.log('📦 Tabela DTP selecionada:', tabelaNome, '(ID:', currentTableId + ')');
+
+    // Carregar prestadores para esta tabela
+    await carregarPrestadores(currentTableId);
+  });
+
+  // Função para carregar prestadores
+  async function carregarPrestadores(tableId) {
+    try {
+      const response = await fetch(`/api/dtp-prestadores/${tableId}`);
+      const data = await response.json();
+
+      if (data.prestadores && data.prestadores.length > 0) {
+        // Montar dropdown de prestadores
+        let html = '<option value="">Selecione um prestador...</option>';
+        data.prestadores.forEach(prestador => {
+          html += `<option value="${prestador}">${prestador}</option>`;
+        });
+        dtpPrestadorSelect.innerHTML = html;
+        console.log('✅ Prestadores carregados:', data.total, 'itens');
+      } else {
+        dtpPrestadorSelect.innerHTML = '<option value="">Nenhum prestador encontrado</option>';
+        console.log('⚠️ Nenhum prestador encontrado para esta tabela');
+      }
+    } catch (error) {
+      console.error('❌ Erro ao carregar prestadores:', error);
+      dtpPrestadorSelect.innerHTML = '<option value="">Erro ao carregar prestadores</option>';
+    }
+  }
+
+  // Autocomplete para o campo de código
+  dtpCodigoInput?.addEventListener('input', function() {
+    clearTimeout(debounceTimer);
+    const query = this.value.trim();
+
+    // Limpar lista se vazio
+    if (!query || query.length < 1) {
+      dtpAutocompleteList.style.display = 'none';
+      return;
+    }
+
+    // Se não tem tabela selecionada, não fazer nada
+    if (!currentTableId) {
+      dtpAutocompleteList.style.display = 'none';
+      return;
+    }
+
+    // Debounce: esperar 300ms antes de fazer a requisição
+    debounceTimer = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/dtp-codigos/${currentTableId}?q=${encodeURIComponent(query)}`);
+        const data = await response.json();
+
+        if (data.codigos && data.codigos.length > 0) {
+          // Montar lista HTML
+          let html = '';
+          data.codigos.forEach(item => {
+            const displayText = `${item.codigo} - ${item.descricao}`;
+            html += `
+              <div style="padding: 8px 12px; border-bottom: 1px solid #eee; cursor: pointer; transition: background 0.2s;"
+                   onmouseover="this.style.backgroundColor='#f0f0f0'"
+                   onmouseout="this.style.backgroundColor='transparent'"
+                   onclick="document.getElementById('dtp_codigo').value='${item.codigo}'; document.getElementById('dtpAutocompleteList').style.display='none';">
+                <strong style="color: #0dcaf0;">${item.codigo}</strong><br/>
+                <small style="color: #666;">${item.descricao || '—'}</small>
+                ${item.valor ? `<br/><small style="color: #28a745;">R$ ${(item.valor).toLocaleString('pt-BR', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</small>` : ''}
+              </div>
+            `;
+          });
+
+          dtpAutocompleteList.innerHTML = html;
+          dtpAutocompleteList.style.display = 'block';
+        } else {
+          dtpAutocompleteList.innerHTML = '<div style="padding: 8px 12px; color: #999;">Nenhum resultado encontrado</div>';
+          dtpAutocompleteList.style.display = 'block';
+        }
+      } catch (error) {
+        console.error('❌ Erro ao buscar códigos DTP:', error);
+        dtpAutocompleteList.style.display = 'none';
+      }
+    }, 300);
+  });
+
+  // Fechar lista ao clicar fora
+  document.addEventListener('click', function(event) {
+    if (!event.target.closest('#dtp_codigo') && !event.target.closest('#dtpAutocompleteList')) {
+      dtpAutocompleteList.style.display = 'none';
+    }
+  });
 });
 </script>
 {% endblock %}

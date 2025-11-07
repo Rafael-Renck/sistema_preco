@@ -1,0 +1,313 @@
+{% extends 'base.html' %}
+{% set show_tuss_rol = session_feature_tuss_rol or session_perfil == 'adm' %}
+
+{% block title %}Consulta & Comparar - NOVA Interface{% endblock %}
+{% block page_title %}Consulta &amp; Comparar{% endblock %}
+
+{% block page_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/consulta-comparar.css') }}">
+<style>
+  /* Hide global search */
+  #globalSearch { display: none !important; }
+
+  /* Hide old page chrome */
+  .content-area > * { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     NOVO LAYOUT - 3 COLUNAS COM DESIGN FUTURISTA
+     ═══════════════════════════════════════════════════════════════════════════ -->
+
+<div class="cc-layout">
+
+  <!-- ═════════════════════════════════════════════════════════════════════════
+       SIDEBAR ESQUERDA - FILTROS INTELIGENTES
+       ═════════════════════════════════════════════════════════════════════════ -->
+  <aside class="cc-sidebar-left">
+
+    <!-- Card: Seleção Rápida -->
+    <div class="cc-card">
+      <div class="cc-card-header">
+        <div class="cc-card-header-icon">⚙️</div>
+        <h3 class="cc-card-header-title">Controles</h3>
+      </div>
+
+      <div class="cc-filter-group">
+        <label class="cc-filter-label">Tabela</label>
+        <select id="selectTabela" class="cc-filter-select">
+          <option value="">Selecionar tabela...</option>
+          {% for tabela in nomes %}
+          <option value="{{ tabela.id }}">{{ tabela.nome }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="cc-filter-group cc-mt-12">
+        <label class="cc-filter-label">UF</label>
+        <select id="selectUF" class="cc-filter-select">
+          <option value="">Todas as UFs</option>
+          <option value="AC">Acre</option>
+          <option value="AL">Alagoas</option>
+          <option value="AP">Amapá</option>
+          <option value="AM">Amazonas</option>
+          <option value="BA">Bahia</option>
+          <option value="CE">Ceará</option>
+          <option value="DF">Distrito Federal</option>
+          <option value="ES">Espírito Santo</option>
+          <option value="GO">Goiás</option>
+          <option value="MA">Maranhão</option>
+          <option value="MT">Mato Grosso</option>
+          <option value="MS">Mato Grosso do Sul</option>
+          <option value="MG">Minas Gerais</option>
+          <option value="PA">Pará</option>
+          <option value="PB">Paraíba</option>
+          <option value="PR">Paraná</option>
+          <option value="PE">Pernambuco</option>
+          <option value="PI">Piauí</option>
+          <option value="RJ">Rio de Janeiro</option>
+          <option value="RN">Rio Grande do Norte</option>
+          <option value="RS">Rio Grande do Sul</option>
+          <option value="RO">Rondônia</option>
+          <option value="RR">Roraima</option>
+          <option value="SC">Santa Catarina</option>
+          <option value="SP">São Paulo</option>
+          <option value="SE">Sergipe</option>
+          <option value="TO">Tocantins</option>
+        </select>
+      </div>
+
+      <div class="cc-filter-group cc-mt-12">
+        <label class="cc-filter-label">Buscar Procedimento</label>
+        <input
+          type="text"
+          id="inputProcedimento"
+          class="cc-filter-input"
+          placeholder="Código ou nome..."
+        >
+      </div>
+
+      <div class="cc-chips cc-mt-12" id="procedimentosChips"></div>
+
+      <button class="cc-button cc-mt-16" id="btnComparar">
+        <span>▶ Comparar</span>
+      </button>
+
+      <button class="cc-button cc-button--secondary cc-mt-8" id="btnLimpar">
+        Limpar
+      </button>
+    </div>
+
+    <!-- Card: Filtros Avançados -->
+    <div class="cc-card">
+      <div class="cc-card-header">
+        <div class="cc-card-header-icon">🔍</div>
+        <h3 class="cc-card-header-title">Avançado</h3>
+      </div>
+
+      <button class="cc-filter-toggle" id="toggleVersoes">
+        <span>📅 Versões</span>
+        <span style="margin-left: auto;">▼</span>
+      </button>
+      <div id="filterVersoes" style="display: none; margin-top: 8px; max-height: 150px; overflow-y: auto;"></div>
+
+      <button class="cc-filter-toggle cc-mt-12" id="togglePrestadores">
+        <span>🏥 Prestadores</span>
+        <span style="margin-left: auto;">▼</span>
+      </button>
+      <div id="filterPrestadores" style="display: none; margin-top: 8px; max-height: 150px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- Card: Stats -->
+    <div class="cc-card">
+      <div class="cc-card-header">
+        <div class="cc-card-header-icon">📊</div>
+        <h3 class="cc-card-header-title">Stats</h3>
+      </div>
+
+      <div class="cc-stat">
+        <div class="cc-stat-label">Resultados</div>
+        <div class="cc-stat-value" id="statResultados">0</div>
+      </div>
+
+      <div class="cc-stat cc-mt-8">
+        <div class="cc-stat-label">Amplitude</div>
+        <div class="cc-stat-value" id="statAmplitude">
+          <span id="statAmplitudeValue">0</span>
+          <span class="cc-stat-unit">%</span>
+        </div>
+      </div>
+
+      <div class="cc-stat cc-mt-8">
+        <div class="cc-stat-label">Economia Potencial</div>
+        <div class="cc-stat-value cc-text-success" id="statEconomia">
+          R$ <span id="statEconomiaValue">0</span>
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ═════════════════════════════════════════════════════════════════════════
+       MAIN CONTENT - RESULTADOS E VISUALIZAÇÕES
+       ═════════════════════════════════════════════════════════════════════════ -->
+  <main class="cc-main">
+
+    <!-- Tabs de Visualização -->
+    <div class="cc-tabs">
+      <button class="cc-tab active" data-tab="comparador">📊 Comparador</button>
+      <button class="cc-tab" data-tab="cards">🔲 Cards</button>
+      <button class="cc-tab" data-tab="radar">🎯 Radar</button>
+      <button class="cc-tab" data-tab="combos">🧩 Combos</button>
+    </div>
+
+    <!-- Tab: Comparador (Tabela) -->
+    <div class="cc-tab-panel active" id="tab-comparador">
+      <div class="cc-table-container">
+        <table class="cc-table" id="comparadorTable">
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Descrição</th>
+              <th>ROL</th>
+              <th>Mínimo</th>
+              <th>Média</th>
+              <th>Máximo</th>
+              <th>Amplitude</th>
+              <th>Ações</th>
+            </tr>
+          </thead>
+          <tbody id="comparadorBody">
+            <tr>
+              <td colspan="8" class="cc-empty-state">
+                <div class="cc-empty-state-icon">🔍</div>
+                <div class="cc-empty-state-title">Nenhum resultado</div>
+                <div class="cc-empty-state-text">Selecione filtros e clique em "Comparar"</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Botões de Ação -->
+      <div class="cc-flex cc-gap-12 cc-mt-16">
+        <button class="cc-button" id="btnExportarCSV" style="flex: 1;">📥 Exportar CSV</button>
+        <button class="cc-button" id="btnCopiar" style="flex: 1;">📋 Copiar</button>
+        <button class="cc-button" id="btnRadar" style="flex: 1;">🎯 Radar</button>
+      </div>
+    </div>
+
+    <!-- Tab: Cards Grid -->
+    <div class="cc-tab-panel" id="tab-cards" style="display: none;">
+      <div class="cc-cards-grid" id="cardsGrid"></div>
+    </div>
+
+    <!-- Tab: Radar de Oportunidades -->
+    <div class="cc-tab-panel" id="tab-radar" style="display: none;">
+      <div class="cc-cards-grid" id="radarGrid"></div>
+    </div>
+
+    <!-- Tab: Combos -->
+    <div class="cc-tab-panel" id="tab-combos" style="display: none;">
+      <div class="cc-card">
+        <div class="cc-card-header">
+          <div class="cc-card-header-icon">🧩</div>
+          <h3 class="cc-card-header-title">Construtor de Combos</h3>
+        </div>
+        <p class="cc-text-small cc-mt-8">Crie combinações de procedimentos para simulação avançada</p>
+        <!-- Combo builder content here -->
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ═════════════════════════════════════════════════════════════════════════
+       SIDEBAR DIREITA - SIMULADOR + INSIGHTS
+       ═════════════════════════════════════════════════════════════════════════ -->
+  <aside class="cc-sidebar-right">
+
+    <!-- Simulador CBHPM -->
+    <div class="cc-simulator">
+      <div class="cc-simulator-header">
+        <div class="cc-simulator-header-icon">🧮</div>
+        <div class="cc-simulator-header-title">Simulador CBHPM</div>
+      </div>
+      <div class="cc-simulator-body">
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">Código CBHPM</label>
+          <input type="text" class="cc-simulator-input" id="simCodigo" placeholder="Ex: 30401011">
+        </div>
+
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">UCO (R$)</label>
+          <input type="text" class="cc-simulator-input" id="simUCO" placeholder="Ex: 0,55">
+        </div>
+
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">Porte (%)</label>
+          <input type="number" class="cc-simulator-input" id="simPorte" value="0">
+        </div>
+
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">Porte AN (%)</label>
+          <input type="number" class="cc-simulator-input" id="simPorteAN" value="0">
+        </div>
+
+        <button class="cc-button cc-mt-12">Simular</button>
+
+        <div class="cc-simulator-input-group cc-mt-12" style="text-align: center;">
+          <div class="cc-simulator-label">Resultado</div>
+          <div class="cc-stat-value" id="simResult" style="font-size: 16px;">R$ 0,00</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DTP Finder -->
+    <div class="cc-simulator">
+      <div class="cc-simulator-header">
+        <div class="cc-simulator-header-icon">🏥</div>
+        <div class="cc-simulator-header-title">Busca DTP</div>
+      </div>
+      <div class="cc-simulator-body">
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">Tabela</label>
+          <select class="cc-simulator-input" id="dtpTabela">
+            <option>Selecionar...</option>
+          </select>
+        </div>
+
+        <div class="cc-simulator-input-group">
+          <label class="cc-simulator-label">Termo</label>
+          <input type="text" class="cc-simulator-input" id="dtpTermo" placeholder="Buscar...">
+        </div>
+
+        <button class="cc-button cc-mt-12">Buscar DTP</button>
+      </div>
+    </div>
+
+    <!-- Card: Resumo Rápido -->
+    <div class="cc-card">
+      <div class="cc-card-header">
+        <div class="cc-card-header-icon">💡</div>
+        <h3 class="cc-card-header-title">Insights</h3>
+      </div>
+
+      <div class="cc-text-small cc-mt-8">
+        <p>Dicas de negociação e análise automática aparecem aqui.</p>
+        <div class="cc-badge cc-mt-8" style="display: block; text-align: center;">
+          Alta Variação Detectada
+        </div>
+      </div>
+    </div>
+
+  </aside>
+
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/modules/consulta-comparar.js') }}"></script>
+{% endblock %}
