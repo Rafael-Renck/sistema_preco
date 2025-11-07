@@ -657,6 +657,10 @@
   }
 }
 </style>
+
+<!-- Toast Notification Styles -->
+<link rel="stylesheet" href="{{ url_for('static', filename='css/toast.css') }}">
+
 {% endblock %}
 
 {% block content %}
@@ -2110,12 +2114,12 @@ function initRadar(){
 
   function saveActiveCombo(){
     if(!comboActive.items.length){
-      alert('Adicione ao menos um item antes de salvar o combo.');
+      Toast.warning('Adicione ao menos um item antes de salvar o combo.');
       return;
     }
     const name = (refs.nameInput?.value || '').trim();
     if(!name){
-      alert('Informe um nome para identificar o combo.');
+      Toast.warning('Informe um nome para identificar o combo.');
       return;
     }
     const now = Date.now();
@@ -2164,7 +2168,7 @@ function initRadar(){
 
   function copyResumo(){
     if(!comboActive.items.length){
-      alert('Nenhum item para copiar.');
+      Toast.warning('Nenhum item para copiar.');
       return;
     }
     const priced = comboActive.items.filter(item => item.total !== null);
@@ -2183,25 +2187,21 @@ function initRadar(){
     const text = [header, ...lines].join('\n');
     if(navigator.clipboard?.writeText){
       navigator.clipboard.writeText(text).then(()=>{
-        if(window.showToast){
-          showToast('Resumo copiado.', 'success');
-        }else{
-          alert('Resumo copiado.');
-        }
-      }).catch(()=> alert('Não foi possível copiar o resumo.'));
+        Toast.success('Resumo copiado.');
+      }).catch(()=> Toast.error('Não foi possível copiar o resumo.'));
     }else{
-      alert('Clipboard não disponível neste navegador.');
+      Toast.error('Clipboard não disponível neste navegador.');
     }
   }
 
   function applyToFilters(){
     if(!comboActive.items.length){
-      alert('Monte o combo antes de aplicar nos filtros.');
+      Toast.warning('Monte o combo antes de aplicar nos filtros.');
       return;
     }
     const uniqueCodes = [...new Set(comboActive.items.map(item => item.codigo).filter(Boolean))];
     if(!uniqueCodes.length){
-      alert('Nenhum código informado no combo.');
+      Toast.warning('Nenhum código informado no combo.');
       return;
     }
     const pacoteField = document.getElementById('cbhpm-pacote');
@@ -2213,26 +2213,22 @@ function initRadar(){
     if(pickerInput){
       pickerInput.focus();
     }
-    if(window.showToast){
-      showToast('Combo aplicado ao pacote da simulação.', 'success');
-    }else{
-      alert('Combo aplicado ao pacote.');
-    }
+    Toast.success('Combo aplicado ao pacote da simulação.');
   }
 
   function importFromClipboard(){
     if(!navigator.clipboard?.readText){
-      alert('Clipboard API indisponível para importar.');
+      Toast.error('Clipboard API indisponível para importar.');
       return;
     }
     navigator.clipboard.readText().then(text=>{
       if(!text){
-        alert('Área de transferência vazia.');
+        Toast.warning('Área de transferência vazia.');
         return;
       }
       const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
       if(!lines.length){
-        alert('Nada para importar.');
+        Toast.warning('Nada para importar.');
         return;
       }
       let imported = 0;
@@ -2251,13 +2247,11 @@ function initRadar(){
         persistStorage();
         renderItems();
         clearSuggestions();
-        if(window.showToast){
-          showToast(`${imported} item(s) importados do clipboard.`, 'info');
-        }
+        Toast.success(`${imported} item(s) importados do clipboard.`);
       }else{
-        alert('Não foi possível interpretar os itens copiados.');
+        Toast.error('Não foi possível interpretar os itens copiados.');
       }
-    }).catch(()=> alert('Falha ao ler da área de transferência.'));
+    }).catch(()=> Toast.error('Falha ao ler da área de transferência.'));
   }
 
   function toggleTips(){
@@ -2382,8 +2376,8 @@ function initRadar(){
     }
     const item = pushItem(entry, { skipToast: opts.skipToast });
     clearSuggestions();
-    if(!window.showToast && !opts.skipToast){
-      alert('Item adicionado ao combo.');
+    if(!opts.skipToast){
+      Toast.success('Item adicionado ao combo.');
     }
     return item;
   };
@@ -2597,7 +2591,7 @@ function exportCSV(){
 }
 function copyResults(){
   const rows=collectResults(); if(!rows.length)return;
-  navigator.clipboard.writeText(toCSV(rows)).then(()=>{ window.showToast?showToast('Copiado para a área de transferência.','success'):alert('Copiado.'); });
+  navigator.clipboard.writeText(toCSV(rows)).then(()=>{ Toast.success('Copiado para a área de transferência.'); });
 }
 
 /* ===== Modal Detalhe ===== */
@@ -4099,11 +4093,11 @@ function refreshScenarioSelect(){
 function handleSaveScenario(){
   const payload = getCBHPMPayload();
   if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
-    alert('Informe ao menos um código ou pacote antes de salvar.');
+    Toast.warning('Informe ao menos um código ou pacote antes de salvar.');
     return;
   }
   if(!window._cbhpmCurrentResult){
-    alert('Execute a simulação antes de salvar o cenário.');
+    Toast.warning('Execute a simulação antes de salvar o cenário.');
     return;
   }
   const defaultName = payload.codigo || (payload.codigos && payload.codigos[0]) || `Cenário ${new Date().toLocaleString('pt-BR')}`;
@@ -4122,9 +4116,7 @@ function handleSaveScenario(){
   window._cbhpmSavedScenarios = scenarios;
   persistSavedScenarios(scenarios);
   refreshScenarioSelect();
-  if(window.showToast){
-    showToast('Cenário salvo com sucesso.', 'success');
-  }
+  Toast.success('Cenário salvo com sucesso.');
 }
 
 function handleApplyScenario(){
@@ -4133,7 +4125,7 @@ function handleApplyScenario(){
   const scenarios = Array.isArray(window._cbhpmSavedScenarios) ? window._cbhpmSavedScenarios : [];
   const scenario = scenarios.find(s=>s.id === select.value);
   if(!scenario){
-    alert('Cenário não encontrado.');
+    Toast.error('Cenário não encontrado.');
     return;
   }
   setCBHPMPayload(scenario.payload);
@@ -4196,7 +4188,7 @@ async function exportCBHPM(fmt){ // fmt: 'pdf' | 'xlsx'
 
     if(!payload.codigo && (!payload.codigos || !payload.codigos.length) && (!payload.dtp_items || !payload.dtp_items.length)){
 
-      alert('Informe ao menos um código ou um pacote (múltiplos códigos).');
+      Toast.warning('Informe ao menos um código ou um pacote (múltiplos códigos).');
 
       return;
 
@@ -4238,7 +4230,7 @@ async function exportCBHPM(fmt){ // fmt: 'pdf' | 'xlsx'
 
     console.error('export fail:', err);
 
-    alert('Não foi possível exportar. Verifique os campos e tente novamente.');
+    Toast.error('Não foi possível exportar. Verifique os campos e tente novamente.');
 
   }finally{
 
@@ -4317,7 +4309,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       if(window.comboBuilder?.addItem){
         window.comboBuilder.addItem({ codigo, descricao, quantidade: 1 });
       }else{
-        alert('Construtor de combos indisponível nesta visualização.');
+        Toast.warning('Construtor de combos indisponível nesta visualização.');
       }
       return;
     }
@@ -4421,7 +4413,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
                     tabelaNome.toUpperCase().includes('DTP');
 
       if (isDTP) {
-        alert('⚠️ Tabelas de Diárias, Taxas e Pacotes não são suportadas nesta página.\n\nUse a página "Contratos" para consultar preços DTP.');
+        Toast.error('Tabelas de Diárias, Taxas e Pacotes não são suportadas nesta página. Use a página "Contratos" para consultar preços DTP.');
         selectTabelaNome.value = '';
         console.warn('⚠️ DTP bloqueado');
       } else {
@@ -4433,4 +4425,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
   }
 });
 </script>
+
+<!-- Toast Notification System -->
+<script src="{{ url_for('static', filename='js/toast.js') }}"></script>
+
+<!-- Autocomplete System -->
+<script src="{{ url_for('static', filename='js/autocomplete.js') }}"></script>
+
 {% endblock %}
