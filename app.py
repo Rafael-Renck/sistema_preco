@@ -4677,6 +4677,172 @@ def analytics_dashboard():
     return render_template('analytics_dashboard.html', analytics=analytics_data)
 
 
+@app.route('/price-changes')
+@login_required
+def price_changes():
+    """Dashboard de Alterações de Preços Recentes"""
+
+    # Parâmetros de filtro
+    days = request.args.get('days', 7, type=int)  # Últimos N dias
+    origem = request.args.get('origem', '')  # BRAS ou SIMPRO
+    uf = request.args.get('uf', '')  # Estado
+    min_change = request.args.get('min_change', 0, type=float)  # % mínima de mudança
+
+    price_changes = {
+        'summary': {},
+        'bras_changes': [],
+        'simpro_changes': [],
+        'top_increases': [],
+        'top_decreases': []
+    }
+
+    try:
+        # 1. BRAS - Comparar as 2 últimas versões de cada produto
+        bras_changes = db.session.query(
+            BrasItemNormalized.produto_codigo,
+            BrasItemNormalized.produto_nome,
+            BrasItemNormalized.apresentacao_descricao,
+            BrasItemNormalized.preco_pmc_unit,
+            BrasItemNormalized.imported_at,
+            BrasItemNormalized.edicao
+        ).filter(
+            BrasItemNormalized.imported_at >= datetime.utcnow() - timedelta(days=days)
+        ).order_by(
+            BrasItemNormalized.produto_codigo,
+            BrasItemNormalized.imported_at.desc()
+        ).all()
+
+        # Processa mudanças de BRAS
+        bras_dict = {}
+        for item in bras_changes:
+            codigo = item[0]
+            if codigo not in bras_dict:
+                bras_dict[codigo] = []
+            bras_dict[codigo].append(item)
+
+        bras_result = []
+        for codigo, versions in bras_dict.items():
+            if len(versions) >= 2:
+                current = versions[0]  # Mais recente
+                previous = versions[1]  # Anterior
+
+                preco_atual = float(current[3]) if current[3] else 0
+                preco_anterior = float(previous[3]) if previous[3] else 0
+
+                if preco_anterior > 0:
+                    percentual = ((preco_atual - preco_anterior) / preco_anterior) * 100
+
+                    if abs(percentual) >= min_change:
+                        bras_result.append({
+                            'origem': 'BRAS',
+                            'codigo': codigo,
+                            'nome': current[1],
+                            'apresentacao': current[2],
+                            'preco_anterior': round(preco_anterior, 2),
+                            'preco_novo': round(preco_atual, 2),
+                            'diferenca': round(preco_atual - preco_anterior, 2),
+                            'percentual': round(percentual, 2),
+                            'data_mudanca': current[4],
+                            'edicao_nova': current[5],
+                            'edicao_anterior': previous[5]
+                        })
+
+        price_changes['bras_changes'] = sorted(bras_result, key=lambda x: x['data_mudanca'], reverse=True)[:50]
+        print(f'✅ BRAS: {len(price_changes["bras_changes"])} produtos com mudança de preço')
+
+    except Exception as e:
+        print(f'❌ Erro ao processar BRAS: {e}')
+        price_changes['bras_changes'] = []
+
+    try:
+        # 2. SIMPRO - Comparar as 2 últimas versões de cada produto
+        simpro_changes = db.session.query(
+            SimproItemNormalized.codigo,
+            SimproItemNormalized.descricao,
+            SimproItemNormalized.preco1,
+            SimproItemNormalized.imported_at,
+            SimproItemNormalized.versao,
+            SimproItemNormalized.data_ref
+        ).filter(
+            SimproItemNormalized.imported_at >= datetime.utcnow() - timedelta(days=days)
+        ).order_by(
+            SimproItemNormalized.codigo,
+            SimproItemNormalized.imported_at.desc()
+        ).all()
+
+        # Processa mudanças de SIMPRO
+        simpro_dict = {}
+        for item in simpro_changes:
+            codigo = item[0]
+            if codigo not in simpro_dict:
+                simpro_dict[codigo] = []
+            simpro_dict[codigo].append(item)
+
+        simpro_result = []
+        for codigo, versions in simpro_dict.items():
+            if len(versions) >= 2:
+                current = versions[0]  # Mais recente
+                previous = versions[1]  # Anterior
+
+                preco_atual = float(current[2]) if current[2] else 0
+                preco_anterior = float(previous[2]) if previous[2] else 0
+
+                if preco_anterior > 0:
+                    percentual = ((preco_atual - preco_anterior) / preco_anterior) * 100
+
+                    if abs(percentual) >= min_change:
+                        simpro_result.append({
+                            'origem': 'SIMPRO',
+                            'codigo': codigo,
+                            'nome': current[1],
+                            'apresentacao': '',
+                            'preco_anterior': round(preco_anterior, 2),
+                            'preco_novo': round(preco_atual, 2),
+                            'diferenca': round(preco_atual - preco_anterior, 2),
+                            'percentual': round(percentual, 2),
+                            'data_mudanca': current[3],
+                            'edicao_nova': current[4],
+                            'edicao_anterior': previous[4]
+                        })
+
+        price_changes['simpro_changes'] = sorted(simpro_result, key=lambda x: x['data_mudanca'], reverse=True)[:50]
+        print(f'✅ SIMPRO: {len(price_changes["simpro_changes"])} produtos com mudança de preço')
+
+    except Exception as e:
+        print(f'❌ Erro ao processar SIMPRO: {e}')
+        price_changes['simpro_changes'] = []
+
+    try:
+        # 3. Resumo de mudanças
+        total_bras = len(price_changes['bras_changes'])
+        total_simpro = len(price_changes['simpro_changes'])
+
+        # Top aumentos
+        all_changes = price_changes['bras_changes'] + price_changes['simpro_changes']
+        increases = [c for c in all_changes if c['percentual'] > 0]
+        decreases = [c for c in all_changes if c['percentual'] < 0]
+
+        price_changes['summary'] = {
+            'total_mudancas': len(all_changes),
+            'total_bras': total_bras,
+            'total_simpro': total_simpro,
+            'total_aumentos': len(increases),
+            'total_reducoes': len(decreases),
+            'media_aumento': round(sum(c['percentual'] for c in increases) / len(increases), 2) if increases else 0,
+            'media_reducao': round(sum(c['percentual'] for c in decreases) / len(decreases), 2) if decreases else 0,
+        }
+
+        price_changes['top_increases'] = sorted(increases, key=lambda x: x['percentual'], reverse=True)[:10]
+        price_changes['top_decreases'] = sorted(decreases, key=lambda x: x['percentual'])[:10]
+
+        print(f"✅ Resumo: {price_changes['summary']}")
+
+    except Exception as e:
+        print(f'❌ Erro ao compilar resumo: {e}')
+
+    return render_template('price_changes.html', changes=price_changes, days=days, min_change=min_change)
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     erro = None

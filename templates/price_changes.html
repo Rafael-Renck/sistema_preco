@@ -1,0 +1,571 @@
+{% extends 'base.html' %}
+
+{% block title %}Alterações de Preços{% endblock %}
+{% block page_title %}Alterações de Preços Recentes{% endblock %}
+
+{% block styles %}
+{{ super() }}
+<style>
+  .price-change-container {
+    padding: 2rem;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* ===== CARDS DE RESUMO ===== */
+  .summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .summary-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border-left: 4px solid #3b82f6;
+    transition: all 0.3s ease;
+  }
+
+  .summary-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  }
+
+  .summary-card.green { border-left-color: #10b981; }
+  .summary-card.red { border-left-color: #ef4444; }
+  .summary-card.blue { border-left-color: #3b82f6; }
+  .summary-card.orange { border-left-color: #f59e0b; }
+
+  .summary-card-label {
+    font-size: 0.85rem;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+  }
+
+  .summary-card-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #1f2937;
+  }
+
+  .summary-card-subtitle {
+    font-size: 0.8rem;
+    color: #9ca3af;
+    margin-top: 0.5rem;
+  }
+
+  /* ===== FILTROS ===== */
+  .filters-section {
+    background: white;
+    padding: 1.5rem;
+    border-radius: 12px;
+    margin-bottom: 2rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .filters-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+  }
+
+  .filter-group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .filter-group label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 0.5rem;
+  }
+
+  .filter-group input,
+  .filter-group select {
+    padding: 0.75rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    transition: border-color 0.2s;
+  }
+
+  .filter-group input:focus,
+  .filter-group select:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+  }
+
+  .btn-apply {
+    align-self: flex-end;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    margin-top: 1.5rem;
+  }
+
+  .btn-apply:hover {
+    background: #2563eb;
+  }
+
+  /* ===== TABELAS ===== */
+  .changes-section {
+    margin-bottom: 2rem;
+  }
+
+  .section-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: #1f2937;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #3b82f6;
+  }
+
+  .changes-table {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+  }
+
+  .changes-table table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .changes-table th {
+    background: #f9fafb;
+    padding: 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: #374151;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 2px solid #e5e7eb;
+  }
+
+  .changes-table td {
+    padding: 1rem;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .changes-table tbody tr:hover {
+    background: #f9fafb;
+  }
+
+  .changes-table tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  /* ===== BADGES ===== */
+  .badge-origem {
+    display: inline-block;
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .badge-bras {
+    background: #dbeafe;
+    color: #0c4a6e;
+  }
+
+  .badge-simpro {
+    background: #f3e8ff;
+    color: #6b21a8;
+  }
+
+  /* ===== PERCENTUAL DE MUDANÇA ===== */
+  .price-change {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .price-change.increase {
+    color: #dc2626;
+  }
+
+  .price-change.decrease {
+    color: #059669;
+  }
+
+  .price-change i {
+    font-size: 0.8rem;
+  }
+
+  /* ===== PREÇO ===== */
+  .price-column {
+    font-family: 'Courier New', monospace;
+    font-weight: 500;
+  }
+
+  .price-old {
+    color: #9ca3af;
+    text-decoration: line-through;
+    font-size: 0.9rem;
+  }
+
+  /* ===== EMPTY STATE ===== */
+  .empty-state {
+    padding: 3rem;
+    text-align: center;
+    color: #9ca3af;
+  }
+
+  .empty-state i {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+  }
+
+  /* ===== TOP 10 CARDS ===== */
+  .top-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .top-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border-left: 4px solid #ef4444;
+  }
+
+  .top-card.decrease {
+    border-left-color: #059669;
+  }
+
+  .top-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+
+  .top-card-title {
+    font-weight: 600;
+    color: #1f2937;
+    font-size: 0.9rem;
+  }
+
+  .top-card-code {
+    font-size: 0.75rem;
+    color: #9ca3af;
+    font-family: monospace;
+  }
+
+  .top-card-prices {
+    margin-bottom: 1rem;
+  }
+
+  .top-card-price-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .top-card-price-label {
+    color: #6b7280;
+  }
+
+  .top-card-price-value {
+    font-weight: 600;
+    font-family: monospace;
+  }
+
+  .top-card-percentage {
+    font-size: 1.3rem;
+    font-weight: 700;
+    padding-top: 0.5rem;
+    border-top: 1px solid #e5e7eb;
+  }
+
+  /* ===== RESPONSIVE ===== */
+  @media (max-width: 768px) {
+    .price-change-container {
+      padding: 1rem;
+    }
+
+    .summary-cards {
+      grid-template-columns: 1fr;
+    }
+
+    .filters-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .changes-table {
+      font-size: 0.85rem;
+    }
+
+    .changes-table th,
+    .changes-table td {
+      padding: 0.75rem 0.5rem;
+    }
+
+    .top-cards {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="price-change-container">
+  <!-- Filtros -->
+  <div class="filters-section">
+    <h5 style="margin-top: 0; margin-bottom: 1rem;">Filtros</h5>
+    <form method="GET" class="filters-grid">
+      <div class="filter-group">
+        <label for="days">Período (dias)</label>
+        <input type="number" id="days" name="days" value="{{ days }}" min="1" max="365">
+      </div>
+      <div class="filter-group">
+        <label for="min_change">Mudança mínima (%)</label>
+        <input type="number" id="min_change" name="min_change" value="{{ min_change }}" min="0" step="0.1">
+      </div>
+      <button type="submit" class="btn-apply">
+        <i class="bi bi-search"></i> Aplicar Filtros
+      </button>
+    </form>
+  </div>
+
+  <!-- Cards de Resumo -->
+  <div class="summary-cards">
+    <div class="summary-card blue">
+      <div class="summary-card-label">Total de Mudanças</div>
+      <div class="summary-card-value">{{ changes.summary.total_mudancas or 0 }}</div>
+      <div class="summary-card-subtitle">produtos com alteração</div>
+    </div>
+
+    <div class="summary-card green">
+      <div class="summary-card-label">Aumentos</div>
+      <div class="summary-card-value">{{ changes.summary.total_aumentos or 0 }}</div>
+      <div class="summary-card-subtitle">média: +{{ changes.summary.media_aumento or 0 }}%</div>
+    </div>
+
+    <div class="summary-card red">
+      <div class="summary-card-label">Reduções</div>
+      <div class="summary-card-value">{{ changes.summary.total_reducoes or 0 }}</div>
+      <div class="summary-card-subtitle">média: {{ changes.summary.media_reducao or 0 }}%</div>
+    </div>
+
+    <div class="summary-card orange">
+      <div class="summary-card-label">Fontes</div>
+      <div class="summary-card-value">{{ changes.summary.total_bras + changes.summary.total_simpro or 0 }}</div>
+      <div class="summary-card-subtitle">BRAS: {{ changes.summary.total_bras }}, SIMPRO: {{ changes.summary.total_simpro }}</div>
+    </div>
+  </div>
+
+  <!-- Top 10 Aumentos e Reduções -->
+  {% if changes.top_increases or changes.top_decreases %}
+  <div style="margin-bottom: 2rem;">
+    <h4 class="section-title">Top Alterações</h4>
+    <div class="top-cards">
+      {% for item in changes.top_increases[:5] %}
+      <div class="top-card">
+        <div class="top-card-header">
+          <div>
+            <div class="top-card-title">{{ item.nome[:40] }}</div>
+            <div class="top-card-code">{{ item.codigo }}</div>
+          </div>
+          <span class="badge-origem {% if item.origem == 'BRAS' %}badge-bras{% else %}badge-simpro{% endif %}">
+            {{ item.origem }}
+          </span>
+        </div>
+        <div class="top-card-prices">
+          <div class="top-card-price-row">
+            <span class="top-card-price-label">Anterior:</span>
+            <span class="top-card-price-value">R$ {{ "%.2f"|format(item.preco_anterior) }}</span>
+          </div>
+          <div class="top-card-price-row">
+            <span class="top-card-price-label">Novo:</span>
+            <span class="top-card-price-value">R$ {{ "%.2f"|format(item.preco_novo) }}</span>
+          </div>
+        </div>
+        <div class="top-card-percentage increase">
+          <i class="bi bi-arrow-up-right"></i>
+          +{{ item.percentual }}%
+        </div>
+      </div>
+      {% endfor %}
+
+      {% for item in changes.top_decreases[:5] %}
+      <div class="top-card decrease">
+        <div class="top-card-header">
+          <div>
+            <div class="top-card-title">{{ item.nome[:40] }}</div>
+            <div class="top-card-code">{{ item.codigo }}</div>
+          </div>
+          <span class="badge-origem {% if item.origem == 'BRAS' %}badge-bras{% else %}badge-simpro{% endif %}">
+            {{ item.origem }}
+          </span>
+        </div>
+        <div class="top-card-prices">
+          <div class="top-card-price-row">
+            <span class="top-card-price-label">Anterior:</span>
+            <span class="top-card-price-value">R$ {{ "%.2f"|format(item.preco_anterior) }}</span>
+          </div>
+          <div class="top-card-price-row">
+            <span class="top-card-price-label">Novo:</span>
+            <span class="top-card-price-value">R$ {{ "%.2f"|format(item.preco_novo) }}</span>
+          </div>
+        </div>
+        <div class="top-card-percentage decrease">
+          <i class="bi bi-arrow-down-right"></i>
+          {{ item.percentual }}%
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Tabela BRAS -->
+  {% if changes.bras_changes %}
+  <div class="changes-section">
+    <h4 class="section-title">
+      <i class="bi bi-box-seam"></i> Alterações BRAS
+      <span style="font-size: 0.8rem; color: #9ca3af; font-weight: 400;">
+        ({{ changes.bras_changes|length }} produtos)
+      </span>
+    </h4>
+    <div class="changes-table">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 10%;">Código</th>
+            <th style="width: 30%;">Produto</th>
+            <th style="width: 15%;">Preço Anterior</th>
+            <th style="width: 15%;">Preço Novo</th>
+            <th style="width: 15%;">Mudança</th>
+            <th style="width: 15%;">Data</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in changes.bras_changes %}
+          <tr>
+            <td><code style="font-size: 0.75rem;">{{ item.codigo }}</code></td>
+            <td>
+              <strong>{{ item.nome[:50] }}</strong>
+              {% if item.apresentacao %}
+              <br><small style="color: #9ca3af;">{{ item.apresentacao[:50] }}</small>
+              {% endif %}
+            </td>
+            <td class="price-column">
+              <span class="price-old">R$ {{ "%.2f"|format(item.preco_anterior) }}</span>
+            </td>
+            <td class="price-column">
+              <strong>R$ {{ "%.2f"|format(item.preco_novo) }}</strong>
+            </td>
+            <td>
+              <div class="price-change {% if item.percentual > 0 %}increase{% else %}decrease{% endif %}">
+                {% if item.percentual > 0 %}
+                  <i class="bi bi-arrow-up-right"></i>
+                  +{{ item.percentual }}%
+                {% else %}
+                  <i class="bi bi-arrow-down-left"></i>
+                  {{ item.percentual }}%
+                {% endif %}
+              </div>
+            </td>
+            <td style="font-size: 0.85rem; color: #6b7280;">
+              {{ item.data_mudanca.strftime('%d/%m/%Y %H:%M') if item.data_mudanca else 'N/A' }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Tabela SIMPRO -->
+  {% if changes.simpro_changes %}
+  <div class="changes-section">
+    <h4 class="section-title">
+      <i class="bi bi-basket"></i> Alterações SIMPRO
+      <span style="font-size: 0.8; color: #9ca3af; font-weight: 400;">
+        ({{ changes.simpro_changes|length }} produtos)
+      </span>
+    </h4>
+    <div class="changes-table">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 10%;">Código</th>
+            <th style="width: 40%;">Produto</th>
+            <th style="width: 15%;">Preço Anterior</th>
+            <th style="width: 15%;">Preço Novo</th>
+            <th style="width: 20%;">Mudança</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in changes.simpro_changes %}
+          <tr>
+            <td><code style="font-size: 0.75rem;">{{ item.codigo }}</code></td>
+            <td><strong>{{ item.nome[:60] }}</strong></td>
+            <td class="price-column">
+              <span class="price-old">R$ {{ "%.2f"|format(item.preco_anterior) }}</span>
+            </td>
+            <td class="price-column">
+              <strong>R$ {{ "%.2f"|format(item.preco_novo) }}</strong>
+            </td>
+            <td>
+              <div class="price-change {% if item.percentual > 0 %}increase{% else %}decrease{% endif %}">
+                {% if item.percentual > 0 %}
+                  <i class="bi bi-arrow-up-right"></i>
+                  +{{ item.percentual }}%
+                {% else %}
+                  <i class="bi bi-arrow-down-left"></i>
+                  {{ item.percentual }}%
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Empty State -->
+  {% if not changes.bras_changes and not changes.simpro_changes %}
+  <div class="changes-table">
+    <div class="empty-state">
+      <i class="bi bi-inbox"></i>
+      <p><strong>Nenhuma alteração de preço encontrada</strong></p>
+      <p style="font-size: 0.9rem;">
+        Tente aumentar o período ou reduzir o filtro de mudança mínima.
+      </p>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Toast Script -->
+<script src="{{ url_for('static', filename='js/toast.js') }}"></script>
+{% endblock %}
