@@ -4556,7 +4556,7 @@ def analytics_dashboard():
     # 1. Estatísticas gerais
     try:
         total_versoes = db.session.query(
-            func.count(func.distinct(Tabela.tipo))
+            func.count(func.distinct(Tabela.tipo_tabela))
         ).scalar() or 0
 
         analytics_data['summary'] = {
@@ -4578,10 +4578,10 @@ def analytics_dashboard():
     # 2. Dados de procedures por versão
     try:
         procedures_by_version = db.session.query(
-            Tabela.tipo,
+            Tabela.tipo_tabela,
             func.count(Procedimento.id).label('count')
-        ).outerjoin(Procedimento, Procedimento.tabela_id == Tabela.id)\
-         .group_by(Tabela.tipo).all()
+        ).outerjoin(Procedimento, Procedimento.id_tabela == Tabela.id)\
+         .group_by(Tabela.tipo_tabela).all()
 
         analytics_data['charts']['procedures_by_version'] = {
             'labels': [str(t[0]) if t[0] else 'N/A' for t in procedures_by_version],
@@ -4598,7 +4598,7 @@ def analytics_dashboard():
             Procedimento.codigo,
             Procedimento.descricao,
             func.count(AuditLog.id).label('access_count')
-        ).outerjoin(AuditLog, AuditLog.descricao.ilike(f'%{Procedimento.codigo}%'))\
+        ).outerjoin(AuditLog, AuditLog.detalhes.ilike(f'%{Procedimento.codigo}%'))\
          .group_by(Procedimento.id)\
          .order_by(func.count(AuditLog.id).desc())\
          .limit(10).all()
@@ -4619,9 +4619,9 @@ def analytics_dashboard():
     # 4. Atividade por tipo de ação
     try:
         activity_by_action = db.session.query(
-            AuditLog.acao,
+            AuditLog.evento,
             func.count(AuditLog.id).label('count')
-        ).group_by(AuditLog.acao)\
+        ).group_by(AuditLog.evento)\
          .order_by(func.count(AuditLog.id).desc())\
          .limit(8).all()
 
@@ -4634,15 +4634,14 @@ def analytics_dashboard():
         print(f'Erro ao coletar atividade: {e}')
         analytics_data['charts']['activity_by_action'] = {'labels': [], 'data': []}
 
-    # 5. Operadoras com mais acessos
+    # 5. Operadoras com mais acessos (por tabelas/procedures)
     try:
         top_operadoras = db.session.query(
             Operadora.nome,
-            func.count(AuditLog.id).label('access_count')
-        ).outerjoin(Usuario, Usuario.operadora_id == Operadora.id)\
-         .outerjoin(AuditLog, AuditLog.usuario_id == Usuario.id)\
+            func.count(func.distinct(Tabela.id)).label('access_count')
+        ).outerjoin(Tabela, Tabela.id_operadora == Operadora.id)\
          .group_by(Operadora.id)\
-         .order_by(func.count(AuditLog.id).desc())\
+         .order_by(func.count(func.distinct(Tabela.id)).desc())\
          .limit(10).all()
 
         analytics_data['tables']['top_operadoras'] = [
