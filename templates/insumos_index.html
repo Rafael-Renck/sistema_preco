@@ -82,7 +82,7 @@
     <div class="card-body">
       <form id="insumoFilters" class="row g-3">
         <!-- Busca Principal -->
-        <div class="col-12 col-md-5">
+        <div class="col-12 col-md-5 autocomplete-field">
           <label class="form-label fw-600">Buscar termo</label>
           <input type="text" class="form-control" id="fTermo" placeholder="Descrição, fabricante, código…" autocomplete="off">
           <small class="form-text text-muted">Procura em descrição e fabricante</small>
@@ -121,17 +121,17 @@
         </div>
 
         <!-- Códigos TUSS/TISS -->
-        <div class="col-6 col-md-2">
+        <div class="col-6 col-md-2 autocomplete-field">
           <label class="form-label fw-600">TUSS</label>
           <input type="text" class="form-control" id="fTuss" placeholder="Código" autocomplete="off">
         </div>
 
-        <div class="col-6 col-md-2">
+        <div class="col-6 col-md-2 autocomplete-field">
           <label class="form-label fw-600">TISS</label>
           <input type="text" class="form-control" id="fTiss" placeholder="Código" autocomplete="off">
         </div>
 
-        <div class="col-6 col-md-2">
+        <div class="col-6 col-md-2 autocomplete-field">
           <label class="form-label fw-600">ANVISA</label>
           <input type="text" class="form-control" id="fAnvisa" placeholder="Registro" autocomplete="off">
         </div>
@@ -143,7 +143,7 @@
         </div>
 
         <!-- Fabricante -->
-        <div class="col-12 col-md-3">
+        <div class="col-12 col-md-3 autocomplete-field">
           <label class="form-label fw-600">Fabricante</label>
           <input type="text" class="form-control" id="fFabricante" placeholder="Nome ou código" autocomplete="off">
         </div>
@@ -432,6 +432,138 @@
 
     .form-label {
       font-size: 0.8rem;
+    }
+  }
+
+  /* ===== AUTOCOMPLETE STYLES ===== */
+  .autocomplete-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    max-height: 300px;
+    overflow-y: auto;
+    z-index: 1000;
+    display: none;
+    animation: slideDown 0.2s ease-out;
+  }
+
+  .autocomplete-dropdown.visible {
+    display: block;
+  }
+
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .autocomplete-item {
+    padding: 12px 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #f3f4f6;
+    transition: all 0.15s ease;
+    font-size: 0.95rem;
+  }
+
+  .autocomplete-item:last-child {
+    border-bottom: none;
+  }
+
+  .autocomplete-item i {
+    color: #9ca3af;
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .autocomplete-item span {
+    flex-grow: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: #374151;
+  }
+
+  .autocomplete-item strong {
+    color: #0ea5e9;
+    font-weight: 600;
+  }
+
+  .autocomplete-item:hover {
+    background-color: #f9fafb;
+  }
+
+  .autocomplete-item.selected {
+    background-color: #dbeafe;
+    border-left: 3px solid #0ea5e9;
+    padding-left: 13px;
+  }
+
+  .autocomplete-item.selected i {
+    color: #0ea5e9;
+  }
+
+  .autocomplete-item.selected span {
+    color: #0c4a6e;
+    font-weight: 500;
+  }
+
+  .autocomplete-empty {
+    padding: 20px 16px;
+    text-align: center;
+    color: #9ca3af;
+    font-size: 0.9rem;
+    background-color: #fafafa;
+  }
+
+  .autocomplete-dropdown::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .autocomplete-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .autocomplete-dropdown::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 3px;
+  }
+
+  .autocomplete-dropdown::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+  }
+
+  /* Envolver campos em position-relative para dropdown posicionar corretamente */
+  .autocomplete-field {
+    position: relative;
+  }
+
+  @media (max-width: 768px) {
+    .autocomplete-dropdown {
+      max-height: 200px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    }
+
+    .autocomplete-item {
+      padding: 10px 12px;
+      font-size: 0.9rem;
+    }
+
+    .autocomplete-item i {
+      font-size: 0.85rem;
     }
   }
 </style>
@@ -986,8 +1118,37 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     modalBody.innerHTML = `<div>${entriesMarkup}</div>`;
   }
 
+  // ===== INICIALIZAÇÃO DO AUTOCOMPLETE =====
+  // Inicializa autocomplete após DOM estar pronto
+  document.addEventListener('DOMContentLoaded', function() {
+    if (typeof InsumoAutocomplete !== 'undefined') {
+      const autocomplete = new InsumoAutocomplete({
+        debounceDelay: 300,
+        maxSuggestions: 10,
+        maxHistoryItems: 10,
+        minChars: 2
+      });
+
+      // Inicializa autocomplete para cada campo
+      autocomplete.init('fTermo', 'descricao');
+      autocomplete.init('fFabricante', 'fabricante');
+      autocomplete.init('fTuss', 'tuss');
+      autocomplete.init('fTiss', 'tiss');
+      autocomplete.init('fAnvisa', 'anvisa');
+
+      console.log('✅ Autocomplete inicializado para todos os campos');
+
+      // Expõe globalmente para debug
+      window.insumosAutocomplete = autocomplete;
+    }
+  });
+
   // Fim da IIFE (Immediately Invoked Function Expression)
   // Isso isola todo o código em um escopo privado
 })();
 </script>
+
+<!-- Script do Autocomplete -->
+<script src="{{ url_for('static', filename='js/autocomplete.js') }}"></script>
+
 {% endblock %}

@@ -5073,6 +5073,9 @@ def alterar_senha():
 @login_required
 @feature_required('consulta')
 def consulta_comparar():
+    # Multi-operadora: buscar ID da operadora atual (deve estar no início!)
+    current_operadora_id = session.get('operadora_id')
+
     restore_cbhpm_payload = None
     history_id = request.args.get('sim_hist')
     if history_id:
@@ -5232,7 +5235,6 @@ def consulta_comparar():
 
     # Multi-operadora: buscar lista de operadoras ativas (filtrada pelo usuário)
     operadoras_list = _get_user_operadoras_list()
-    current_operadora_id = session.get('operadora_id')
 
     ruleset_dict, ruleset_model = _get_active_cbhpm_ruleset(return_model=True)
     rules_meta = {
@@ -6643,6 +6645,310 @@ def api_versoes_por_codigo():
     return jsonify(versoes)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# SMART FILTERS API ENDPOINTS - Para o Consulta & Comparar
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/tabela-info/<int:table_id>')
+@login_required
+def api_tabela_info(table_id):
+    """
+    Retorna informações sobre a tabela (tipo: CBHPM ou DTP).
+
+    Parâmetros:
+    - table_id: ID da tabela
+
+    Resposta:
+    {
+        'id': int,
+        'nome': str,
+        'tipo': 'cbhpm' ou 'diarias_taxas_pacotes'
+    }
+    """
+    tabela = Tabela.query.get(table_id)
+    if not tabela:
+        return jsonify({'error': 'Tabela não encontrada'}), 404
+
+    # Multi-operadora: verificar se usuário tem acesso a esta tabela
+    operadora_id = session.get('operadora_id')
+    if operadora_id and tabela.id_operadora != operadora_id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    return jsonify({
+        'id': tabela.id,
+        'nome': tabela.nome,
+        'tipo': tabela.tipo_tabela or 'diarias_taxas_pacotes'
+    })
+
+
+@app.route('/api/prestadores/<int:table_id>')
+@login_required
+def api_get_prestadores(table_id):
+    """
+    Retorna lista de prestadores únicos da tabela selecionada.
+
+    Parâmetros Query:
+    - uf: (opcional) Filtrar por UF
+
+    Resposta:
+    {
+        'tabela_id': int,
+        'prestadores': [str],
+        'total': int
+    }
+    """
+    tabela = Tabela.query.get(table_id)
+    if not tabela:
+        return jsonify({'error': 'Tabela não encontrada'}), 404
+
+    # Multi-operadora: verificar acesso
+    operadora_id = session.get('operadora_id')
+    if operadora_id and tabela.id_operadora != operadora_id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    uf = request.args.get('uf', '').strip()
+
+    # Construir query
+    query = db.session.query(Procedimento.prestador)\
+        .filter(Procedimento.id_tabela == table_id)\
+        .filter(Procedimento.prestador.isnot(None))\
+        .filter(Procedimento.prestador != '')
+
+    # Filtrar por UF se fornecido
+    if uf:
+        query = query.filter(or_(Procedimento.uf == uf, Tabela.uf == uf))
+
+    # Multi-operadora: filtrar por operadora_id
+    if operadora_id:
+        query = query.filter(Procedimento.operadora_id == operadora_id)
+
+    prestadores = sorted(list(set([r[0] for r in query.all()])))
+
+    return jsonify({
+        'tabela_id': table_id,
+        'prestadores': prestadores,
+        'total': len(prestadores)
+    })
+
+
+@app.route('/api/versoes/<int:table_id>')
+@login_required
+def api_get_versoes(table_id):
+    """
+    Retorna lista de versões para tabelas CBHPM.
+
+    Parâmetros:
+    - table_id: ID da tabela (apenas para validação)
+
+    Resposta:
+    {
+        'tabela_id': int,
+        'versoes': [str],
+        'total': int
+    }
+    """
+    # Validar que a tabela existe
+    tabela = Tabela.query.get(table_id)
+    if not tabela:
+        return jsonify({'error': 'Tabela não encontrada'}), 404
+
+    # Multi-operadora: verificar acesso
+    operadora_id = session.get('operadora_id')
+    if operadora_id and tabela.id_operadora != operadora_id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    # Buscar todas as versões CBHPM da operadora
+    query = db.session.query(Tabela.nome)\
+        .filter(Tabela.tipo_tabela == 'cbhpm')\
+        .distinct()
+
+    # Multi-operadora: filtrar por operadora_id
+    if operadora_id:
+        query = query.filter(Tabela.id_operadora == operadora_id)
+
+    versoes = [v[0] for v in query.order_by(Tabela.nome).all()]
+
+    return jsonify({
+        'tabela_id': table_id,
+        'versoes': versoes,
+        'total': len(versoes)
+    })
+
+
+@app.route('/api/tabelas-list')
+@login_required
+def api_tabelas_list():
+    """
+    Retorna lista de tabelas com seus IDs para busca por nome.
+
+    Parâmetros:
+    - tipo: tipo de tabela (ex: diarias_taxas_pacotes, cbhpm)
+    - nome: nome da tabela (busca exata)
+
+    Resposta:
+    {
+        "tabelas": [
+            {"id": 1, "nome": "DIÁRIAS, TAXAS E PACOTES 2024"}
+        ]
+    }
+    """
+    operadora_id = session.get('operadora_id')
+    tipo = (request.args.get('tipo') or '').strip()
+    nome = (request.args.get('nome') or '').strip()
+
+    query = Tabela.query
+    if tipo:
+        query = query.filter_by(tipo_tabela=tipo)
+    if nome:
+        query = query.filter_by(nome=nome)
+    if operadora_id:
+        query = query.filter_by(id_operadora=operadora_id)
+
+    tabelas = query.all()
+    resultado = [
+        {'id': t.id, 'nome': t.nome}
+        for t in tabelas
+    ]
+
+    return jsonify({'tabelas': resultado})
+
+
+@app.route('/api/dtp-codigos/<int:table_id>')
+@login_required
+def api_dtp_codigos(table_id):
+    """
+    Retorna lista de códigos DTP para autocomplete.
+
+    Parâmetros:
+    - table_id: ID da tabela DTP
+    - q: termo de busca (opcional, para filtro)
+
+    Resposta:
+    {
+        "codigos": [
+            {"codigo": "01.01.01", "descricao": "Diária de UTI"},
+            {"codigo": "01.01.02", "descricao": "Diária de Hospital"},
+            ...
+        ],
+        "total": 50
+    }
+    """
+    operadora_id = session.get('operadora_id')
+
+    # Verificar se a tabela existe e pertence à operadora
+    tabela = Tabela.query.get(table_id)
+    if not tabela:
+        return jsonify({'error': 'Tabela não encontrada'}), 404
+
+    if operadora_id and tabela.id_operadora != operadora_id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    # Verificar se é tabela DTP
+    if tabela.tipo_tabela != 'diarias_taxas_pacotes':
+        return jsonify({'error': 'Tabela não é do tipo DTP'}), 400
+
+    # Obter termo de busca (opcional)
+    q = (request.args.get('q') or '').strip()
+
+    # Query base
+    query = Procedimento.query.filter_by(id_tabela=table_id)
+
+    # Filtrar por termo de busca se fornecido
+    if q:
+        query = query.filter(
+            (Procedimento.codigo.ilike(f'{q}%')) |
+            (Procedimento.descricao.ilike(f'%{q}%'))
+        )
+
+    # Filtrar por operadora se usuário tem operadora específica
+    if operadora_id:
+        query = query.filter_by(operadora_id=operadora_id)
+
+    # Buscar e ordenar
+    procedimentos = query.order_by(
+        Procedimento.codigo.asc()
+    ).limit(100).all()
+
+    # Montar resposta
+    codigos = [
+        {
+            'codigo': proc.codigo,
+            'descricao': proc.descricao or '',
+            'prestador': proc.prestador or '',
+            'valor': float(proc.valor) if proc.valor else None,
+        }
+        for proc in procedimentos
+    ]
+
+    return jsonify({
+        'codigos': codigos,
+        'total': len(codigos)
+    })
+
+
+@app.route('/api/dtp-prestadores/<int:table_id>')
+@login_required
+def api_dtp_prestadores(table_id):
+    """
+    Retorna lista de prestadores únicos de uma tabela DTP.
+
+    Parâmetros:
+    - table_id: ID da tabela DTP
+
+    Resposta:
+    {
+        "prestadores": [
+            "Hospital Central",
+            "Hospital Metropolitano",
+            "Clínica Médica Plus"
+        ],
+        "total": 3
+    }
+    """
+    operadora_id = session.get('operadora_id')
+
+    # Verificar se a tabela existe e pertence à operadora
+    tabela = Tabela.query.get(table_id)
+    if not tabela:
+        return jsonify({'error': 'Tabela não encontrada'}), 404
+
+    if operadora_id and tabela.id_operadora != operadora_id:
+        return jsonify({'error': 'Acesso negado'}), 403
+
+    # Verificar se é tabela DTP
+    if tabela.tipo_tabela != 'diarias_taxas_pacotes':
+        return jsonify({'error': 'Tabela não é do tipo DTP'}), 400
+
+    # Buscar prestadores únicos
+    query = Procedimento.query.filter_by(id_tabela=table_id)
+
+    # Filtrar por operadora se usuário tem operadora específica
+    if operadora_id:
+        query = query.filter_by(operadora_id=operadora_id)
+
+    # Buscar prestadores únicos e ordenar
+    prestadores = db.session.query(Procedimento.prestador).filter_by(
+        id_tabela=table_id
+    ).filter(Procedimento.prestador.isnot(None)).filter(
+        Procedimento.prestador != ''
+    ).distinct().order_by(Procedimento.prestador.asc()).all()
+
+    if operadora_id:
+        prestadores = db.session.query(Procedimento.prestador).filter(
+            Procedimento.id_tabela == table_id,
+            Procedimento.operadora_id == operadora_id,
+            Procedimento.prestador.isnot(None),
+            Procedimento.prestador != ''
+        ).distinct().order_by(Procedimento.prestador.asc()).all()
+
+    prestadores_list = [p[0] for p in prestadores]
+
+    return jsonify({
+        'prestadores': prestadores_list,
+        'total': len(prestadores_list)
+    })
+
+
 @app.route('/api/procedimentos/suggest')
 @login_required
 def api_procedimentos_suggest():
@@ -7082,6 +7388,65 @@ def contratos_resumo():
     # Lista de operadoras (filtrada pelo usuário)
     operadoras_list = _get_user_operadoras_list()
 
+    # Lista de tabelas DTP (com IDs para JavaScript)
+    dtp_list = [
+        {'id': t.id, 'nome': t.nome}
+        for t in Tabela.query.filter_by(tipo_tabela='diarias_taxas_pacotes').order_by(Tabela.nome).all()
+    ]
+
+    # ========== DTP SEARCH LOGIC ==========
+    dtp_results = []
+    dtp_search_params = {}
+    if request.args.get('dtp_search') == '1':
+        dtp_tabela_nome = (request.args.get('dtp_tabela') or '').strip()
+        dtp_prestador = (request.args.get('dtp_prestador') or '').strip()
+        dtp_codigo = (request.args.get('dtp_codigo') or '').strip()
+
+        if dtp_tabela_nome:
+            # Encontrar a tabela DTP pelo nome
+            tabela = Tabela.query.filter_by(
+                nome=dtp_tabela_nome,
+                tipo_tabela='diarias_taxas_pacotes'
+            ).first()
+
+            if tabela:
+                # Construir query base
+                query = Procedimento.query.filter_by(id_tabela=tabela.id)
+
+                # Filtrar por prestador (case-insensitive, partial match)
+                if dtp_prestador:
+                    query = query.filter(
+                        Procedimento.prestador.ilike(f'%{dtp_prestador}%')
+                    )
+
+                # Filtrar por código (case-insensitive, partial match)
+                if dtp_codigo:
+                    query = query.filter(
+                        Procedimento.codigo.ilike(f'%{dtp_codigo}%')
+                    )
+
+                # Multi-operadora: filtrar por operadora do usuário
+                if selected_operadora_id:
+                    query = query.filter_by(operadora_id=selected_operadora_id)
+
+                # Ordenar e limitar resultados
+                dtp_results = query.order_by(
+                    Procedimento.prestador.asc(),
+                    Procedimento.codigo.asc()
+                ).limit(500).all()
+
+                # Armazenar parâmetros da busca para exibição no template
+                dtp_search_params = {
+                    'tabela': dtp_tabela_nome,
+                    'prestador': dtp_prestador,
+                    'codigo': dtp_codigo,
+                    'total': len(dtp_results),
+                }
+            else:
+                erro = 'Tabela DTP não encontrada.'
+        else:
+            erro = 'Selecione uma tabela DTP para buscar.'
+
     modal_prefill = {
         'record_id': form_data.get('record_id'),
         'prestador': form_data.get('prestador', ''),
@@ -7109,6 +7474,9 @@ def contratos_resumo():
         operadoras_list=operadoras_list,
         selected_operadora_id=selected_operadora_id,
         user_has_specific_operadora=(user_operadora_id is not None),
+        dtp_list=dtp_list,
+        dtp_results=dtp_results,
+        dtp_search_params=dtp_search_params,
     )
 
 
@@ -10012,6 +10380,85 @@ def insumos_search():
     filters = _extract_insumo_filters(request.args)
     payload = _catalogo_search(filters, page, per_page)
     return jsonify(payload)
+
+
+@app.route('/api/insumos/suggest')
+@login_required
+@feature_required('insumos')
+def insumos_suggest():
+    """
+    Endpoint para autocomplete em buscas de insumos.
+
+    Parâmetros:
+    - q: query de busca (obrigatório)
+    - field: campo a buscar (descricao, fabricante, tuss, tiss, anvisa) (padrão: descricao)
+    - limit: número máximo de resultados (padrão: 10, máx: 20)
+
+    Retorna: Lista de sugestões com até 'limit' itens
+    """
+    query = (request.args.get('q') or '').strip().lower()
+    field = (request.args.get('field') or 'descricao').lower()
+    limit = _parse_positive_int(request.args.get('limit'), 10, maximum=20)
+
+    # Validação
+    if not query or len(query) < 2:
+        return jsonify({'suggestions': []})
+
+    if field not in {'descricao', 'fabricante', 'tuss', 'tiss', 'anvisa'}:
+        field = 'descricao'
+
+    try:
+        suggestions = []
+
+        # Busca em CatalogoBrasindice
+        if field == 'descricao':
+            rows = CatalogoBrasindice.query.filter(
+                func.lower(CatalogoBrasindice.produto_nome).ilike(f'%{query}%')
+            ).with_entities(CatalogoBrasindice.produto_nome).distinct().limit(limit).all()
+            suggestions.extend([r[0] for r in rows if r[0]])
+
+        elif field == 'fabricante':
+            rows = CatalogoBrasindice.query.filter(
+                CatalogoBrasindice.fabricante != None,
+                func.lower(CatalogoBrasindice.fabricante).ilike(f'%{query}%')
+            ).with_entities(CatalogoBrasindice.fabricante).distinct().limit(limit).all()
+            suggestions.extend([r[0] for r in rows if r[0]])
+
+        elif field == 'tuss':
+            rows = InsumoIndex.query.filter(
+                InsumoIndex.origem == 'BRAS',
+                InsumoIndex.tuss != None,
+                InsumoIndex.tuss.ilike(f'{query}%')
+            ).with_entities(InsumoIndex.tuss).distinct().limit(limit).all()
+            suggestions.extend([r[0] for r in rows if r[0]])
+
+        elif field == 'tiss':
+            rows = InsumoIndex.query.filter(
+                InsumoIndex.tiss != None,
+                InsumoIndex.tiss.ilike(f'{query}%')
+            ).with_entities(InsumoIndex.tiss).distinct().limit(limit).all()
+            suggestions.extend([r[0] for r in rows if r[0]])
+
+        elif field == 'anvisa':
+            rows = InsumoIndex.query.filter(
+                InsumoIndex.anvisa != None,
+                InsumoIndex.anvisa.ilike(f'{query}%')
+            ).with_entities(InsumoIndex.anvisa).distinct().limit(limit).all()
+            suggestions.extend([r[0] for r in rows if r[0]])
+
+        # Limita o resultado final
+        suggestions = list(dict.fromkeys(suggestions))[:limit]  # Remove duplicatas mantendo ordem
+
+        return jsonify({
+            'suggestions': suggestions,
+            'field': field,
+            'query': query,
+            'count': len(suggestions)
+        })
+
+    except Exception as e:
+        app.logger.exception(f'Erro ao buscar sugestões para {field}={query}')
+        return jsonify({'suggestions': [], 'error': str(e)}), 500
 
 
 @app.route('/insumos/<origem>/<int:item_id>')
