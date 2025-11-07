@@ -4555,28 +4555,39 @@ def analytics_dashboard():
 
     # 1. Estatísticas gerais
     try:
+        total_versoes = db.session.query(
+            func.count(func.distinct(Tabela.tipo))
+        ).scalar() or 0
+
         analytics_data['summary'] = {
-            'total_operadoras': Operadora.query.count(),
-            'total_procedures': Procedimento.query.count(),
-            'total_versoes': Tabela.query.distinct(Tabela.tipo).count(),
-            'total_usuarios': Usuario.query.count(),
+            'total_operadoras': Operadora.query.count() or 0,
+            'total_procedures': Procedimento.query.count() or 0,
+            'total_versoes': int(total_versoes),
+            'total_usuarios': Usuario.query.count() or 0,
         }
+        print(f'✅ Estatísticas: {analytics_data["summary"]}')
     except Exception as e:
         print(f'Erro ao coletar estatísticas gerais: {e}')
-        analytics_data['summary'] = {}
+        analytics_data['summary'] = {
+            'total_operadoras': 0,
+            'total_procedures': 0,
+            'total_versoes': 0,
+            'total_usuarios': 0,
+        }
 
     # 2. Dados de procedures por versão
     try:
         procedures_by_version = db.session.query(
             Tabela.tipo,
             func.count(Procedimento.id).label('count')
-        ).join(Procedimento, Procedimento.tabela_id == Tabela.id)\
+        ).outerjoin(Procedimento, Procedimento.tabela_id == Tabela.id)\
          .group_by(Tabela.tipo).all()
 
         analytics_data['charts']['procedures_by_version'] = {
-            'labels': [t[0] for t in procedures_by_version],
-            'data': [int(t[1]) for t in procedures_by_version]
+            'labels': [str(t[0]) if t[0] else 'N/A' for t in procedures_by_version],
+            'data': [int(t[1]) if t[1] else 0 for t in procedures_by_version]
         }
+        print(f'✅ Procedures por versão: {len(procedures_by_version)} registros')
     except Exception as e:
         print(f'Erro ao coletar procedures por versão: {e}')
         analytics_data['charts']['procedures_by_version'] = {'labels': [], 'data': []}
@@ -4587,19 +4598,20 @@ def analytics_dashboard():
             Procedimento.codigo,
             Procedimento.descricao,
             func.count(AuditLog.id).label('access_count')
-        ).join(AuditLog, AuditLog.descricao.ilike(f'%{Procedimento.codigo}%'))\
+        ).outerjoin(AuditLog, AuditLog.descricao.ilike(f'%{Procedimento.codigo}%'))\
          .group_by(Procedimento.id)\
          .order_by(func.count(AuditLog.id).desc())\
          .limit(10).all()
 
         analytics_data['tables']['top_procedures'] = [
             {
-                'codigo': p[0],
-                'descricao': p[1][:50] + '...' if len(p[1]) > 50 else p[1],
-                'acessos': int(p[2])
+                'codigo': str(p[0]) if p[0] else 'N/A',
+                'descricao': (str(p[1])[:50] + '...') if (p[1] and len(str(p[1])) > 50) else str(p[1]),
+                'acessos': int(p[2]) if p[2] else 0
             }
-            for p in top_procedures
+            for p in top_procedures if p[0]  # Filtra apenas com código válido
         ]
+        print(f'✅ Top procedures: {len(analytics_data["tables"]["top_procedures"])} registros')
     except Exception as e:
         print(f'Erro ao coletar top procedures: {e}')
         analytics_data['tables']['top_procedures'] = []
@@ -4614,9 +4626,10 @@ def analytics_dashboard():
          .limit(8).all()
 
         analytics_data['charts']['activity_by_action'] = {
-            'labels': [a[0] for a in activity_by_action],
-            'data': [int(a[1]) for a in activity_by_action]
+            'labels': [str(a[0]) if a[0] else 'Outro' for a in activity_by_action],
+            'data': [int(a[1]) if a[1] else 0 for a in activity_by_action]
         }
+        print(f'✅ Atividades: {len(activity_by_action)} tipos')
     except Exception as e:
         print(f'Erro ao coletar atividade: {e}')
         analytics_data['charts']['activity_by_action'] = {'labels': [], 'data': []}
@@ -4626,19 +4639,20 @@ def analytics_dashboard():
         top_operadoras = db.session.query(
             Operadora.nome,
             func.count(AuditLog.id).label('access_count')
-        ).join(Usuario, Usuario.operadora_id == Operadora.id)\
-         .join(AuditLog, AuditLog.usuario_id == Usuario.id)\
+        ).outerjoin(Usuario, Usuario.operadora_id == Operadora.id)\
+         .outerjoin(AuditLog, AuditLog.usuario_id == Usuario.id)\
          .group_by(Operadora.id)\
          .order_by(func.count(AuditLog.id).desc())\
          .limit(10).all()
 
         analytics_data['tables']['top_operadoras'] = [
             {
-                'nome': o[0],
-                'acessos': int(o[1])
+                'nome': str(o[0]) if o[0] else 'N/A',
+                'acessos': int(o[1]) if o[1] else 0
             }
-            for o in top_operadoras
+            for o in top_operadoras if o[0]
         ]
+        print(f'✅ Top operadoras: {len(analytics_data["tables"]["top_operadoras"])} registros')
     except Exception as e:
         print(f'Erro ao coletar top operadoras: {e}')
         analytics_data['tables']['top_operadoras'] = []
@@ -4653,9 +4667,10 @@ def analytics_dashboard():
          .order_by(ImportJob.created_at.cast(db.Date)).all()
 
         analytics_data['charts']['imports_timeline'] = {
-            'labels': [str(d[0]) for d in recent_imports],
-            'data': [int(d[1]) for d in recent_imports]
+            'labels': [str(d[0]) if d[0] else 'Sem data' for d in recent_imports],
+            'data': [int(d[1]) if d[1] else 0 for d in recent_imports]
         }
+        print(f'✅ Timeline importações: {len(recent_imports)} dias')
     except Exception as e:
         print(f'Erro ao coletar timeline de importações: {e}')
         analytics_data['charts']['imports_timeline'] = {'labels': [], 'data': []}
