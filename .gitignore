@@ -21,3 +21,4 @@ db_data/
 # Arquivos específicos de IDEs
 .vscode/
 .idea/
+ngrok*
