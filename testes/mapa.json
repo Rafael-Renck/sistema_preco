@@ -1,0 +1,55 @@
+{
+  "encoding": "latin-1",
+  "lines_terminated": "\n",
+  "skip_header": false,
+  "decimal_divisor": 100,
+  "columns": [
+    { "name": "codigo_interno",     "start": 1,   "length": 10 },
+    { "name": "codigo_alternativo", "start": 16,  "length": 10 },
+    { "name": "descricao_completa", "start": 30,  "length": 92 },
+    { "name": "data_vigencia",      "start": 123, "length": 8,  "type": "date", "date_fmt": "DDMMYYYY" },
+    { "name": "tipo_registro",      "start": 131, "length": 1 },
+
+    { "name": "preco_pf",           "start": 132, "length": 12, "type": "decimal" },
+    { "name": "preco_pmc",          "start": 144, "length": 12, "type": "decimal" },
+    { "name": "preco_ph",           "start": 156, "length": 12, "type": "decimal" },
+    { "name": "preco_outro",        "start": 168, "length": 12, "type": "decimal" },
+
+    { "name": "unidade_comercial",  "start": 200, "length": 8 },
+    { "name": "qtd_unidade",        "start": 209, "length": 6,  "type": "int" },
+
+    { "name": "fabricante",         "start": 230, "length": 24 },
+
+    { "name": "registro_anvisa",    "start": 280, "length": 20 },
+    { "name": "validade_anvisa",    "start": 301, "length": 8,  "type": "date", "date_fmt": "DDMMYYYY" },
+
+    { "name": "ean",                "start": 310, "length": 16, "strip": ["+"] },
+
+    { "name": "situacao",           "start": 330, "length": 20 },
+
+    /* Captura do trecho final da linha (onde costumam vir TUSS e status curto, ex.: '...   NN') */
+    { "name": "sufixo_livre",       "start": 350, "length": 200, "rtrim": true }
+  ],
+
+  "postprocess": {
+    /* Extrai TUSS do sufixo: aceita '#NN12345678', '-NS12345678', 'NR123456', etc. */
+    "extract": [
+      {
+        "from": "sufixo_livre",
+        "regex": "(?:[#\\-\\s]?)(N[SNRA])\\s*([0-9]{6,12})",
+        "fields": { "tuss_prefix": 1, "tuss_numero": 2 }
+      },
+      {
+        "from": "sufixo_livre",
+        "regex": "([A-Z]{2})\\s*$",
+        "fields": { "status_final": 1 }
+      }
+    ],
+    "derive": [
+      { "name": "tuss", "expr": "tuss_prefix && tuss_numero ? tuss_prefix + tuss_numero : null" }
+    ],
+    "cleanup": [
+      "sufixo_livre"
+    ]
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "descricao": "Mapeamento de alíquotas ICMS para UFs - SIMPRO",
+  "atualizado_em": "2025-12",
+  
+  "aliquotas": {
+    "17": {
+      "ufs": ["DF", "ES", "MT", "MS", "RS", "SC"],
+      "descricao": "Alíquota 17% - Distrito Federal, Espírito Santo, Mato Grosso, Mato Grosso do Sul, Rio Grande do Sul, Santa Catarina"
+    },
+    "18": {
+      "ufs": ["AP", "MG", "SP"],
+      "descricao": "Alíquota 18% - Amapá, Minas Gerais, São Paulo"
+    },
+    "19": {
+      "ufs": ["AC", "AL", "GO", "PA", "SE"],
+      "descricao": "Alíquota 19% - Acre, Alagoas, Goiás, Pará, Sergipe"
+    },
+    "19.5": {
+      "ufs": ["PR", "RO"],
+      "descricao": "Alíquota 19.5% - Paraná, Rondônia (disponível apenas no Brasíndice Online)",
+      "apenas_brasindice_online": true
+    },
+    "20": {
+      "ufs": ["AL", "AM", "CE", "PB", "RN", "RR", "TO"],
+      "descricao": "Alíquota 20% - Alagoas (19% + 1% FECOEP), Amazonas, Ceará, Paraíba, Rio Grande do Norte, Roraima, Tocantins",
+      "nota": "AL aparece aqui com FECOEP incluso"
+    },
+    "20.5": {
+      "ufs": ["BA", "PE"],
+      "descricao": "Alíquota 20.5% - Bahia, Pernambuco (disponível apenas no Brasíndice Online)",
+      "apenas_brasindice_online": true
+    },
+    "22": {
+      "ufs": ["RJ"],
+      "descricao": "Alíquota 22% - Rio de Janeiro (20% + 2% FECP) (disponível apenas no Brasíndice Online)",
+      "apenas_brasindice_online": true
+    },
+    "22.5": {
+      "ufs": ["PI"],
+      "descricao": "Alíquota 22.5% - Piauí (disponível apenas no Brasíndice Online)",
+      "apenas_brasindice_online": true
+    },
+    "23": {
+      "ufs": ["MA"],
+      "descricao": "Alíquota 23% - Maranhão (disponível apenas no Brasíndice Online)",
+      "apenas_brasindice_online": true
+    }
+  },
+
+  "notas": {
+    "FECOEP": "Fundo Estadual de Combate à Pobreza - Alagoas adiciona 1%",
+    "FECP": "Fundo Estadual de Combate à Pobreza - Rio de Janeiro adiciona 2%",
+    "brasindice_online": "Algumas alíquotas só estão disponíveis no Brasíndice Online"
+  },
+
+  "padrao_nome_arquivo": "MSG {edição} {ano} {aliquota}.TXT",
+  "exemplo": "MSG 51 2025 18.TXT → Alíquota 18% → AP, MG, SP"
+}

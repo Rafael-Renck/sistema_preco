@@ -10,7 +10,7 @@
 
 {% block content %}
 <!-- Content wrapper com padding e animação -->
-<div class="insumos-container" style="animation: fadeIn 0.5s ease; padding: 0 3rem 2rem 3rem;">
+<div class="insumos-container" style="animation: fadeIn 0.5s ease;">
   <!-- Container interno para controle de largura máxima -->
   <div class="insumos-wrapper">
   <!-- Summary Cards -->
@@ -205,16 +205,16 @@
         <table class="table table-hover align-middle mb-0" id="resultadoTabela">
           <thead class="table-light">
             <tr>
-              <th style="width: 90px;">Origem</th>
-              <th style="width: 140px;">Códigos</th>
-              <th>Descrição</th>
-              <th style="width: 120px;" class="text-end">PMC</th>
-              <th style="width: 120px;" class="text-end">PFB</th>
-              <th style="width: 80px;" class="text-center">UF</th>
-              <th style="width: 100px;" class="text-end">Alíquota</th>
-              <th style="width: 120px;">Versão</th>
-              <th style="width: 100px;">Atualiz.</th>
-              <th style="width: 50px;" class="text-center">Ação</th>
+              <th class="col-origem">Origem</th>
+              <th class="col-codigos">Códigos</th>
+              <th class="col-descricao">Descrição</th>
+              <th class="col-pmc text-end">PMC</th>
+              <th class="col-pfb text-end">PFB</th>
+              <th class="col-uf text-center">UF</th>
+              <th class="col-aliquota text-end">Alíquota</th>
+              <th class="col-versao">Versão</th>
+              <th class="col-atualiz">Atualiz.</th>
+              <th class="col-acao text-center">Ação</th>
             </tr>
           </thead>
           <tbody id="resultadoBody">
@@ -290,12 +290,12 @@
 
   /* ===== SPINNER LOADING ===== */
   #resultadoLoading {
-    display: none !important;  /* Garante que spinner fica oculto por padrão */
+    display: none !important;
     visibility: hidden !important;
   }
 
   #resultadoLoading.visible {
-    display: flex !important;  /* Mostra quando classe visible é adicionada */
+    display: flex !important;
     visibility: visible !important;
   }
 
@@ -305,6 +305,7 @@
     width: 100%;
     min-height: calc(100vh - 200px);
     background: transparent;
+    padding: 0;
   }
 
   .insumos-wrapper {
@@ -363,8 +364,9 @@
     border-bottom: 2px solid #e5e7eb;
     font-weight: 600;
     color: #475569;
-    padding: 1rem;
+    padding: 0.75rem;
     text-transform: none;
+    font-size: 0.8125rem;
   }
 
   .table tbody tr {
@@ -378,6 +380,7 @@
 
   .table-responsive {
     max-width: 100%;
+    -webkit-overflow-scrolling: touch;
   }
 
   /* ===== BOTÕES ===== */
@@ -413,31 +416,6 @@
     animation: spin 1s linear infinite;
     width: 2rem;
     height: 2rem;
-  }
-
-  /* ===== RESPONSIVO ===== */
-  @media (max-width: 1024px) {
-    .insumos-container {
-      padding: 0 1.5rem 1.5rem 1.5rem !important;
-    }
-  }
-
-  @media (max-width: 768px) {
-    .insumos-container {
-      padding: 0 1rem 1rem 1rem !important;
-    }
-
-    .table {
-      font-size: 0.8rem;
-    }
-
-    .card-body {
-      padding: 1rem;
-    }
-
-    .form-label {
-      font-size: 0.8rem;
-    }
   }
 
   /* ===== AUTOCOMPLETE STYLES ===== */
@@ -551,12 +529,127 @@
     background: #9ca3af;
   }
 
-  /* Envolver campos em position-relative para dropdown posicionar corretamente */
   .autocomplete-field {
     position: relative;
   }
 
+  /* ===== COLUNAS DA TABELA ===== */
+  .col-origem { width: 80px; min-width: 70px; }
+  .col-codigos { width: 130px; min-width: 100px; }
+  .col-descricao { min-width: 180px; }
+  .col-pmc { width: 100px; min-width: 85px; }
+  .col-pfb { width: 100px; min-width: 85px; }
+  .col-uf { width: 60px; min-width: 50px; }
+  .col-aliquota { width: 85px; min-width: 70px; }
+  .col-versao { width: 100px; min-width: 80px; }
+  .col-atualiz { width: 90px; min-width: 75px; }
+  .col-acao { width: 50px; min-width: 44px; }
+
+  /* ===== RESPONSIVO - TABLET (1024px) ===== */
+  @media (max-width: 1024px) {
+    .card-body {
+      padding: 1.25rem;
+    }
+  }
+
+  /* ===== RESPONSIVO - MOBILE (768px) ===== */
   @media (max-width: 768px) {
+
+    /* Cards summary em stack */
+    .row.g-3.mb-4 > .col-12.col-md-6 {
+      margin-bottom: 0.5rem;
+    }
+    
+    .card-body {
+      padding: 1rem;
+    }
+
+    /* Filtros - reorganizar para mobile */
+    #insumoFilters .col-6,
+    #insumoFilters .col-12 {
+      margin-bottom: 0.5rem;
+    }
+    
+    #insumoFilters .col-md-5,
+    #insumoFilters .col-md-3,
+    #insumoFilters .col-md-2 {
+      flex: 0 0 100%;
+      max-width: 100%;
+    }
+    
+    /* Campos lado a lado em pares */
+    #insumoFilters .col-6.col-md-2 {
+      flex: 0 0 50%;
+      max-width: 50%;
+    }
+
+    .form-label {
+      font-size: 0.8125rem;
+      margin-bottom: 0.375rem;
+    }
+    
+    .form-text {
+      font-size: 0.75rem;
+    }
+
+    /* Botões de ação */
+    #insumoFilters .d-flex.align-items-end.gap-2 {
+      flex-direction: column;
+      width: 100%;
+    }
+    
+    #insumoFilters .d-flex.align-items-end.gap-2 .btn {
+      width: 100%;
+    }
+    
+    #insumoFilters .d-flex.align-items-end.gap-2 .btn-outline-secondary {
+      width: auto;
+      align-self: flex-end;
+    }
+
+    /* Tabela mobile */
+    .table {
+      font-size: 0.75rem;
+    }
+    
+    .table-light thead th {
+      padding: 0.5rem 0.375rem;
+      font-size: 0.6875rem;
+    }
+    
+    .table tbody td {
+      padding: 0.5rem 0.375rem;
+    }
+
+    /* Esconder colunas menos importantes em mobile */
+    .col-aliquota,
+    .col-versao,
+    .col-atualiz,
+    .table tbody td:nth-child(7),
+    .table tbody td:nth-child(8),
+    .table tbody td:nth-child(9) {
+      display: none;
+    }
+    
+    /* Colunas menores */
+    .col-origem { width: 60px; min-width: 55px; }
+    .col-codigos { width: 90px; min-width: 80px; }
+    .col-pmc { width: 80px; min-width: 70px; }
+    .col-pfb { width: 80px; min-width: 70px; }
+    .col-uf { width: 45px; min-width: 40px; }
+
+    /* Paginação */
+    .card-header.d-flex {
+      flex-direction: column;
+      gap: 0.5rem;
+      align-items: flex-start !important;
+    }
+    
+    .card-header .btn-group {
+      align-self: flex-end;
+    }
+
+    /* Autocomplete */
     .autocomplete-dropdown {
       max-height: 200px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
@@ -564,11 +657,68 @@
 
     .autocomplete-item {
       padding: 10px 12px;
-      font-size: 0.9rem;
+      font-size: 0.875rem;
     }
 
     .autocomplete-item i {
-      font-size: 0.85rem;
+      font-size: 0.8rem;
+    }
+
+    /* Alerta de dica */
+    .alert.mt-4 {
+      font-size: 0.8125rem;
+      padding: 0.75rem;
+    }
+  }
+
+  /* ===== RESPONSIVO - MOBILE PEQUENO (480px) ===== */
+  @media (max-width: 480px) {
+    /* Summary cards mais compactos */
+    .fs-5.fw-700 {
+      font-size: 1.125rem !important;
+    }
+
+    /* Todos os campos em coluna única */
+    #insumoFilters .col-6.col-md-2 {
+      flex: 0 0 100%;
+      max-width: 100%;
+    }
+
+    /* Tabela - esconder mais colunas */
+    .col-pmc,
+    .col-pfb,
+    .table tbody td:nth-child(4),
+    .table tbody td:nth-child(5) {
+      display: none;
+    }
+    
+    /* Coluna descrição com quebra */
+    .col-descricao,
+    .table tbody td:nth-child(3) {
+      max-width: 150px;
+      white-space: normal;
+      word-break: break-word;
+    }
+    
+    /* Colunas ainda menores */
+    .col-origem { width: 50px; min-width: 45px; font-size: 0.6875rem; }
+    .col-codigos { width: 70px; min-width: 60px; }
+
+    /* Botão de ação menor */
+    .btn.btn-sm.btn-outline-primary {
+      padding: 0.375rem 0.5rem;
+    }
+  }
+
+  /* ===== MOBILE - TABELA ALTERNATIVA (cards) ===== */
+  @media (max-width: 576px) {
+    /* Header da tabela de resultados */
+    .card-header.bg-light.border-0 {
+      padding: 0.75rem;
+    }
+
+    #resultadoResumo {
+      font-size: 0.75rem;
     }
   }
 </style>

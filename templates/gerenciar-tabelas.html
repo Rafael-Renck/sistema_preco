@@ -1,53 +1,109 @@
 {% extends 'base.html' %}
 {% block title %}Tabelas{% endblock %}
 {% block content %}
-<div class="page-header d-flex align-items-center justify-content-between">
-  <h4 class="mb-0">Gerenciamento de Tabelas</h4>
-  <div class="d-flex gap-2">
-    <a class="btn btn-outline-primary" href="#imp-bras">Importar Brasíndice</a>
-    <a class="btn btn-outline-primary" href="#imp-simpro">Importar SIMPRO</a>
-    <a class="btn btn-outline-primary" href="#imp-diarias">Importar DTP</a>
-    <a class="btn btn-outline-primary" href="#imp-cbhpm">Importar CBHPM</a>
-    <a class="btn btn-outline-primary" href="#imp-porte">Importar Porte</a>
-    <a class="btn btn-outline-primary" href="#imp-porte-an">Importar Porte AN</a>
-  </div>
+<div class="page-header mb-3">
+  <h4 class="mb-0">Importação de Tabelas</h4>
 </div>
 
-<div class="row g-3">
-  <div class="col-12">
-    <div class="card p-3" id="import-jobs-panel">
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <h6 class="mb-0">Importações em andamento</h6>
-        <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshJobsBtn">
-          <i class="bi bi-arrow-clockwise"></i> Atualizar
-        </button>
-      </div>
-      <div class="table-responsive">
-        <table class="table table-clean align-middle mb-0" id="jobsTable">
-          <thead>
-            <tr>
-              <th style="width:120px;">Protocolo</th>
-              <th style="width:90px;">Origem</th>
-              <th style="width:120px;">Versão</th>
-              <th style="width:180px;">UFs</th>
-              <th style="width:110px;">Status</th>
-              <th style="width:130px;">Duração</th>
-              <th>Mensagem</th>
-              <th style="width:180px;">Atualizado em</th>
-            </tr>
-          </thead>
-          <tbody id="jobsTableBody">
-            <tr><td colspan="8" class="text-center text-muted py-3">Nenhuma importação agendada.</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="small text-muted mt-2" id="jobsSummary">—</div>
-    </div>
+<!-- Painel de Jobs -->
+<div class="card p-3 mb-3" id="import-jobs-panel">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h6 class="mb-0"><i class="bi bi-hourglass-split me-1"></i> Importações em andamento</h6>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="refreshJobsBtn">
+      <i class="bi bi-arrow-clockwise"></i> Atualizar
+    </button>
   </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-clean align-middle mb-0" id="jobsTable">
+      <thead>
+        <tr>
+          <th style="width:100px;">Protocolo</th>
+          <th style="width:70px;">Origem</th>
+          <th style="width:80px;">Versão</th>
+          <th style="width:100px;">UFs</th>
+          <th style="width:90px;">Status</th>
+          <th style="width:80px;">Duração</th>
+          <th>Mensagem</th>
+          <th style="width:140px;">Atualizado</th>
+        </tr>
+      </thead>
+      <tbody id="jobsTableBody">
+        <tr><td colspan="8" class="text-center text-muted py-2">Nenhuma importação.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="small text-muted mt-2" id="jobsSummary">—</div>
+</div>
 
-  <div class="col-12">
-    <div class="card p-3" id="imp-bras">
-      <h6 class="mb-3">Importar: Brasíndice</h6>
+<!-- Acordeões de Importação -->
+<div class="accordion" id="accordionImport">
+
+  <!-- ==================== BRASÍNDICE ==================== -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed bg-primary-subtle" type="button" data-bs-toggle="collapse" data-bs-target="#collapseBras">
+        <i class="bi bi-capsule me-2 text-primary"></i> <strong class="text-primary">Brasíndice</strong>
+        <span class="badge bg-primary ms-2">Múltiplos Arquivos</span>
+      </button>
+    </h2>
+    <div id="collapseBras" class="accordion-collapse collapse" data-bs-parent="#accordionImport">
+      <div class="accordion-body">
+        <!-- Importação Rápida -->
+        <div class="card border-primary mb-3">
+          <div class="card-header bg-primary text-white py-2">
+            <i class="bi bi-lightning-charge-fill me-1"></i> Importação Rápida (Múltiplos Arquivos)
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">Arraste múltiplos arquivos. Versão e alíquota são detectadas automaticamente do nome do arquivo.</p>
+            <div class="row g-3">
+              <div class="col-md-8">
+                <input type="file" id="brasBatchFiles" accept=".txt,.csv" multiple class="d-none">
+                <div class="dropzone-area" id="brasBatchDropzone">
+                  <i class="bi bi-cloud-arrow-up fs-2 text-primary"></i>
+                  <p class="mb-0 mt-2">Arraste arquivos aqui ou <strong>clique para selecionar</strong></p>
+                  <small class="text-muted">.TXT / .CSV - Medicamentos, Materiais, Soluções</small>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="mb-2">
+                  <label class="form-label small mb-1">Data Atualização</label>
+                  <input type="date" class="form-control form-control-sm" id="brasBatchDataRef">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small mb-1">Alíquota (%)</label>
+                  <input class="form-control form-control-sm" id="brasBatchAliquota" placeholder="ex: 18">
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small mb-1">UFs</label>
+                  <input class="form-control form-control-sm" id="brasBatchUFs" placeholder="ex: BA, PE">
+                </div>
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" id="brasBatchTruncate" checked>
+                  <label class="form-check-label small" for="brasBatchTruncate">Substituir mesma alíquota</label>
+                </div>
+                <small class="text-muted d-block mt-1">Mantém outras alíquotas intactas</small>
+              </div>
+              <div class="col-12 d-none" id="brasBatchPreview">
+                <table class="table table-sm table-bordered mb-2">
+                  <thead class="table-light">
+                    <tr><th>Arquivo</th><th style="width:80px">Versão</th><th style="width:80px">Alíquota</th><th style="width:100px">UFs</th><th style="width:100px">Status</th></tr>
+                  </thead>
+                  <tbody id="brasBatchTableBody"></tbody>
+                </table>
+                <button type="button" class="btn btn-primary" id="brasBatchImportBtn">
+                  <i class="bi bi-upload me-1"></i> Importar Selecionados
+                </button>
+                <button type="button" class="btn btn-outline-secondary ms-2" id="brasBatchClearBtn">Limpar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Formulário Avançado (colapsado) -->
+        <details class="mb-0">
+          <summary class="text-muted small mb-2" style="cursor:pointer"><i class="bi bi-gear me-1"></i> Formulário Avançado (arquivo único)</summary>
+          <div class="card p-3 mt-2" id="imp-bras">
+            <h6 class="mb-3">Importar: Brasíndice</h6>
       <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3" data-fill-label data-import-form>
         <input type="hidden" name="origem" value="BRAS">
         <input type="hidden" name="return_to" value="gerenciar_tabelas">
@@ -134,12 +190,69 @@
           <div class="small mt-2 import-message text-muted"></div>
         </div>
       </form>
+          </div>
+        </details>
+      </div>
     </div>
   </div>
+  <!-- FIM BRASÍNDICE -->
 
-  <div class="col-12">
-    <div class="card p-3" id="imp-simpro">
-      <h6 class="mb-3">Importar: SIMPRO</h6>
+  <!-- ==================== SIMPRO ==================== -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed bg-success-subtle" type="button" data-bs-toggle="collapse" data-bs-target="#collapseSimpro">
+        <i class="bi bi-box-seam me-2 text-success"></i> <strong class="text-success">SIMPRO</strong>
+        <span class="badge bg-success ms-2">Múltiplos Arquivos</span>
+      </button>
+    </h2>
+    <div id="collapseSimpro" class="accordion-collapse collapse" data-bs-parent="#accordionImport">
+      <div class="accordion-body">
+        <!-- Importação Rápida SIMPRO -->
+        <div class="card border-success mb-3">
+          <div class="card-header bg-success text-white py-2">
+            <i class="bi bi-lightning-charge-fill me-1"></i> Importação Rápida (Múltiplos Arquivos)
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">Arraste múltiplos arquivos. Versão e alíquota são detectadas do nome (ex: MSG 50 2025 18.TXT).</p>
+            <div class="row g-3">
+              <div class="col-md-8">
+                <input type="file" id="simproBatchFiles" accept=".txt,.csv" multiple class="d-none">
+                <div class="dropzone-area dropzone-success" id="simproBatchDropzone">
+                  <i class="bi bi-cloud-arrow-up fs-2 text-success"></i>
+                  <p class="mb-0 mt-2">Arraste arquivos aqui ou <strong>clique para selecionar</strong></p>
+                  <small class="text-muted">.TXT - SIMPRO por alíquota (MSG XX YYYY ZZ.TXT)</small>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="mb-2">
+                  <label class="form-label small mb-1">Data Atualização</label>
+                  <input type="date" class="form-control form-control-sm" id="simproBatchDataRef">
+                </div>
+                <div class="alert alert-info py-1 px-2 mb-0 small">
+                  <i class="bi bi-info-circle me-1"></i> Modo acumulativo: dados são adicionados sem apagar
+                </div>
+              </div>
+              <div class="col-12 d-none" id="simproBatchPreview">
+                <table class="table table-sm table-bordered mb-2">
+                  <thead class="table-light">
+                    <tr><th>Arquivo</th><th style="width:80px">Versão</th><th style="width:80px">Alíquota</th><th style="width:100px">UFs</th><th style="width:100px">Status</th></tr>
+                  </thead>
+                  <tbody id="simproBatchTableBody"></tbody>
+                </table>
+                <button type="button" class="btn btn-success" id="simproBatchImportBtn">
+                  <i class="bi bi-upload me-1"></i> Importar Selecionados
+                </button>
+                <button type="button" class="btn btn-outline-secondary ms-2" id="simproBatchClearBtn">Limpar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Formulário Avançado SIMPRO -->
+        <details class="mb-0">
+          <summary class="text-muted small mb-2" style="cursor:pointer"><i class="bi bi-gear me-1"></i> Formulário Avançado (arquivo único)</summary>
+          <div class="card p-3 mt-2" id="imp-simpro">
+            <h6 class="mb-3">Importar: SIMPRO</h6>
       <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3" data-fill-label data-import-form>
         <input type="hidden" name="origem" value="SIMPRO">
         <input type="hidden" name="return_to" value="gerenciar_tabelas">
@@ -226,13 +339,28 @@
           <div class="small mt-2 import-message text-muted"></div>
         </div>
       </form>
+          </div>
+        </details>
+      </div>
     </div>
   </div>
+  <!-- FIM SIMPRO -->
 
-  <div class="col-12">
-    <div class="card p-3" id="imp-diarias">
-      <h6 class="mb-3">Importar: Diárias, Taxas e Pacotes</h6>
-      <!-- formulário igual ao seu, apenas estilizado -->
+  <!-- ==================== OUTROS ==================== -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOutros">
+        <i class="bi bi-collection me-2"></i> Outras Importações (DTP, CBHPM, Porte)
+      </button>
+    </h2>
+    <div id="collapseOutros" class="accordion-collapse collapse" data-bs-parent="#accordionImport">
+      <div class="accordion-body">
+        <div class="row g-3">
+          <!-- Diárias -->
+              <div class="col-lg-6">
+                <div class="card h-100" id="imp-diarias">
+                  <div class="card-header py-2 bg-light"><i class="bi bi-calendar3 me-1"></i> Diárias, Taxas e Pacotes</div>
+                  <div class="card-body">
       <form method="post" action="{{ url_for('importar_diarias_taxas_pacotes') }}" enctype="multipart/form-data" class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Operadora</label>
@@ -270,16 +398,18 @@
             <label class="form-check-label" for="dtp_subst">Substituir existentes</label>
           </div>
         </div>
-        <div class="col-12 d-flex gap-2">
-          <button class="btn btn-primary" type="submit">Importar</button>
+        <div class="col-12">
+          <button class="btn btn-primary btn-sm" type="submit">Importar DTP</button>
         </div>
       </form>
-    </div>
-  </div>
-
-  <div class="col-12">
-    <div class="card p-3" id="imp-cbhpm">
-      <h6 class="mb-3">Importar: CBHPM</h6>
+                  </div>
+                </div>
+              </div>
+              <!-- CBHPM -->
+              <div class="col-lg-6">
+                <div class="card h-100" id="imp-cbhpm">
+                  <div class="card-header py-2 bg-light"><i class="bi bi-file-medical me-1"></i> CBHPM</div>
+                  <div class="card-body">
       <form method="post" action="{{ url_for('importar_cbhpm') }}" enctype="multipart/form-data" class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Operadora</label>
@@ -314,18 +444,20 @@
           </div>
         </div>
         <div class="col-12">
-          <div class="small muted">Colunas aceitas: Código, Procedimento, Porte, Fração Porte, Valor Porte, Total Porte, Incidências, Filme, Total Filme, UCO, Total UCO, Porte Anestésico, Valor Porte Anestésico, Total Porte Anestésico, Nº Auxiliares, Totais Auxiliares, Subtotal, etc.</div>
+          <small class="text-muted">Colunas: Código, Procedimento, Porte, etc.</small>
         </div>
-        <div class="col-12 d-flex gap-2">
-          <button class="btn btn-primary" type="submit">Importar CBHPM</button>
+        <div class="col-12">
+          <button class="btn btn-primary btn-sm" type="submit">Importar CBHPM</button>
         </div>
       </form>
-    </div>
-  </div>
-
-  <div class="col-12">
-    <div class="card p-3" id="imp-porte">
-      <h6 class="mb-3">Importar: Tabela de Porte</h6>
+                  </div>
+                </div>
+              </div>
+              <!-- Porte -->
+              <div class="col-lg-6">
+                <div class="card h-100" id="imp-porte">
+                  <div class="card-header py-2 bg-light"><i class="bi bi-heart-pulse me-1"></i> Tabela de Porte</div>
+                  <div class="card-body">
       <form method="post" action="{{ url_for('importar_porte') }}" enctype="multipart/form-data" class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Operadora</label>
@@ -359,16 +491,18 @@
             <label class="form-check-label" for="porte_subst">Substituir existente</label>
           </div>
         </div>
-        <div class="col-12 d-flex gap-2">
-          <button class="btn btn-primary" type="submit">Importar Porte</button>
+        <div class="col-12">
+          <button class="btn btn-primary btn-sm" type="submit">Importar Porte</button>
         </div>
       </form>
-    </div>
-  </div>
-
-  <div class="col-12">
-    <div class="card p-3" id="imp-porte-an">
-      <h6 class="mb-3">Importar: Porte Anestésico</h6>
+                  </div>
+                </div>
+              </div>
+              <!-- Porte AN -->
+              <div class="col-lg-6">
+                <div class="card h-100" id="imp-porte-an">
+                  <div class="card-header py-2 bg-light"><i class="bi bi-heart-pulse me-1"></i> Porte Anestésico</div>
+                  <div class="card-body">
       <form method="post" action="{{ url_for('importar_porte_anestesico') }}" enctype="multipart/form-data" class="row g-3">
         <div class="col-md-4">
           <label class="form-label">Operadora</label>
@@ -402,13 +536,21 @@
             <label class="form-check-label" for="portean_subst">Substituir existente</label>
           </div>
         </div>
-        <div class="col-12 d-flex gap-2">
-          <button class="btn btn-primary" type="submit">Importar Porte AN</button>
+        <div class="col-12">
+          <button class="btn btn-primary btn-sm" type="submit">Importar Porte AN</button>
         </div>
       </form>
-    </div>
-  </div>
+                  </div>
+                </div>
+              </div>
+            </div><!-- row -->
+          </div><!-- accordion-body -->
+        </div><!-- collapse -->
+      </div><!-- accordion-item OUTROS -->
 
+</div><!-- accordion principal -->
+
+<!-- Tabelas Cadastradas -->
   <div class="col-12">
     <div class="card p-0">
       <div class="table-responsive">
@@ -712,6 +854,304 @@
       }
     });
   });
+
+  // ==================== BRASÍNDICE BATCH ====================
+  const brasBatchFiles = document.getElementById('brasBatchFiles');
+  const brasBatchDropzone = document.getElementById('brasBatchDropzone');
+  const brasBatchPreview = document.getElementById('brasBatchPreview');
+  const brasBatchTableBody = document.getElementById('brasBatchTableBody');
+  const brasBatchImportBtn = document.getElementById('brasBatchImportBtn');
+  const brasBatchClearBtn = document.getElementById('brasBatchClearBtn');
+  const brasBatchDataRef = document.getElementById('brasBatchDataRef');
+  const brasBatchAliquota = document.getElementById('brasBatchAliquota');
+  const brasBatchUFs = document.getElementById('brasBatchUFs');
+  const brasBatchTruncate = document.getElementById('brasBatchTruncate');
+  
+  let brasFilesQueue = [];
+  
+  const ALIQUOTA_UF_MAP = {
+    '17': ['DF', 'ES', 'MT', 'MS', 'RS', 'SC'],
+    '18': ['AP', 'MG', 'SP'],
+    '19': ['AC', 'AL', 'GO', 'PA', 'SE'],
+    '19.5': ['PR', 'RO'],
+    '20': ['AM', 'CE', 'PB', 'RN', 'RR', 'TO'],
+    '20.5': ['BA', 'PE'],
+    '22': ['RJ'],
+    '22.5': ['PI'],
+    '23': ['MA']
+  };
+  
+  function extractBrasInfo(filename) {
+    const name = filename.toUpperCase();
+    let versao = '', aliquota = '', ufs = [];
+    
+    // Versão: Edição XXXX ou Edicao_XXXX
+    const versaoMatch = name.match(/EDI[ÇC][AÃ]O[_\s]*(\d{4})/i);
+    if (versaoMatch) versao = versaoMatch[1];
+    
+    // Alíquota: XX% ou _XX_ ou espaço XX espaço
+    const aliqMatch = name.match(/(\d{1,2}(?:[,\.]\d)?)\s*%/) || name.match(/[_\s](\d{2})[_\s]/);
+    if (aliqMatch) {
+      aliquota = aliqMatch[1].replace(',', '.');
+      ufs = ALIQUOTA_UF_MAP[aliquota] || [];
+    }
+    
+    return { versao, aliquota, ufs };
+  }
+  
+  function renderBrasFilesPreview() {
+    if (!brasFilesQueue.length) {
+      brasBatchPreview?.classList.add('d-none');
+      return;
+    }
+    brasBatchPreview?.classList.remove('d-none');
+    
+    const globalAliq = brasBatchAliquota?.value?.trim() || '';
+    const globalUFs = brasBatchUFs?.value?.trim() || '';
+    
+    const rows = brasFilesQueue.map((item, idx) => {
+      const aliq = globalAliq || item.aliquota || '—';
+      const ufList = globalUFs || item.ufs.join(', ') || '—';
+      const statusClass = item.status === 'ok' ? 'text-success' : (item.status === 'error' ? 'text-danger' : 'text-muted');
+      return `<tr>
+        <td>${escapeHtml(item.file.name)}</td>
+        <td>${item.versao || '—'}</td>
+        <td>${aliq}</td>
+        <td>${ufList}</td>
+        <td class="${statusClass}">${item.statusText || 'Pendente'}</td>
+      </tr>`;
+    }).join('');
+    if (brasBatchTableBody) brasBatchTableBody.innerHTML = rows;
+  }
+  
+  function handleBrasBatchFiles(files) {
+    for (const file of files) {
+      const info = extractBrasInfo(file.name);
+      brasFilesQueue.push({
+        file,
+        versao: info.versao,
+        aliquota: info.aliquota,
+        ufs: info.ufs,
+        status: 'pending',
+        statusText: 'Pendente'
+      });
+    }
+    renderBrasFilesPreview();
+  }
+  
+  brasBatchDropzone?.addEventListener('click', () => brasBatchFiles?.click());
+  brasBatchDropzone?.addEventListener('dragover', e => { e.preventDefault(); brasBatchDropzone.classList.add('dragover'); });
+  brasBatchDropzone?.addEventListener('dragleave', () => { brasBatchDropzone.classList.remove('dragover'); });
+  brasBatchDropzone?.addEventListener('drop', e => {
+    e.preventDefault();
+    brasBatchDropzone.classList.remove('dragover');
+    handleBrasBatchFiles(e.dataTransfer.files);
+  });
+  brasBatchFiles?.addEventListener('change', function() {
+    handleBrasBatchFiles(this.files);
+    this.value = '';
+  });
+  
+  brasBatchClearBtn?.addEventListener('click', () => {
+    brasFilesQueue = [];
+    renderBrasFilesPreview();
+  });
+  
+  brasBatchAliquota?.addEventListener('input', renderBrasFilesPreview);
+  brasBatchUFs?.addEventListener('input', renderBrasFilesPreview);
+  
+  brasBatchImportBtn?.addEventListener('click', async () => {
+    if (!brasFilesQueue.length) return;
+    brasBatchImportBtn.disabled = true;
+    
+    const truncateFirst = brasBatchTruncate?.checked;
+    const globalAliq = brasBatchAliquota?.value?.trim() || '';
+    const globalUFs = brasBatchUFs?.value?.trim() || '';
+    const dataRef = brasBatchDataRef?.value || '';
+    
+    for (let i = 0; i < brasFilesQueue.length; i++) {
+      const item = brasFilesQueue[i];
+      item.status = 'running';
+      item.statusText = 'Importando...';
+      renderBrasFilesPreview();
+      
+      const formData = new FormData();
+      formData.append('arquivo', item.file);
+      formData.append('origem', 'BRAS');
+      formData.append('versao', item.versao || '1000');
+      formData.append('format', 'delimited');
+      formData.append('delimiter', ',');
+      if (dataRef) formData.append('data_atualizacao', dataRef);
+      
+      // Alíquota - necessária para limpeza seletiva
+      const aliq = globalAliq || item.aliquota;
+      if (aliq) formData.append('aliquota', aliq);
+      
+      // UFs - enviar todas e usar primeira como uf_default
+      const ufsToSend = globalUFs ? globalUFs.split(',').map(u => u.trim()) : item.ufs;
+      if (ufsToSend.length) {
+        ufsToSend.forEach(uf => formData.append('ufs', uf));
+      }
+      
+      // Se marcado "Substituir mesma alíquota" e tem alíquota, usar truncate
+      if (truncateFirst && aliq) formData.append('truncate', 'on');
+      
+      try {
+        const resp = await fetch('{{ url_for("insumos_import") }}', {
+          method: 'POST',
+          body: formData,
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status !== 'error') {
+          item.status = 'ok';
+          item.statusText = '✓ OK';
+        } else {
+          item.status = 'error';
+          item.statusText = data.message || 'Erro';
+        }
+      } catch (err) {
+        item.status = 'error';
+        item.statusText = err.message || 'Erro';
+      }
+      renderBrasFilesPreview();
+    }
+    brasBatchImportBtn.disabled = false;
+    loadJobs();
+  });
+
+  // ==================== SIMPRO BATCH ====================
+  const simproBatchFiles = document.getElementById('simproBatchFiles');
+  const simproBatchDropzone = document.getElementById('simproBatchDropzone');
+  const simproBatchPreview = document.getElementById('simproBatchPreview');
+  const simproBatchTableBody = document.getElementById('simproBatchTableBody');
+  const simproBatchImportBtn = document.getElementById('simproBatchImportBtn');
+  const simproBatchClearBtn = document.getElementById('simproBatchClearBtn');
+  const simproBatchDataRef = document.getElementById('simproBatchDataRef');
+  // SIMPRO é sempre acumulativo - não tem opção de truncate
+  
+  let simproFilesQueue = [];
+  
+  function extractSimproInfo(filename) {
+    const name = filename.toUpperCase();
+    let versao = '', aliquota = '', ufs = [];
+    
+    // Padrão: MSG 50 2025 18.TXT => edição 50, ano 2025, alíquota 18
+    const match = name.match(/MSG\s*(\d+)\s*(\d{4})\s*(\d{1,2}(?:[,\.]\d)?)/i);
+    if (match) {
+      versao = `${match[2]}-${match[1]}`;
+      aliquota = match[3].replace(',', '.');
+      ufs = ALIQUOTA_UF_MAP[aliquota] || [];
+    }
+    
+    return { versao, aliquota, ufs };
+  }
+  
+  function renderSimproFilesPreview() {
+    if (!simproFilesQueue.length) {
+      simproBatchPreview?.classList.add('d-none');
+      return;
+    }
+    simproBatchPreview?.classList.remove('d-none');
+    
+    const rows = simproFilesQueue.map((item, idx) => {
+      const statusClass = item.status === 'ok' ? 'text-success' : (item.status === 'error' ? 'text-danger' : 'text-muted');
+      return `<tr>
+        <td>${escapeHtml(item.file.name)}</td>
+        <td>${item.versao || '—'}</td>
+        <td>${item.aliquota || '—'}</td>
+        <td>${item.ufs.join(', ') || '—'}</td>
+        <td class="${statusClass}">${item.statusText || 'Pendente'}</td>
+      </tr>`;
+    }).join('');
+    if (simproBatchTableBody) simproBatchTableBody.innerHTML = rows;
+  }
+  
+  function handleSimproBatchFiles(files) {
+    for (const file of files) {
+      const info = extractSimproInfo(file.name);
+      simproFilesQueue.push({
+        file,
+        versao: info.versao,
+        aliquota: info.aliquota,
+        ufs: info.ufs,
+        status: 'pending',
+        statusText: 'Pendente'
+      });
+    }
+    renderSimproFilesPreview();
+  }
+  
+  simproBatchDropzone?.addEventListener('click', () => simproBatchFiles?.click());
+  simproBatchDropzone?.addEventListener('dragover', e => { e.preventDefault(); simproBatchDropzone.classList.add('dragover'); });
+  simproBatchDropzone?.addEventListener('dragleave', () => { simproBatchDropzone.classList.remove('dragover'); });
+  simproBatchDropzone?.addEventListener('drop', e => {
+    e.preventDefault();
+    simproBatchDropzone.classList.remove('dragover');
+    handleSimproBatchFiles(e.dataTransfer.files);
+  });
+  simproBatchFiles?.addEventListener('change', function() {
+    handleSimproBatchFiles(this.files);
+    this.value = '';
+  });
+  
+  simproBatchClearBtn?.addEventListener('click', () => {
+    simproFilesQueue = [];
+    renderSimproFilesPreview();
+  });
+  
+  simproBatchImportBtn?.addEventListener('click', async () => {
+    if (!simproFilesQueue.length) return;
+    simproBatchImportBtn.disabled = true;
+    
+    const dataRef = simproBatchDataRef?.value || '';
+    // SIMPRO é sempre acumulativo
+    
+    for (let i = 0; i < simproFilesQueue.length; i++) {
+      const item = simproFilesQueue[i];
+      item.status = 'running';
+      item.statusText = 'Importando...';
+      renderSimproFilesPreview();
+      
+      const formData = new FormData();
+      formData.append('arquivo', item.file);
+      formData.append('origem', 'SIMPRO');
+      formData.append('versao', item.versao || '2025-01');
+      formData.append('format', 'fixed');
+      if (dataRef) formData.append('data_atualizacao', dataRef);
+      
+      // Alíquota
+      if (item.aliquota) formData.append('aliquota', item.aliquota);
+      
+      // UFs
+      if (item.ufs.length) item.ufs.forEach(uf => formData.append('ufs', uf));
+      
+      // SIMPRO é sempre acumulativo - não envia truncate
+      
+      try {
+        const resp = await fetch('{{ url_for("insumos_import") }}', {
+          method: 'POST',
+          body: formData,
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status !== 'error') {
+          item.status = 'ok';
+          item.statusText = '✓ OK';
+        } else {
+          item.status = 'error';
+          item.statusText = data.message || 'Erro';
+        }
+      } catch (err) {
+        item.status = 'error';
+        item.statusText = err.message || 'Erro';
+      }
+      renderSimproFilesPreview();
+    }
+    simproBatchImportBtn.disabled = false;
+    loadJobs();
+  });
+
 })();
 </script>
 {% endblock %}

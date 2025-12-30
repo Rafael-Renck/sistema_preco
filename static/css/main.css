@@ -27,6 +27,9 @@
 @import url('./utilities.css');
 @import url('./modern-design.css');
 
+/* 6. Responsive Fixes */
+@import url('./responsive-fixes.css');
+
 /* === GLOBAL STYLES === */
 
 html, body {

@@ -4,21 +4,70 @@
 {% block page_title %}Ajuste de Alíquotas{% endblock %}
 
 {% block content %}
+<style>
+  /* Responsividade para tela de alíquotas */
+  @media (max-width: 768px) {
+    .aliquota-table th,
+    .aliquota-table td {
+      padding: 0.5rem 0.375rem;
+      font-size: 0.8125rem;
+    }
+    
+    .aliquota-table th:nth-child(3),
+    .aliquota-table th:nth-child(4),
+    .aliquota-table td:nth-child(3),
+    .aliquota-table td:nth-child(4) {
+      display: none;
+    }
+    
+    .aliquota-table input[type="text"],
+    .aliquota-table input[type="date"] {
+      font-size: 0.8125rem;
+      padding: 0.375rem 0.5rem;
+    }
+    
+    .aliquota-table .btn-sm {
+      padding: 0.375rem 0.5rem;
+      font-size: 0.75rem;
+    }
+    
+    .aliquota-table .btn-sm .me-1 {
+      margin-right: 0 !important;
+    }
+    
+    .aliquota-table .btn-sm span {
+      display: none;
+    }
+  }
+  
+  @media (max-width: 576px) {
+    .aliquota-table th:nth-child(5),
+    .aliquota-table td:nth-child(5) {
+      min-width: 100px;
+    }
+    
+    .aliquota-table th:nth-child(6),
+    .aliquota-table td:nth-child(6) {
+      min-width: 110px;
+    }
+  }
+</style>
+
 <div class="border rounded-3 bg-white p-3 mb-4">
   <p class="mb-3 small text-muted">
     Ajuste manual das alíquotas vigentes por UF. Informe o novo percentual e, opcionalmente, a data a partir da qual o ajuste passa a valer.
   </p>
   <form method="post" class="table-responsive">
-    <table class="table table-clean align-middle mb-0">
+    <table class="table table-clean align-middle mb-0 aliquota-table">
       <thead>
         <tr>
-          <th style="width:70px;">UF</th>
-          <th style="width:150px;">Alíquota atual</th>
-          <th style="width:150px;">Vigente desde</th>
-          <th style="width:150px;">Vigente até</th>
-          <th style="width:190px;">Nova alíquota (%)</th>
-          <th style="width:190px;">Vigente a partir</th>
-          <th style="width:120px;"></th>
+          <th style="width:60px;">UF</th>
+          <th style="width:120px;">Alíquota atual</th>
+          <th style="width:120px;">Vigente desde</th>
+          <th style="width:120px;">Vigente até</th>
+          <th style="width:140px;">Nova alíquota (%)</th>
+          <th style="width:140px;">Vigente a partir</th>
+          <th style="width:100px;"></th>
         </tr>
       </thead>
       <tbody>
@@ -36,8 +85,8 @@
             <input type="date" class="form-control form-control-sm" name="valid_from_{{ entry.uf }}" value="{{ entry.default_valid_from }}">
           </td>
           <td class="text-end">
-            <button type="submit" class="btn btn-primary btn-sm" name="target_uf" value="{{ entry.uf }}">
-              <i class="bi bi-save me-1"></i>Salvar
+            <button type="submit" class="btn btn-primary btn-sm" name="target_uf" value="{{ entry.uf }}" title="Salvar">
+              <i class="bi bi-save me-1"></i><span class="d-none d-md-inline">Salvar</span>
             </button>
           </td>
         </tr>
@@ -50,15 +99,15 @@
 <div class="border rounded-3 bg-white p-3">
   <h6 class="mb-3">Histórico recente</h6>
   <div class="table-responsive">
-    <table class="table table-clean align-middle mb-0">
+    <table class="table table-clean align-middle mb-0 aliquota-table">
       <thead>
         <tr>
-          <th style="width:70px;">UF</th>
-          <th style="width:160px;">Alíquota</th>
-          <th style="width:160px;">Vigente desde</th>
-          <th style="width:160px;">Vigente até</th>
-          <th style="width:130px;">Status</th>
-          <th style="width:180px;">Atualizado em</th>
+          <th style="width:60px;">UF</th>
+          <th style="width:100px;">Alíquota</th>
+          <th style="width:120px;">Vigente desde</th>
+          <th style="width:120px;">Vigente até</th>
+          <th style="width:90px;">Status</th>
+          <th style="width:140px;">Atualizado em</th>
         </tr>
       </thead>
       <tbody>

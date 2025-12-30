@@ -21,7 +21,7 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-operadora_saude}
     ports:
-      - "3307:3306"  # evita conflito com MySQL local
+      - "3308:3306"  # porta 3308 para evitar conflito
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
       interval: 10s
@@ -45,11 +45,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@db/${MYSQL_DATABASE:-operadora_saude}}
       SECRET_KEY: ${SECRET_KEY:-change-me}
+      PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
+      CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "8001:8000"
     deploy:
       resources:
         limits:
@@ -80,8 +82,10 @@ services:
       # Defina no .env de produção. Fallback abaixo é apenas exemplo.
       DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://appuser:SENHA@192.168.40.84:3306/operadora_saude}
       SECRET_KEY: ${SECRET_KEY:-change-me}
+      PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
+      CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}
     ports:
-      - "8000:8000"
+      - "8001:8000"
     # Sem depends_on, pois usa banco externo
 
   adminer_prod:

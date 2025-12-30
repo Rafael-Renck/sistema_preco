@@ -27,6 +27,32 @@
 | `/api/simulacao_cbhpm/xlsx` | POST | Required | Export CBHPM simulation to Excel |
 | `/api/simulacao_dtp` | GET | Required | Get DTP simulation data |
 
+## Public CBHPM API (latest version)
+
+| Endpoint | Method | Auth | Purpose |
+|----------|--------|------|---------|
+| `/api/v1/cbhpm/procedimentos` | GET | Bearer (API key) | Search by code/description in the latest CBHPM; returns total value |
+| `/api/v1/cbhpm/procedimentos/<codigo>` | GET | Bearer (API key) | Fetch a specific code in the latest CBHPM; returns total value |
+
+### Como habilitar e testar rapidamente
+1) Defina o token (pode ser múltiplos separados por vírgula):
+```bash
+export PUBLIC_API_TOKENS="sua-chave-secreta"
+# opcional: ajustar TTL do cache (segundos), padrão 300
+export CBHPM_API_CACHE_TTL=300
+```
+2) Suba o servidor normalmente (ex.: `flask run` ou via gunicorn).
+3) Teste com `curl`:
+```bash
+# Busca por código ou descrição (retorna lista limitada)
+curl -H "Authorization: Bearer sua-chave-secreta" \
+  "http://localhost:5000/api/v1/cbhpm/procedimentos?q=30401011&limit=5"
+
+# Detalhe por código (item único)
+curl -H "Authorization: Bearer sua-chave-secreta" \
+  "http://localhost:5000/api/v1/cbhpm/procedimentos/30401011"
+```
+
 ## Smart Filters & Data Lookup APIs
 
 ### Table & Provider Information
@@ -281,4 +307,3 @@ When calling `/api/simulacao_cbhpm`, typically POST body includes:
 - Format: CSV
 - Columns: codigo, descricao, valor_total
 - Template available at: `/admin/tetos/template.csv`
-

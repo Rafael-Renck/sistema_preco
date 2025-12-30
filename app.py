@@ -96,6 +96,32 @@ _insumo_cache = TTLCache(maxsize=1000, ttl=_insumo_cache_ttl)
 _teto_cache = TTLCache(maxsize=500, ttl=600)     # 500 itens, 10 minutos
 _rol_cache = TTLCache(maxsize=2000, ttl=900)     # 2000 itens, 15 minutos
 
+def _safe_int_env(var_name: str, default: int) -> int:
+    try:
+        return int(os.getenv(var_name, default))
+    except (TypeError, ValueError):
+        return default
+
+_cbhpm_api_cache_ttl = _safe_int_env('CBHPM_API_CACHE_TTL', 300)
+_cbhpm_api_cache = TTLCache(maxsize=1000, ttl=_cbhpm_api_cache_ttl)
+_cbhpm_api_detail_cache = TTLCache(maxsize=2000, ttl=_cbhpm_api_cache_ttl)
+
+def _load_public_api_tokens() -> set[str]:
+    tokens: set[str] = set()
+    raw = (
+        os.getenv('PUBLIC_API_TOKENS')
+        or os.getenv('PUBLIC_API_TOKEN')
+        or os.getenv('API_BEARER_TOKEN')
+        or ''
+    )
+    for token in raw.split(','):
+        candidate = (token or '').strip()
+        if candidate:
+            tokens.add(candidate)
+    return tokens
+
+_PUBLIC_API_TOKENS = _load_public_api_tokens()
+
 def _clear_insumo_cache():
     """Limpa o cache de insumos (chamar após importações)"""
     global _insumo_cache
@@ -143,6 +169,23 @@ def _now_utc() -> datetime:
 
 
 # --- 1.1 Autorização/Session helpers ---
+def _api_error(code: str, message: str, status: int):
+    return jsonify({'error': {'code': code, 'message': message}}), status
+
+
+def _extract_bearer_token(auth_header: str | None) -> str | None:
+    if not auth_header:
+        return None
+    parts = auth_header.split()
+    if len(parts) != 2:
+        return None
+    scheme, token = parts
+    if scheme.lower() != 'bearer':
+        return None
+    token = (token or '').strip()
+    return token or None
+
+
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
@@ -199,6 +242,20 @@ def admin_required(f):
     def wrapper(*args, **kwargs):
         if session.get('perfil') != 'adm':
             return redirect(url_for('consulta_comparar'))
+        return f(*args, **kwargs)
+    return wrapper
+
+
+def public_api_key_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not _PUBLIC_API_TOKENS:
+            return _api_error('service_unavailable', 'API key não configurada.', 503)
+        token = _extract_bearer_token(request.headers.get('Authorization'))
+        if not token:
+            return _api_error('unauthorized', 'Token ausente ou inválido.', 401)
+        if token not in _PUBLIC_API_TOKENS:
+            return _api_error('forbidden', 'Token inválido.', 403)
         return f(*args, **kwargs)
     return wrapper
 
@@ -1560,7 +1617,45 @@ def _encode_line_terminator(value: str | None) -> str:
     return value.encode('unicode_escape').decode('ascii')
 
 
-def _delete_existing_bras_records(arquivo_label: str | None, truncate: bool) -> None:
+def _delete_existing_bras_records(
+    arquivo_label: str | None,
+    truncate: bool,
+    max_retries: int = 3,
+    *,
+    aliquota_filter: Decimal | None = None,
+    uf_filter: str | None = None,
+) -> None:
+    """
+    Limpa registros da Brasíndice.
+    
+    Modos de operação:
+    - truncate=True, aliquota_filter=None: Limpa TUDO da Brasíndice
+    - truncate=True, aliquota_filter=X: Limpa apenas dados da alíquota X (mantém outras)
+    - truncate=False, arquivo_label=X: Limpa apenas registros do arquivo X
+    """
+    
+    # Modo 1: Limpar por alíquota específica (mantém outras alíquotas)
+    if truncate and aliquota_filter is not None:
+        app.logger.info('Limpando Brasíndice apenas para alíquota %.2f / UF %s', aliquota_filter, uf_filter or 'todas')
+        
+        # Construir filtro de UF
+        uf_condition = ""
+        params: dict = {'aliquota': float(aliquota_filter)}
+        if uf_filter:
+            # uf_referencia pode ser "BA, PE" ou "BA" - usar LIKE para encontrar
+            uf_condition = " AND (uf_referencia LIKE :uf_pattern OR uf_referencia = :uf_exact)"
+            params['uf_pattern'] = f'%{uf_filter}%'
+            params['uf_exact'] = uf_filter
+        
+        # Deletar do índice de insumos pela alíquota
+        db.session.execute(
+            text(f"DELETE FROM insumos_index WHERE origem = 'BRAS' AND aliquota = :aliquota{uf_condition}"),
+            params,
+        )
+        db.session.commit()
+        return
+    
+    # Modo 2: Limpar TUDO (truncate sem filtro)
     if truncate:
         db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'BRAS'"))
         db.session.execute(text('TRUNCATE TABLE bras_item_n'))
@@ -1569,24 +1664,74 @@ def _delete_existing_bras_records(arquivo_label: str | None, truncate: bool) -> 
         db.session.commit()
         return
 
+    # Modo 3: Limpar por arquivo específico
     if not arquivo_label:
         return
 
     params = {'arquivo': arquivo_label}
-    db.session.execute(
-        text(
-            "DELETE FROM insumos_index "
-            "WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)"
-        ),
-        params,
-    )
-    db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), params)
-    db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), params)
-    db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), params)
-    db.session.commit()
+    
+    # Retry para erros de "Table definition has changed" (erro 1412)
+    for attempt in range(max_retries):
+        try:
+            db.session.execute(
+                text(
+                    "DELETE FROM insumos_index "
+                    "WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)"
+                ),
+                params,
+            )
+            db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), params)
+            db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), params)
+            db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), params)
+            db.session.commit()
+            return
+        except Exception as exc:
+            db.session.rollback()
+            # Erro 1412: Table definition has changed
+            if '1412' in str(exc) and attempt < max_retries - 1:
+                import time
+                time.sleep(0.5 * (attempt + 1))  # Backoff progressivo
+                continue
+            raise
 
 
-def _delete_existing_simpro_records(arquivo_label: str | None, truncate: bool) -> None:
+def _delete_existing_simpro_records(
+    arquivo_label: str | None,
+    truncate: bool,
+    *,
+    aliquota_filter: Decimal | None = None,
+    uf_filter: str | None = None,
+) -> None:
+    """
+    Limpa registros do SIMPRO.
+    
+    Modos de operação:
+    - truncate=True, aliquota_filter=None: Limpa TUDO do SIMPRO
+    - truncate=True, aliquota_filter=X: Limpa apenas dados da alíquota X (mantém outras)
+    - truncate=False, arquivo_label=X: Limpa apenas registros do arquivo X
+    """
+    
+    # Modo 1: Limpar por alíquota específica (mantém outras alíquotas)
+    if truncate and aliquota_filter is not None:
+        app.logger.info('Limpando SIMPRO apenas para alíquota %.2f / UF %s', aliquota_filter, uf_filter or 'todas')
+        
+        # Construir filtro de UF
+        uf_condition = ""
+        params: dict = {'aliquota': float(aliquota_filter)}
+        if uf_filter:
+            uf_condition = " AND (uf_referencia LIKE :uf_pattern OR uf_referencia = :uf_exact)"
+            params['uf_pattern'] = f'%{uf_filter}%'
+            params['uf_exact'] = uf_filter
+        
+        # Deletar do índice de insumos pela alíquota
+        db.session.execute(
+            text(f"DELETE FROM insumos_index WHERE origem = 'SIMPRO' AND aliquota = :aliquota{uf_condition}"),
+            params,
+        )
+        db.session.commit()
+        return
+    
+    # Modo 2: Limpar TUDO (truncate sem filtro)
     if truncate:
         db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'SIMPRO'"))
         db.session.execute(text('TRUNCATE TABLE simpro_item_norm'))
@@ -1594,6 +1739,7 @@ def _delete_existing_simpro_records(arquivo_label: str | None, truncate: bool) -
         db.session.commit()
         return
 
+    # Modo 3: Limpar por arquivo específico
     if not arquivo_label:
         return
 
@@ -1974,9 +2120,15 @@ def _stage_bras_fixed(
     return inserted, 'python_fixed'
 
 
+_bras_view_created = False
+
 def _ensure_bras_item_view_exists() -> None:
+    global _bras_view_created
+    if _bras_view_created:
+        return
     with db.engine.begin() as conn:
         conn.exec_driver_sql(BRAS_ITEM_VIEW_SQL)
+    _bras_view_created = True
 
 
 def _materialize_bras_items(arquivo_label: str | None) -> int:
@@ -2269,7 +2421,14 @@ def _import_bras(
     if uf_default:
         arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
 
-    _delete_existing_bras_records(arquivo_label, truncate)
+    # Se truncate E alíquota informada, limpa apenas dados daquela alíquota
+    # Caso contrário, comportamento padrão (limpar tudo ou por arquivo)
+    _delete_existing_bras_records(
+        arquivo_label,
+        truncate,
+        aliquota_filter=aliquota_default if truncate else None,
+        uf_filter=uf_default if truncate else None,
+    )
 
     inserted = 0
     stage_strategy = 'unknown'
@@ -2309,6 +2468,297 @@ def _import_bras(
     }
 
 
+def _analyze_bras_delta(
+    *,
+    file_path: Path,
+    delimiter: str = ',',
+    quotechar: str = '"',
+    encoding: str | None = 'latin-1',
+) -> dict:
+    """
+    Analisa um arquivo Brasíndice e compara com dados existentes.
+    Retorna estatísticas de novos, alterados e inalterados.
+    """
+    import csv
+    
+    # Carregar dados existentes indexados por EAN
+    existing_items: dict[str, dict] = {}
+    items = BrasItemNormalized.query.with_entities(
+        BrasItemNormalized.ean,
+        BrasItemNormalized.preco_pmc_pacote,
+        BrasItemNormalized.preco_pfb_pacote,
+        BrasItemNormalized.preco_pmc_unit,
+        BrasItemNormalized.preco_pfb_unit,
+        BrasItemNormalized.produto_nome,
+        BrasItemNormalized.apresentacao_descricao,
+    ).filter(BrasItemNormalized.ean.isnot(None), BrasItemNormalized.ean != '').all()
+    
+    for item in items:
+        if item.ean:
+            existing_items[item.ean.strip()] = {
+                'pmc_pacote': item.preco_pmc_pacote,
+                'pfb_pacote': item.preco_pfb_pacote,
+                'pmc_unit': item.preco_pmc_unit,
+                'pfb_unit': item.preco_pfb_unit,
+                'produto': item.produto_nome,
+                'apresentacao': item.apresentacao_descricao,
+            }
+    
+    # Analisar arquivo novo
+    novos: list[dict] = []
+    alterados: list[dict] = []
+    inalterados: list[dict] = []
+    eans_no_arquivo: set[str] = set()
+    
+    enc = encoding or 'latin-1'
+    with open(file_path, 'r', encoding=enc, errors='replace') as f:
+        reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+        for linha_num, row in enumerate(reader, start=1):
+            if len(row) < 17:
+                continue
+            
+            try:
+                ean = row[16].strip() if row[16] else ''
+                if not ean:
+                    continue
+                
+                eans_no_arquivo.add(ean)
+                
+                # Parsear preços do arquivo
+                pmc_pacote = Decimal(row[6].replace(',', '.')) if row[6] else None
+                pfb_pacote = Decimal(row[7].replace(',', '.')) if row[7] else None
+                pmc_unit = Decimal(row[10].replace(',', '.')) if row[10] else None
+                pfb_unit = Decimal(row[12].replace(',', '.')) if row[12] else None
+                
+                item_info = {
+                    'linha': linha_num,
+                    'ean': ean,
+                    'laboratorio': row[1].strip() if len(row) > 1 else '',
+                    'produto': row[3].strip() if len(row) > 3 else '',
+                    'apresentacao': row[5].strip() if len(row) > 5 else '',
+                    'pmc_pacote': pmc_pacote,
+                    'pfb_pacote': pfb_pacote,
+                    'pmc_unit': pmc_unit,
+                    'pfb_unit': pfb_unit,
+                }
+                
+                if ean not in existing_items:
+                    novos.append(item_info)
+                else:
+                    existente = existing_items[ean]
+                    # Comparar preços (com tolerância para diferenças de arredondamento)
+                    preco_mudou = False
+                    diferencas = []
+                    
+                    if pmc_pacote and existente['pmc_pacote']:
+                        if abs(pmc_pacote - existente['pmc_pacote']) > Decimal('0.01'):
+                            preco_mudou = True
+                            diferencas.append(f"PMC: {existente['pmc_pacote']} → {pmc_pacote}")
+                    
+                    if pfb_pacote and existente['pfb_pacote']:
+                        if abs(pfb_pacote - existente['pfb_pacote']) > Decimal('0.01'):
+                            preco_mudou = True
+                            diferencas.append(f"PFB: {existente['pfb_pacote']} → {pfb_pacote}")
+                    
+                    if preco_mudou:
+                        item_info['diferencas'] = diferencas
+                        item_info['precos_antigos'] = {
+                            'pmc_pacote': existente['pmc_pacote'],
+                            'pfb_pacote': existente['pfb_pacote'],
+                        }
+                        alterados.append(item_info)
+                    else:
+                        inalterados.append(item_info)
+                        
+            except (ValueError, IndexError) as e:
+                continue
+    
+    # Itens removidos (existem no banco mas não no arquivo)
+    eans_existentes = set(existing_items.keys())
+    eans_removidos = eans_existentes - eans_no_arquivo
+    removidos = [{'ean': ean, **existing_items[ean]} for ean in list(eans_removidos)[:100]]
+    
+    return {
+        'total_arquivo': len(eans_no_arquivo),
+        'total_existente': len(existing_items),
+        'novos': len(novos),
+        'alterados': len(alterados),
+        'inalterados': len(inalterados),
+        'removidos': len(eans_removidos),
+        'detalhes_novos': novos[:50],  # Limitar para preview
+        'detalhes_alterados': alterados[:50],
+        'detalhes_removidos': removidos[:50],
+    }
+
+
+def _import_bras_delta(
+    *,
+    file_path: Path,
+    versao: str,
+    delimiter: str = ',',
+    quotechar: str = '"',
+    encoding: str | None = 'latin-1',
+    skip_header: bool = False,
+    data_ref: str | None = None,
+    uf_default: str | None = None,
+    uf_values: Sequence[str] | None = None,
+    aliquota_default: Decimal | None = None,
+) -> dict:
+    """
+    Importa apenas itens novos ou com preços alterados da Brasíndice.
+    Mais eficiente que reimportar o arquivo inteiro.
+    Suporta alíquota, UFs e data de referência para vincular corretamente os dados.
+    """
+    import csv
+    
+    # Carregar dados existentes indexados por EAN
+    existing_items: dict[str, dict] = {}
+    items = BrasItemNormalized.query.with_entities(
+        BrasItemNormalized.id,
+        BrasItemNormalized.ean,
+        BrasItemNormalized.preco_pmc_pacote,
+        BrasItemNormalized.preco_pfb_pacote,
+    ).filter(BrasItemNormalized.ean.isnot(None), BrasItemNormalized.ean != '').all()
+    
+    for item in items:
+        if item.ean:
+            existing_items[item.ean.strip()] = {
+                'id': item.id,
+                'pmc_pacote': item.preco_pmc_pacote,
+                'pfb_pacote': item.preco_pfb_pacote,
+            }
+    
+    # Processar arquivo e coletar alterações
+    linhas_para_importar: list[int] = []
+    atualizacoes: list[dict] = []
+    novos_count = 0
+    alterados_count = 0
+    
+    enc = encoding or 'latin-1'
+    with open(file_path, 'r', encoding=enc, errors='replace') as f:
+        reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+        if skip_header:
+            next(reader, None)
+        
+        for linha_num, row in enumerate(reader, start=1):
+            if len(row) < 17:
+                continue
+            
+            try:
+                ean = row[16].strip() if row[16] else ''
+                if not ean:
+                    continue
+                
+                pmc_pacote = Decimal(row[6].replace(',', '.')) if row[6] else None
+                pfb_pacote = Decimal(row[7].replace(',', '.')) if row[7] else None
+                
+                if ean not in existing_items:
+                    # Novo item - marcar linha para importação
+                    linhas_para_importar.append(linha_num)
+                    novos_count += 1
+                else:
+                    existente = existing_items[ean]
+                    preco_mudou = False
+                    
+                    if pmc_pacote and existente['pmc_pacote']:
+                        if abs(pmc_pacote - existente['pmc_pacote']) > Decimal('0.01'):
+                            preco_mudou = True
+                    
+                    if pfb_pacote and existente['pfb_pacote']:
+                        if abs(pfb_pacote - existente['pfb_pacote']) > Decimal('0.01'):
+                            preco_mudou = True
+                    
+                    if preco_mudou:
+                        # Atualizar registro existente diretamente
+                        atualizacoes.append({
+                            'id': existente['id'],
+                            'pmc_pacote': pmc_pacote,
+                            'pfb_pacote': pfb_pacote,
+                            'pmc_unit': Decimal(row[10].replace(',', '.')) if row[10] else None,
+                            'pfb_unit': Decimal(row[12].replace(',', '.')) if row[12] else None,
+                        })
+                        alterados_count += 1
+                        
+            except (ValueError, IndexError):
+                continue
+    
+    # Aplicar atualizações em batch
+    for upd in atualizacoes:
+        BrasItemNormalized.query.filter_by(id=upd['id']).update({
+            'preco_pmc_pacote': upd['pmc_pacote'],
+            'preco_pfb_pacote': upd['pfb_pacote'],
+            'preco_pmc_unit': upd['pmc_unit'],
+            'preco_pfb_unit': upd['pfb_unit'],
+            'edicao': versao,
+        })
+    
+    db.session.commit()
+    
+    # Se houver itens novos, importar via pipeline normal (somente linhas específicas)
+    novos_importados = 0
+    if linhas_para_importar:
+        # Se muitos itens novos e banco quase vazio, usar importação normal
+        # é mais eficiente que criar arquivo temporário
+        if novos_count > 5000 and len(existing_items) < 1000:
+            app.logger.info(
+                'Delta Brasíndice: %d novos, banco com %d itens. Recomenda-se usar importação normal.',
+                novos_count, len(existing_items)
+            )
+        
+        # Converter para set para busca O(1) em vez de O(n)
+        linhas_set = set(linhas_para_importar)
+        
+        # Criar arquivo temporário só com as linhas novas
+        # Usar newline='' para csv.writer controlar os line endings
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False, encoding=enc, newline='') as tmp:
+            tmp_path = Path(tmp.name)
+            with open(file_path, 'r', encoding=enc, errors='replace', newline='') as f:
+                reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar)
+                writer = csv.writer(tmp, delimiter=delimiter, quotechar=quotechar, lineterminator='\n')
+                linhas_escritas = 0
+                for linha_num, row in enumerate(reader, start=1):
+                    if linha_num in linhas_set:
+                        writer.writerow(row)
+                        linhas_escritas += 1
+        
+        app.logger.info('Delta Brasíndice: arquivo temporário criado com %d linhas', linhas_escritas)
+        
+        # Importar arquivo temporário
+        try:
+            result = _import_bras(
+                file_path=tmp_path,
+                versao=versao,
+                data_ref=data_ref,
+                fmt='delimited',
+                delimiter=delimiter,
+                quotechar=quotechar,
+                line_terminator='\n',
+                skip_header=False,
+                encoding=enc,
+                map_config={'disable_load_data': True},  # Forçar fallback Python que é mais robusto
+                truncate=False,
+                uf_default=uf_default,
+                uf_values=uf_values,
+                aliquota_default=aliquota_default,
+            )
+            novos_importados = result.get('linhas_materializadas', 0)
+            app.logger.info('Delta Brasíndice: %d linhas materializadas', novos_importados)
+        except Exception as exc:
+            app.logger.exception('Erro ao importar novos itens Brasíndice: %s', exc)
+            raise
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    
+    return {
+        'versao': versao,
+        'novos': novos_count,
+        'novos_importados': novos_importados,
+        'alterados': alterados_count,
+        'total_processado': novos_count + alterados_count,
+    }
+
+
 def _import_simpro(
     *,
     file_path: Path,
@@ -2330,7 +2780,13 @@ def _import_simpro(
     if uf_default:
         arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
 
-    _delete_existing_simpro_records(arquivo_label, truncate)
+    # Se truncate E alíquota informada, limpa apenas dados daquela alíquota
+    _delete_existing_simpro_records(
+        arquivo_label,
+        truncate,
+        aliquota_filter=aliquota_default if truncate else None,
+        uf_filter=uf_default if truncate else None,
+    )
 
     inserted, stage_strategy = _stage_simpro_fixed(
         file_path=file_path,
@@ -2515,6 +2971,17 @@ def _decimal_to_float(value: Decimal | None) -> float | None:
             return float(Decimal(str(value)))
         except Exception:
             return None
+
+
+def _format_money_decimal(value: Decimal | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        quantized = Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        return float(quantized)
+    except (InvalidOperation, ValueError):
+        return _decimal_to_float(value)
+
 
 def _ensure_teto_preview_dir() -> Path:
     directory = TETO_PREVIEW_DIR
@@ -3145,6 +3612,21 @@ def publicar_lote(
     periodo_norm = _normalize_periodo(periodo)
     sequencia_norm = _normalize_sequencia(sequencia)
 
+    # Verifica se já existe uma publicação com esses dados (evita duplicatas)
+    existing_pub = (
+        session.query(Publicacao)
+        .filter_by(
+            fornecedor=fornecedor_norm,
+            aliquota_bp=aliquota_bp_norm,
+            periodo=periodo_norm,
+            sequencia=sequencia_norm,
+        )
+        .order_by(Publicacao.publicado_em.desc())
+        .first()
+    )
+    if existing_pub:
+        return existing_pub
+
     lote = (
         session.query(Lote)
         .filter_by(
@@ -3159,21 +3641,6 @@ def publicar_lote(
         raise AliquotaIngestionError('Lote não encontrado para publicação.')
     if lote.status not in {LoteStatus.VALIDADO, LoteStatus.PUBLICADO}:
         raise AliquotaIngestionError(f'Lote em status {lote.status.value} não pode ser publicado.')
-
-    if lote.status == LoteStatus.PUBLICADO:
-        existing = (
-            session.query(Publicacao)
-            .filter_by(
-                fornecedor=fornecedor_norm,
-                aliquota_bp=aliquota_bp_norm,
-                periodo=periodo_norm,
-                sequencia=sequencia_norm,
-            )
-            .order_by(Publicacao.publicado_em.desc())
-            .first()
-        )
-        if existing:
-            return existing
 
     lote.status = LoteStatus.PUBLICADO
     lote.publicado_em = datetime.utcnow()
@@ -3311,25 +3778,37 @@ def _post_catalog_ingest(*, origem: str, arquivo_label: str, versao: str, sequen
 
 
 def _catalogo_filter_bras(query, filters: dict):
+    """
+    Aplica filtros na query de Brasíndice.
+    
+    Otimizações:
+    - Filtros exatos (=) primeiro para usar índices
+    - LIKE com % só no final quando possível
+    - Evita func.lower() quando não necessário
+    """
+    # Filtros exatos primeiro (usam índices)
     if filters.get('uf_referencia'):
         query = query.filter(CatalogoBrasindice.uf == filters['uf_referencia'])
+    if filters.get('aliquota') is not None:
+        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        query = query.filter(CatalogoBrasindice.aliquota_bp == target_bp)
     if filters.get('tuss'):
         query = query.filter(CatalogoBrasindice.produto_codigo == filters['tuss'])
     if filters.get('tiss'):
         query = query.filter(CatalogoBrasindice.apresentacao_codigo == filters['tiss'])
     if filters.get('anvisa'):
         query = query.filter(CatalogoBrasindice.registro_anvisa == filters['anvisa'])
-    if filters.get('fabricante'):
-        fabricante = filters['fabricante'].lower()
-        query = query.filter(func.lower(CatalogoBrasindice.laboratorio_nome).like(f"%{{fabricante}}%"))
     if filters.get('versao_tabela'):
         query = query.filter(CatalogoBrasindice.periodo == filters['versao_tabela'])
-    if filters.get('aliquota') is not None:
-        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
-        query = query.filter(CatalogoBrasindice.aliquota_bp == target_bp)
+    
+    # Filtros de texto (mais lentos)
+    if filters.get('fabricante'):
+        fabricante = filters['fabricante'].lower()
+        query = query.filter(func.lower(CatalogoBrasindice.laboratorio_nome).like(f"%{fabricante}%"))
+    
     tokens = filters.get('tokens') or []
     for token in tokens:
-        pattern = f"%{{token}}%"
+        pattern = f"%{token}%"
         query = query.filter(
             or_(
                 func.lower(func.coalesce(CatalogoBrasindice.produto_nome, '')).like(pattern),
@@ -3342,25 +3821,36 @@ def _catalogo_filter_bras(query, filters: dict):
 
 
 def _catalogo_filter_simpro(query, filters: dict):
+    """
+    Aplica filtros na query de SIMPRO.
+    
+    Otimizações:
+    - Filtros exatos (=) primeiro para usar índices
+    - LIKE com % só no final quando possível
+    """
+    # Filtros exatos primeiro (usam índices)
     if filters.get('uf_referencia'):
         query = query.filter(CatalogoSimpro.uf == filters['uf_referencia'])
+    if filters.get('aliquota') is not None:
+        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
+        query = query.filter(CatalogoSimpro.aliquota_bp == target_bp)
     if filters.get('tuss'):
         query = query.filter(CatalogoSimpro.codigo == filters['tuss'])
     if filters.get('tiss'):
         query = query.filter(CatalogoSimpro.codigo_alt == filters['tiss'])
     if filters.get('anvisa'):
         query = query.filter(CatalogoSimpro.anvisa == filters['anvisa'])
-    if filters.get('fabricante'):
-        fabricante = filters['fabricante'].lower()
-        query = query.filter(func.lower(CatalogoSimpro.fabricante).like(f"%{{fabricante}}%"))
     if filters.get('versao_tabela'):
         query = query.filter(CatalogoSimpro.periodo == filters['versao_tabela'])
-    if filters.get('aliquota') is not None:
-        target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
-        query = query.filter(CatalogoSimpro.aliquota_bp == target_bp)
+    
+    # Filtros de texto (mais lentos)
+    if filters.get('fabricante'):
+        fabricante = filters['fabricante'].lower()
+        query = query.filter(func.lower(CatalogoSimpro.fabricante).like(f"%{fabricante}%"))
+    
     tokens = filters.get('tokens') or []
     for token in tokens:
-        pattern = f"%{{token}}%"
+        pattern = f"%{token}%"
         query = query.filter(
             or_(
                 func.lower(func.coalesce(CatalogoSimpro.descricao, '')).like(pattern),
@@ -3421,30 +3911,63 @@ def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
     }
 
 
+# Cache simples para contagens de catálogo (TTL de 60 segundos)
+_CATALOGO_COUNT_CACHE: dict[str, tuple[int, float]] = {}
+_CATALOGO_COUNT_CACHE_TTL = 60.0  # segundos
+
+
+def _get_cached_count(cache_key: str, query_fn) -> int:
+    """Retorna contagem do cache ou executa query se expirado."""
+    import time
+    now = time.time()
+    cached = _CATALOGO_COUNT_CACHE.get(cache_key)
+    if cached and (now - cached[1]) < _CATALOGO_COUNT_CACHE_TTL:
+        return cached[0]
+    count = query_fn()
+    _CATALOGO_COUNT_CACHE[cache_key] = (count, now)
+    return count
+
+
 def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
+    """
+    Busca otimizada de insumos (Brasíndice + SIMPRO).
+    
+    Otimizações aplicadas:
+    - Cache de contagens por 60s para evitar COUNT() repetidos
+    - Query única com LIMIT/OFFSET ao invés de múltiplas queries
+    - Remoção do refresh inline de views (deve ser feito em background)
+    - Busca direta nas views, fallback para InsumoIndex só se necessário
+    """
     include_bras = filters.get('origem') in (None, 'BRAS')
     include_simpro = filters.get('origem') in (None, 'SIMPRO')
+    
+    # Gera chave de cache baseada nos filtros
+    import hashlib
+    filter_key = hashlib.md5(str(sorted(filters.items())).encode()).hexdigest()[:16]
 
     totals = {'BRAS': 0, 'SIMPRO': 0}
     sources: list[tuple[str, str, any, int]] = []
 
     if include_bras:
         bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
-        bras_query = bras_query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
-        bras_total = bras_query.count()
-        if bras_total <= 0:
-            _refresh_materialized_catalogs('BRASINDICE')
-            bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
-            bras_query = bras_query.order_by(CatalogoBrasindice.produto_nome.asc(), CatalogoBrasindice.item_id.asc())
-            bras_total = bras_query.count()
+        bras_query = bras_query.order_by(CatalogoBrasindice.item_id.asc())
+        
+        # Usa cache para contagem
+        cache_key = f'bras_{filter_key}'
+        bras_total = _get_cached_count(cache_key, bras_query.count)
+        
         if bras_total > 0:
             sources.append(('BRAS_VIEW', 'BRAS', bras_query, bras_total))
-        if bras_total <= 0:
+        else:
+            # Fallback para InsumoIndex sem refresh inline
             fallback_filters = dict(filters)
             fallback_filters['origem'] = 'BRAS'
             fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
-            fallback_query = fallback_query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
-            fallback_total = fallback_query.count()
+            fallback_query = fallback_query.order_by(InsumoIndex.item_id.asc())
+            
+            fallback_cache_key = f'bras_idx_{filter_key}'
+            fallback_total = _get_cached_count(fallback_cache_key, fallback_query.count)
+            
             if fallback_total > 0:
                 sources.append(('BRAS_INDEX', 'BRAS', fallback_query, fallback_total))
                 bras_total = fallback_total
@@ -3452,21 +3975,24 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
 
     if include_simpro:
         simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
-        simpro_query = simpro_query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
-        simpro_total = simpro_query.count()
-        if simpro_total <= 0:
-            _refresh_materialized_catalogs('SIMPRO')
-            simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
-            simpro_query = simpro_query.order_by(CatalogoSimpro.descricao.asc(), CatalogoSimpro.item_id.asc())
-            simpro_total = simpro_query.count()
+        simpro_query = simpro_query.order_by(CatalogoSimpro.item_id.asc())
+        
+        # Usa cache para contagem
+        cache_key = f'simpro_{filter_key}'
+        simpro_total = _get_cached_count(cache_key, simpro_query.count)
+        
         if simpro_total > 0:
             sources.append(('SIMPRO_VIEW', 'SIMPRO', simpro_query, simpro_total))
-        if simpro_total <= 0:
+        else:
+            # Fallback para InsumoIndex sem refresh inline
             fallback_filters = dict(filters)
             fallback_filters['origem'] = 'SIMPRO'
             fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
-            fallback_query = fallback_query.order_by(InsumoIndex.descricao.asc(), InsumoIndex.item_id.asc())
-            fallback_total = fallback_query.count()
+            fallback_query = fallback_query.order_by(InsumoIndex.item_id.asc())
+            
+            fallback_cache_key = f'simpro_idx_{filter_key}'
+            fallback_total = _get_cached_count(fallback_cache_key, fallback_query.count)
+            
             if fallback_total > 0:
                 sources.append(('SIMPRO_INDEX', 'SIMPRO', fallback_query, fallback_total))
                 simpro_total = fallback_total
@@ -4373,6 +4899,188 @@ def bras_import(file_path: Path, versao: str, data_str: str | None, fmt: str, de
     )
 
     click.echo(f"Brasíndice importado: arquivo={result['arquivo']} linhas_raw={result['linhas_raw']} materializadas={result['linhas_materializadas']}")
+
+
+@app.cli.command('bras:analyze-delta')
+@click.argument('file_path', type=click.Path(exists=True, path_type=Path))
+@click.option('--delimiter', '-d', default=',', help='Delimitador de colunas')
+@click.option('--encoding', '-e', default='latin-1', help='Encoding do arquivo')
+def bras_analyze_delta(file_path: Path, delimiter: str, encoding: str) -> None:
+    """Analisa diferenças entre arquivo Brasíndice e dados existentes."""
+    file_path = file_path.resolve()
+    
+    click.echo(f"Analisando arquivo: {file_path.name}")
+    click.echo("Comparando com dados existentes no banco...")
+    
+    result = _analyze_bras_delta(
+        file_path=file_path,
+        delimiter=_normalize_delimiter(delimiter),
+        encoding=encoding,
+    )
+    
+    click.echo("\n" + "=" * 50)
+    click.echo("RESULTADO DA ANÁLISE")
+    click.echo("=" * 50)
+    click.echo(f"Total de itens no arquivo:    {result['total_arquivo']:,}")
+    click.echo(f"Total de itens existentes:    {result['total_existente']:,}")
+    click.echo(f"Itens NOVOS:                  {result['novos']:,}")
+    click.echo(f"Itens ALTERADOS:              {result['alterados']:,}")
+    click.echo(f"Itens inalterados:            {result['inalterados']:,}")
+    click.echo(f"Itens removidos (no banco):   {result['removidos']:,}")
+    
+    if result['detalhes_alterados']:
+        click.echo("\n--- Amostra de itens ALTERADOS ---")
+        for item in result['detalhes_alterados'][:10]:
+            click.echo(f"  EAN: {item['ean']} | {item['produto'][:30]}")
+            for diff in item.get('diferencas', []):
+                click.echo(f"       {diff}")
+    
+    if result['detalhes_novos']:
+        click.echo(f"\n--- Amostra de itens NOVOS ({len(result['detalhes_novos'])} mostrados) ---")
+        for item in result['detalhes_novos'][:5]:
+            click.echo(f"  EAN: {item['ean']} | {item['produto'][:30]} | PMC: {item['pmc_pacote']}")
+
+
+@app.cli.command('bras:import-delta')
+@click.argument('file_path', type=click.Path(exists=True, path_type=Path))
+@click.argument('versao')
+@click.option('--delimiter', '-d', default=',', help='Delimitador de colunas')
+@click.option('--encoding', '-e', default='latin-1', help='Encoding do arquivo')
+@click.option('--skip-header', is_flag=True, help='Pular primeira linha (cabeçalho)')
+def bras_import_delta(file_path: Path, versao: str, delimiter: str, encoding: str, skip_header: bool) -> None:
+    """Importa apenas itens novos ou alterados da Brasíndice (incremental)."""
+    file_path = file_path.resolve()
+    
+    click.echo(f"Importação incremental: {file_path.name}")
+    click.echo(f"Versão: {versao}")
+    click.echo("Processando...")
+    
+    result = _import_bras_delta(
+        file_path=file_path,
+        versao=versao,
+        delimiter=_normalize_delimiter(delimiter),
+        encoding=encoding,
+        skip_header=skip_header,
+    )
+    
+    click.echo("\n" + "=" * 50)
+    click.echo("IMPORTAÇÃO INCREMENTAL CONCLUÍDA")
+    click.echo("=" * 50)
+    click.echo(f"Versão:                {result['versao']}")
+    click.echo(f"Itens novos:           {result['novos']:,}")
+    click.echo(f"  - Importados:        {result['novos_importados']:,}")
+    click.echo(f"Itens atualizados:     {result['alterados']:,}")
+    click.echo(f"Total processado:      {result['total_processado']:,}")
+
+
+@app.cli.command('insumos:create-indexes')
+def insumos_create_indexes() -> None:
+    """Cria índices otimizados para busca de insumos."""
+    click.echo("Criando índices para otimização de consultas de insumos...")
+    
+    # Lista de índices: (nome, tabela, colunas)
+    indexes = [
+        # Índices para mv_catalogo_vigente_brasindice
+        ("idx_bras_uf_aliquota", "mv_catalogo_vigente_brasindice", "uf, aliquota_bp"),
+        ("idx_bras_produto_codigo", "mv_catalogo_vigente_brasindice", "produto_codigo"),
+        ("idx_bras_apresentacao_codigo", "mv_catalogo_vigente_brasindice", "apresentacao_codigo"),
+        ("idx_bras_anvisa", "mv_catalogo_vigente_brasindice", "registro_anvisa"),
+        ("idx_bras_ean", "mv_catalogo_vigente_brasindice", "ean"),
+        
+        # Índices para mv_catalogo_vigente_simpro
+        ("idx_simpro_uf_aliquota", "mv_catalogo_vigente_simpro", "uf, aliquota_bp"),
+        ("idx_simpro_codigo", "mv_catalogo_vigente_simpro", "codigo"),
+        ("idx_simpro_codigo_alt", "mv_catalogo_vigente_simpro", "codigo_alt"),
+        ("idx_simpro_anvisa", "mv_catalogo_vigente_simpro", "anvisa"),
+        ("idx_simpro_ean", "mv_catalogo_vigente_simpro", "ean"),
+        
+        # Índices para insumos_index (fallback)
+        ("idx_insumos_origem_uf", "insumos_index", "origem, uf_referencia"),
+        ("idx_insumos_origem_aliquota", "insumos_index", "origem, aliquota"),
+        ("idx_insumos_fabricante", "insumos_index", "fabricante(100)"),
+    ]
+    
+    created = 0
+    skipped = 0
+    errors = []
+    
+    for name, table, columns in indexes:
+        try:
+            # Verifica se tabela existe
+            table_check = db.session.execute(text(f"SHOW TABLES LIKE '{table}'")).fetchone()
+            if not table_check:
+                click.echo(f"  ○ {name} (tabela {table} não existe)")
+                skipped += 1
+                continue
+            
+            # Verifica se índice já existe
+            check_sql = text(f"SHOW INDEX FROM {table} WHERE Key_name = :name")
+            existing = db.session.execute(check_sql, {'name': name}).fetchone()
+            
+            if existing:
+                click.echo(f"  ○ {name} (já existe)")
+                skipped += 1
+                continue
+            
+            # Cria índice
+            create_sql = f"CREATE INDEX {name} ON {table} ({columns})"
+            db.session.execute(text(create_sql))
+            db.session.commit()
+            click.echo(f"  ✓ {name}")
+            created += 1
+        except Exception as e:
+            db.session.rollback()
+            error_msg = str(e)
+            if 'Duplicate' in error_msg or 'already exists' in error_msg.lower():
+                click.echo(f"  ○ {name} (já existe)")
+                skipped += 1
+            else:
+                click.echo(f"  ✗ {name}: {error_msg[:80]}")
+                errors.append(name)
+    
+    click.echo(f"\nResultado: {created} criados, {skipped} ignorados, {len(errors)} erros")
+    
+    if errors:
+        click.echo(f"Índices com erro: {', '.join(errors)}")
+
+
+@app.cli.command('insumos:optimize')
+def insumos_optimize() -> None:
+    """Otimiza tabelas de insumos (ANALYZE + OPTIMIZE)."""
+    click.echo("Otimizando tabelas de insumos...")
+    
+    tables = [
+        'mv_catalogo_vigente_brasindice',
+        'mv_catalogo_vigente_simpro',
+        'insumos_index',
+        'bras_raw',
+        'simpro_item_normalized',
+    ]
+    
+    for table in tables:
+        try:
+            # Verifica se tabela existe
+            result = db.session.execute(text(f"SHOW TABLES LIKE '{table}'")).fetchone()
+            if not result:
+                click.echo(f"  ○ {table} (não existe)")
+                continue
+            
+            # ANALYZE para atualizar estatísticas
+            db.session.execute(text(f"ANALYZE TABLE {table}"))
+            click.echo(f"  ✓ {table} analisada")
+        except Exception as e:
+            click.echo(f"  ✗ {table}: {str(e)[:60]}")
+    
+    db.session.commit()
+    click.echo("Otimização concluída!")
+
+
+@app.cli.command('insumos:clear-cache')
+def insumos_clear_cache() -> None:
+    """Limpa cache de contagens de insumos."""
+    global _CATALOGO_COUNT_CACHE
+    _CATALOGO_COUNT_CACHE.clear()
+    click.echo("Cache de contagens limpo!")
 
 
 @app.cli.command('simpro:import')
@@ -7285,6 +7993,119 @@ def api_cbhpm_detalhe():
     return jsonify({'items': items, 'summary': summary})
 
 
+def _serialize_public_cbhpm_item(item: CBHPMItem, tabela_ref: Tabela) -> dict:
+    valor_total = _resolve_cbhpm_valor_total(item, tabela_ref)
+    return {
+        'codigo': item.codigo,
+        'descricao': item.procedimento,
+        'versao': tabela_ref.nome,
+        'valor_total': _format_money_decimal(valor_total),
+        'moeda': 'BRL',
+    }
+
+
+@app.route('/api/v1/cbhpm/procedimentos/<codigo>')
+@public_api_key_required
+def api_public_cbhpm_detail(codigo: str):
+    codigo = (codigo or '').strip()
+    if not codigo:
+        return _api_error('invalid_input', 'Código obrigatório.', 400)
+
+    tabela = _get_latest_cbhpm_table()
+    if not tabela:
+        return _api_error('not_found', 'Nenhuma tabela CBHPM disponível.', 404)
+
+    cache_key = f"{tabela.id}:{codigo.lower()}"
+    cached = _cbhpm_api_detail_cache.get(cache_key)
+    if cached:
+        return jsonify(cached)
+
+    item = (
+        CBHPMItem.query
+        .filter(CBHPMItem.id_tabela == tabela.id)
+        .filter(or_(CBHPMItem.codigo == codigo, CBHPMItem.codigo.ilike(codigo)))
+        .order_by(CBHPMItem.codigo)
+        .first()
+    )
+    if not item:
+        return _api_error('not_found', 'Procedimento não encontrado na CBHPM mais recente.', 404)
+
+    payload = _serialize_public_cbhpm_item(item, tabela)
+    _cbhpm_api_detail_cache[cache_key] = payload
+    return jsonify(payload)
+
+
+@app.route('/api/v1/cbhpm/procedimentos')
+@public_api_key_required
+def api_public_cbhpm_search():
+    q = (request.args.get('q') or '').strip()
+    if not q:
+        return _api_error('invalid_input', 'Parâmetro q é obrigatório.', 400)
+    if len(q) > 120:
+        q = q[:120]
+    limit = _parse_positive_int(request.args.get('limit'), 20, maximum=100)
+
+    tabela = _get_latest_cbhpm_table()
+    if not tabela:
+        return _api_error('not_found', 'Nenhuma tabela CBHPM disponível.', 404)
+
+    cache_key = f"{tabela.id}:{q.lower()}:{limit}"
+    cached = _cbhpm_api_cache.get(cache_key)
+    if cached:
+        return jsonify(cached)
+
+    like_term = f"%{q}%"
+    code_prefix = f"{q}%"
+
+    items: list[dict] = []
+    seen_codes: set[str] = set()
+
+    code_rows = (
+        db.session.query(CBHPMItem)
+        .filter(CBHPMItem.id_tabela == tabela.id)
+        .filter(or_(CBHPMItem.codigo == q, CBHPMItem.codigo.ilike(code_prefix)))
+        .order_by(CBHPMItem.codigo)
+        .limit(limit * 2)
+        .all()
+    )
+    for row in code_rows:
+        codigo_norm = (row.codigo or '').strip()
+        if not codigo_norm or codigo_norm in seen_codes:
+            continue
+        seen_codes.add(codigo_norm)
+        items.append(_serialize_public_cbhpm_item(row, tabela))
+        if len(items) >= limit:
+            break
+
+    if len(items) < limit:
+        desc_rows = (
+            db.session.query(CBHPMItem)
+            .filter(CBHPMItem.id_tabela == tabela.id)
+            .filter(CBHPMItem.procedimento.ilike(like_term))
+            .order_by(CBHPMItem.codigo)
+            .limit(limit * 2)
+            .all()
+        )
+        for row in desc_rows:
+            if len(items) >= limit:
+                break
+            codigo_norm = (row.codigo or '').strip()
+            if not codigo_norm or codigo_norm in seen_codes:
+                continue
+            seen_codes.add(codigo_norm)
+            items.append(_serialize_public_cbhpm_item(row, tabela))
+
+    if not items:
+        return _api_error('not_found', 'Procedimento não encontrado na CBHPM mais recente.', 404)
+
+    payload = {
+        'versao': tabela.nome,
+        'items': items[:limit],
+    }
+    _cbhpm_api_cache[cache_key] = payload
+    return jsonify(payload)
+
+
 @app.route('/api/tuss-rol')
 @login_required
 @feature_required('tuss_rol')
@@ -9737,6 +10558,41 @@ def _resolve_porte_an_tabela_nome(operadora_id, uf, nome_hint, porte_an):
     return None
 
 
+def _get_latest_cbhpm_table():
+    return (
+        Tabela.query
+        .filter(Tabela.tipo_tabela == 'cbhpm')
+        .order_by(Tabela.data_vigencia.is_(None), Tabela.data_vigencia.desc(), Tabela.id.desc())
+        .first()
+    )
+
+
+def _resolve_cbhpm_valor_total(item: CBHPMItem, tabela_ref: Tabela) -> Decimal | None:
+    if not item or not tabela_ref:
+        return None
+    total = None
+    try:
+        total = compute_cbhpm_total(item, tabela_ref)
+    except Exception:
+        db.session.rollback()
+        total = None
+    if total not in (None, Decimal('0')):
+        return _as_decimal(total)
+    for candidate in (
+        getattr(item, 'subtotal', None),
+        getattr(item, 'total_porte', None),
+        getattr(item, 'total_uco', None),
+        getattr(item, 'total_filme', None),
+        getattr(item, 'total_porte_anestesico', None),
+        getattr(item, 'total_auxiliares', None),
+        getattr(item, 'valor_porte', None),
+    ):
+        val = _as_decimal(candidate)
+        if val not in (None, Decimal('0')):
+            return val
+    return None
+
+
 
 def _clone_default_cbhpm_rules():
     return json.loads(json.dumps(DEFAULT_CBHPM_RULES))
@@ -11444,7 +12300,23 @@ def insumos_import():
         if fmt != 'fixed':
             return _fail('Importação SIMPRO suporta apenas arquivos de largura fixa.')
         if not map_config:
-            return _fail('Envie um arquivo de mapeamento para importação de largura fixa.')
+            # Tenta carregar mapa padrão do SIMPRO
+            default_map_paths = [
+                Path(__file__).parent / 'testes' / 'mapa.json',
+                Path(__file__).parent / 'config' / 'simpro_map.json',
+                Path(__file__).parent / 'testes' / 'config' / 'simpro_map.json',
+            ]
+            for default_map_path in default_map_paths:
+                if default_map_path.exists():
+                    try:
+                        map_text = default_map_path.read_text(encoding='utf-8')
+                        map_config = _load_json_relaxed(map_text)
+                        app.logger.info(f'Usando mapa padrão SIMPRO: {default_map_path}')
+                        break
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        app.logger.warning(f'Falha ao carregar mapa padrão {default_map_path}: {exc}')
+            if not map_config:
+                return _fail('Envie um arquivo de mapeamento ou configure o mapa padrão em testes/mapa.json.')
 
     delimiter_value = _normalize_delimiter(delimiter) if fmt == 'delimited' else delimiter
 
@@ -11555,6 +12427,132 @@ def insumos_import():
         _safe_flash(info_message, 'info')
         return _go_back()
     return jsonify({'status': 'ok', 'job_id': job_id, 'prefix': prefix, 'message': info_message, 'inline': False, 'redirect': redirect_url})
+
+
+@app.route('/insumos/bras/analyze-delta', methods=['POST'])
+@admin_required
+@feature_required('insumos')
+def insumos_bras_analyze_delta():
+    """Analisa diferenças entre arquivo Brasíndice e dados existentes (preview antes de importar)."""
+    upload = request.files.get('arquivo')
+    if not upload or not upload.filename:
+        return jsonify({'status': 'error', 'message': 'Selecione um arquivo para analisar.'}), 400
+    
+    delimiter = request.form.get('delimiter') or ','
+    encoding = (request.form.get('encoding') or 'latin-1').strip()
+    
+    # Salvar arquivo temporariamente
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
+        upload.save(tmp.name)
+        tmp_path = Path(tmp.name)
+    
+    try:
+        result = _analyze_bras_delta(
+            file_path=tmp_path,
+            delimiter=_normalize_delimiter(delimiter),
+            encoding=encoding,
+        )
+        return jsonify({
+            'status': 'ok',
+            'total_arquivo': result['total_arquivo'],
+            'total_existente': result['total_existente'],
+            'novos': result['novos'],
+            'alterados': result['alterados'],
+            'inalterados': result['inalterados'],
+            'removidos': result['removidos'],
+            'detalhes_novos': result['detalhes_novos'][:20],
+            'detalhes_alterados': result['detalhes_alterados'][:20],
+        })
+    except Exception as exc:
+        app.logger.exception('Erro ao analisar delta Brasíndice')
+        return jsonify({'status': 'error', 'message': str(exc)}), 500
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+@app.route('/insumos/bras/import-delta', methods=['POST'])
+@admin_required
+@feature_required('insumos')
+def insumos_bras_import_delta():
+    """Importa apenas itens novos ou alterados da Brasíndice."""
+    upload = request.files.get('arquivo')
+    if not upload or not upload.filename:
+        return jsonify({'status': 'error', 'message': 'Selecione um arquivo para importar.'}), 400
+    
+    versao = (request.form.get('versao') or '').strip()
+    if not versao:
+        return jsonify({'status': 'error', 'message': 'Informe a versão da tabela.'}), 400
+    
+    delimiter = request.form.get('delimiter') or ','
+    encoding = (request.form.get('encoding') or 'latin-1').strip()
+    skip_header = request.form.get('skip_header') == 'on'
+    data_ref = (request.form.get('data_atualizacao') or '').strip() or None
+    truncate = request.form.get('truncate') == 'on'
+    
+    # Alíquota e UFs (opcional)
+    aliquota_input = (request.form.get('aliquota') or '').strip()
+    aliquota_value: Decimal | None = None
+    if aliquota_input:
+        aliquota_str = _coerce_decimal(aliquota_input)
+        if aliquota_str:
+            aliquota_value = Decimal(aliquota_str)
+    
+    raw_ufs = request.form.getlist('ufs')
+    uf_values: list[str] = []
+    for raw in raw_ufs:
+        candidate = (raw or '').strip().upper()
+        if candidate and candidate in BR_UFS:
+            uf_values.append(candidate)
+    uf_default = uf_values[0] if uf_values else None
+    
+    # Salvar arquivo temporariamente
+    import tempfile
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
+        upload.save(tmp.name)
+        tmp_path = Path(tmp.name)
+    
+    # Se truncate, limpar dados antes
+    if truncate:
+        try:
+            deleted_n = BrasItemNormalized.query.delete()
+            deleted_raw = BrasRaw.query.delete()
+            db.session.commit()
+            app.logger.info('Truncate Brasíndice: %d normalizados, %d raw removidos', deleted_n, deleted_raw)
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.warning('Erro ao truncar Brasíndice: %s', exc)
+    
+    try:
+        result = _import_bras_delta(
+            file_path=tmp_path,
+            versao=versao,
+            delimiter=_normalize_delimiter(delimiter),
+            encoding=encoding,
+            skip_header=skip_header,
+            data_ref=data_ref,
+            uf_default=uf_default,
+            uf_values=uf_values if uf_values else None,
+            aliquota_default=aliquota_value,
+        )
+        
+        uf_info = f" UFs: {', '.join(uf_values)}" if uf_values else ""
+        aliq_info = f" Alíq: {aliquota_value}%" if aliquota_value else ""
+        
+        return jsonify({
+            'status': 'ok',
+            'message': f"Importação incremental concluída: {result['novos']} novos, {result['alterados']} atualizados.{aliq_info}{uf_info}",
+            'versao': result['versao'],
+            'novos': result['novos'],
+            'novos_importados': result['novos_importados'],
+            'alterados': result['alterados'],
+            'total_processado': result['total_processado'],
+        })
+    except Exception as exc:
+        app.logger.exception('Erro ao importar delta Brasíndice')
+        return jsonify({'status': 'error', 'message': str(exc)}), 500
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 @app.route('/insumos/import/jobs')

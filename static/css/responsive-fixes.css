@@ -1,0 +1,637 @@
+/* ========================================
+   RESPONSIVE FIXES - Sistema de Preços
+   Correções de responsividade consolidadas
+   Criado: 2025-12-30
+   ======================================== */
+
+/* === BREAKPOINTS PADRONIZADOS ===
+   xs: 0 - 575px (mobile)
+   sm: 576px - 767px (mobile landscape)
+   md: 768px - 1023px (tablet)
+   lg: 1024px - 1279px (desktop)
+   xl: 1280px+ (large desktop)
+   ======================================== */
+
+/* ========================================
+   TOUCH TARGETS - Mínimo 44px em mobile
+   ======================================== */
+@media (max-width: 768px) {
+  .btn,
+  .btn-sm,
+  .form-control,
+  .form-select,
+  .nav-link,
+  .dropdown-item,
+  .pagination-item {
+    min-height: 44px;
+  }
+  
+  .btn-sm {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+  }
+  
+  .form-check-input {
+    width: 1.375rem;
+    height: 1.375rem;
+  }
+  
+  .form-check-label {
+    padding-left: 0.25rem;
+  }
+}
+
+/* ========================================
+   SIDEBAR MOBILE - Menu hamburger
+   ======================================== */
+.mobile-menu-toggle {
+  display: none;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 1100;
+  width: 44px;
+  height: 44px;
+  background: var(--bg-sidebar, #0f172a);
+  border-radius: 10px;
+  border: none;
+  color: white;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: all 0.2s ease;
+}
+
+.mobile-menu-toggle:hover {
+  background: var(--bg-sidebar-hover, #1e293b);
+  transform: scale(1.05);
+}
+
+.mobile-menu-toggle i {
+  font-size: 1.25rem;
+}
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1039;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.sidebar-overlay.show {
+  display: block;
+  opacity: 1;
+}
+
+@media (max-width: 768px) {
+  .mobile-menu-toggle {
+    display: flex;
+  }
+  
+  .modern-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    z-index: 1040;
+  }
+  
+  .modern-sidebar.show {
+    transform: translateX(0);
+  }
+  
+  .modern-main {
+    width: 100%;
+    margin-left: 0;
+  }
+  
+  .modern-navbar {
+    padding-left: 60px; /* Espaço para o botão hamburger */
+  }
+}
+
+/* ========================================
+   TABELAS RESPONSIVAS
+   ======================================== */
+.table-responsive-wrapper {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+}
+
+/* Indicador de scroll horizontal */
+.table-responsive-wrapper::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 30px;
+  background: linear-gradient(to left, rgba(255,255,255,0.8), transparent);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.table-responsive-wrapper.has-scroll::after {
+  opacity: 1;
+}
+
+@media (max-width: 1024px) {
+  /* Remover segunda coluna sticky em tablets */
+  .col-proced {
+    position: static;
+    min-width: 200px;
+  }
+  
+  .data-table .col-proced {
+    left: auto;
+    box-shadow: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .col-codigo {
+    min-width: 80px;
+  }
+  
+  .data-table td,
+  .data-table th {
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+  
+  .table-wrap,
+  .tbl-wrap {
+    margin-left: -1rem;
+    margin-right: -1rem;
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+  }
+  
+  /* Permitir quebra de texto em descrições */
+  .data-table td:nth-child(2) {
+    white-space: normal;
+    min-width: 150px;
+  }
+}
+
+@media (max-width: 576px) {
+  .data-table td,
+  .data-table th {
+    padding: 8px 6px;
+    font-size: 12px;
+  }
+  
+  .col-codigo {
+    min-width: 60px;
+  }
+}
+
+/* ========================================
+   FILTROS RESPONSIVOS
+   ======================================== */
+@media (max-width: 768px) {
+  .filters-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .filter-span-6,
+  .filter-span-5,
+  .filter-span-4,
+  .filter-span-3,
+  .filter-span-2 {
+    width: 100%;
+    min-width: 0;
+  }
+  
+  .filter-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+  
+  .filter-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  
+  .filter-actions.stick-right {
+    grid-column: auto;
+  }
+}
+
+/* ========================================
+   TIPOGRAFIA RESPONSIVA
+   ======================================== */
+.page-title {
+  font-size: clamp(1.25rem, 4vw, 1.75rem);
+}
+
+.content-title {
+  font-size: clamp(1.5rem, 5vw, 2.25rem);
+}
+
+h1 { font-size: clamp(1.75rem, 5vw, 2.5rem); }
+h2 { font-size: clamp(1.5rem, 4vw, 2rem); }
+h3 { font-size: clamp(1.25rem, 3vw, 1.5rem); }
+h4 { font-size: clamp(1.125rem, 2.5vw, 1.25rem); }
+
+@media (max-width: 768px) {
+  /* Garantir legibilidade mínima */
+  .cc-filter-label,
+  .cc-stat-label,
+  .mini-label,
+  .form-text,
+  small {
+    font-size: 12px;
+  }
+  
+  .badge {
+    font-size: 11px;
+    padding: 0.25rem 0.5rem;
+  }
+}
+
+/* ========================================
+   CARDS RESPONSIVOS
+   ======================================== */
+@media (max-width: 768px) {
+  .card,
+  .modern-card {
+    border-radius: 12px;
+  }
+  
+  .card-body {
+    padding: 1rem;
+  }
+  
+  .card-header {
+    padding: 0.75rem 1rem;
+  }
+  
+  .card-footer {
+    padding: 0.75rem 1rem;
+  }
+}
+
+@media (max-width: 576px) {
+  .card,
+  .modern-card {
+    border-radius: 8px;
+    margin-left: -0.5rem;
+    margin-right: -0.5rem;
+  }
+  
+  .card-body {
+    padding: 0.75rem;
+  }
+}
+
+/* ========================================
+   MODAL MOBILE
+   ======================================== */
+@media (max-width: 768px) {
+  .modal-dialog {
+    margin: 0.5rem;
+    max-width: calc(100% - 1rem);
+  }
+  
+  .modal-content {
+    max-height: calc(100dvh - 1rem);
+    border-radius: 12px;
+  }
+  
+  .modal-body {
+    max-height: calc(100dvh - 150px);
+    overflow-y: auto;
+    padding: 1rem;
+  }
+  
+  .modal-header,
+  .modal-footer {
+    padding: 0.75rem 1rem;
+  }
+  
+  .modal-footer {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .modal-footer .btn {
+    width: 100%;
+  }
+}
+
+/* ========================================
+   DROPZONE MELHORADO
+   ======================================== */
+.dropzone-area {
+  border: 2px dashed var(--brand-primary, #0ea5e9);
+  border-radius: 12px;
+  padding: 2rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: #f8f9ff;
+}
+
+.dropzone-area:hover,
+.dropzone-area:focus-within {
+  border-color: var(--brand-primary-dark, #0284c7);
+  background: rgba(14, 165, 233, 0.08);
+}
+
+.dropzone-area.dragover {
+  border-color: var(--brand-primary-dark, #0284c7);
+  background: rgba(14, 165, 233, 0.12);
+  transform: scale(1.01);
+}
+
+/* Variante verde para SIMPRO */
+.dropzone-area.dropzone-success {
+  border-color: var(--success, #10b981);
+  background: #f0fff4;
+}
+
+.dropzone-area.dropzone-success:hover,
+.dropzone-area.dropzone-success:focus-within {
+  border-color: #059669;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.dropzone-area.dropzone-success.dragover {
+  border-color: #059669;
+  background: rgba(16, 185, 129, 0.12);
+}
+
+@media (max-width: 768px) {
+  .dropzone-area {
+    padding: 1.5rem 1rem;
+  }
+  
+  .dropzone-area i.fs-2 {
+    font-size: 2rem !important;
+  }
+  
+  .dropzone-area p {
+    font-size: 0.875rem;
+  }
+}
+
+/* ========================================
+   AÇÕES EM TABELA
+   ======================================== */
+.td-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 768px) {
+  .td-actions {
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  .td-actions .btn {
+    width: 100%;
+    text-align: center;
+    justify-content: center;
+  }
+}
+
+/* ========================================
+   NAVBAR RESPONSIVA
+   ======================================== */
+@media (max-width: 768px) {
+  .modern-navbar {
+    height: auto;
+    min-height: 56px;
+    padding: 8px 12px 8px 60px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  
+  .navbar-left {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  .page-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  
+  .navbar-right {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  
+  .search-box {
+    display: none;
+  }
+  
+  .navbar-actions .btn span {
+    display: none;
+  }
+  
+  .navbar-actions .btn {
+    padding: 0.5rem;
+    min-width: 44px;
+  }
+}
+
+/* ========================================
+   ACCORDION RESPONSIVO
+   ======================================== */
+@media (max-width: 768px) {
+  .accordion-button {
+    padding: 0.75rem 1rem;
+    font-size: 0.9375rem;
+  }
+  
+  .accordion-body {
+    padding: 1rem;
+  }
+  
+  .accordion-item .card {
+    margin-bottom: 0.75rem;
+  }
+}
+
+/* ========================================
+   FORMULÁRIOS EM GRID - RESPONSIVO
+   ======================================== */
+@media (max-width: 768px) {
+  .row.g-3 > [class*="col-md-"],
+  .row.g-3 > [class*="col-lg-"] {
+    margin-bottom: 0.75rem;
+  }
+  
+  /* Campos que devem ocupar linha inteira em mobile */
+  .row.g-3 > .col-md-2,
+  .row.g-3 > .col-md-3,
+  .row.g-3 > .col-md-4 {
+    flex: 0 0 50%;
+    max-width: 50%;
+  }
+  
+  .row.g-3 > .col-md-5,
+  .row.g-3 > .col-md-6 {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 576px) {
+  .row.g-3 > [class*="col-"] {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+}
+
+/* ========================================
+   CONSULTA & COMPARAR - LAYOUT RESPONSIVO
+   ======================================== */
+@media (max-width: 1400px) {
+  .cc-layout {
+    grid-template-columns: 240px 1fr;
+  }
+  
+  .cc-sidebar-right {
+    position: static;
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    order: -1;
+  }
+}
+
+@media (max-width: 1024px) {
+  .cc-layout {
+    grid-template-columns: 1fr;
+  }
+  
+  .cc-sidebar-left {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
+}
+
+@media (max-width: 640px) {
+  .cc-layout {
+    padding: 12px;
+    gap: 12px;
+  }
+  
+  .cc-sidebar-left {
+    grid-template-columns: 1fr;
+  }
+  
+  .cc-cards-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ========================================
+   UTILITÁRIOS RESPONSIVOS
+   ======================================== */
+
+/* Hide/Show por breakpoint */
+@media (max-width: 575px) {
+  .d-xs-none { display: none !important; }
+  .d-xs-block { display: block !important; }
+  .d-xs-flex { display: flex !important; }
+}
+
+@media (min-width: 576px) and (max-width: 767px) {
+  .d-sm-none { display: none !important; }
+  .d-sm-block { display: block !important; }
+  .d-sm-flex { display: flex !important; }
+}
+
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+}
+
+@media (min-width: 769px) {
+  .hide-desktop { display: none !important; }
+  .show-mobile-only { display: none !important; }
+}
+
+@media (min-width: 769px) and (max-width: 1023px) {
+  .hide-tablet { display: none !important; }
+}
+
+/* Text align responsivo */
+@media (max-width: 768px) {
+  .text-center-mobile { text-align: center !important; }
+  .text-left-mobile { text-align: left !important; }
+}
+
+/* Padding/Margin responsivos */
+@media (max-width: 768px) {
+  .p-mobile-1 { padding: 0.25rem !important; }
+  .p-mobile-2 { padding: 0.5rem !important; }
+  .p-mobile-3 { padding: 1rem !important; }
+  
+  .px-mobile-0 { padding-left: 0 !important; padding-right: 0 !important; }
+  .px-mobile-2 { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+  
+  .mb-mobile-2 { margin-bottom: 0.5rem !important; }
+  .mb-mobile-3 { margin-bottom: 1rem !important; }
+}
+
+/* Width responsivo */
+@media (max-width: 768px) {
+  .w-mobile-100 { width: 100% !important; }
+  .w-mobile-auto { width: auto !important; }
+}
+
+/* ========================================
+   PRINT STYLES
+   ======================================== */
+@media print {
+  .mobile-menu-toggle,
+  .sidebar-overlay,
+  .modern-sidebar,
+  .navbar-actions,
+  .no-print {
+    display: none !important;
+  }
+  
+  .modern-main {
+    width: 100%;
+    margin: 0;
+  }
+  
+  .content-area {
+    padding: 0;
+  }
+  
+  .card {
+    box-shadow: none;
+    border: 1px solid #ddd;
+  }
+  
+  body {
+    background: white;
+    color: black;
+  }
+}
+
