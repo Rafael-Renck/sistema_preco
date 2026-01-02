@@ -604,6 +604,46 @@
     return (str || '').replace(/[&<>"']/g, ch => map[ch] || ch);
   }
 
+  // Função para aguardar um job terminar (polling)
+  async function waitForJobCompletion(jobId, updateCallback, pollIntervalMs = 2000, timeoutMs = 600000) {
+    const startTime = Date.now();
+    const url = '{{ url_for("insumos_import_jobs_list") }}'.replace(/\/$/, '') + '/' + jobId;
+    
+    while (true) {
+      if (Date.now() - startTime > timeoutMs) {
+        return { success: false, message: 'Timeout aguardando importação' };
+      }
+      
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          await new Promise(r => setTimeout(r, pollIntervalMs));
+          continue;
+        }
+        const job = await resp.json();
+        
+        // Atualizar callback com progresso
+        if (updateCallback) {
+          updateCallback(job);
+        }
+        
+        // Verificar se terminou (status: PENDING, RUNNING, SUCCESS, FAILED)
+        if (job.status === 'SUCCESS') {
+          return { success: true, job };
+        } else if (job.status === 'FAILED') {
+          return { success: false, message: job.message || 'Falha na importação', job };
+        }
+        // PENDING ou RUNNING - continuar polling
+        
+        // Ainda processando - aguardar antes do próximo poll
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+      } catch (e) {
+        console.warn('Erro no polling:', e);
+        await new Promise(r => setTimeout(r, pollIntervalMs));
+      }
+    }
+  }
+
   function formatDate(value){
     if(!value) { return '—'; }
     const date = new Date(value.replace(' ', 'T'));
@@ -1003,12 +1043,41 @@
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
         const data = await resp.json();
-        if (resp.ok && data.status !== 'error') {
+        
+        if (!resp.ok || data.status === 'error') {
+          item.status = 'error';
+          item.statusText = data.message || 'Erro ao enviar';
+        } else if (data.inline) {
+          // Processamento inline - já terminou
           item.status = 'ok';
           item.statusText = '✓ OK';
+        } else if (data.job_id) {
+          // Processamento async - aguardar conclusão
+          item.statusText = 'Processando...';
+          renderBrasFilesPreview();
+          
+          const result = await waitForJobCompletion(data.job_id, (job) => {
+            // Atualizar status durante polling
+            if (job.linhas_materializadas) {
+              item.statusText = `Processando... (${job.linhas_materializadas} linhas)`;
+            } else {
+              item.statusText = 'Processando...';
+            }
+            renderBrasFilesPreview();
+            loadJobs(); // Atualizar tabela de jobs
+          });
+          
+          if (result.success) {
+            item.status = 'ok';
+            const linhas = result.job?.linhas_materializadas || 0;
+            item.statusText = `✓ OK (${linhas} linhas)`;
+          } else {
+            item.status = 'error';
+            item.statusText = result.message || 'Falha';
+          }
         } else {
-          item.status = 'error';
-          item.statusText = data.message || 'Erro';
+          item.status = 'ok';
+          item.statusText = '✓ OK';
         }
       } catch (err) {
         item.status = 'error';
@@ -1135,12 +1204,41 @@
           headers: { 'X-Requested-With': 'XMLHttpRequest' }
         });
         const data = await resp.json();
-        if (resp.ok && data.status !== 'error') {
+        
+        if (!resp.ok || data.status === 'error') {
+          item.status = 'error';
+          item.statusText = data.message || 'Erro ao enviar';
+        } else if (data.inline) {
+          // Processamento inline - já terminou
           item.status = 'ok';
           item.statusText = '✓ OK';
+        } else if (data.job_id) {
+          // Processamento async - aguardar conclusão
+          item.statusText = 'Processando...';
+          renderSimproFilesPreview();
+          
+          const result = await waitForJobCompletion(data.job_id, (job) => {
+            // Atualizar status durante polling
+            if (job.linhas_materializadas) {
+              item.statusText = `Processando... (${job.linhas_materializadas} linhas)`;
+            } else {
+              item.statusText = 'Processando...';
+            }
+            renderSimproFilesPreview();
+            loadJobs(); // Atualizar tabela de jobs
+          });
+          
+          if (result.success) {
+            item.status = 'ok';
+            const linhas = result.job?.linhas_materializadas || 0;
+            item.statusText = `✓ OK (${linhas} linhas)`;
+          } else {
+            item.status = 'error';
+            item.statusText = result.message || 'Falha';
+          }
         } else {
-          item.status = 'error';
-          item.statusText = data.message || 'Erro';
+          item.status = 'ok';
+          item.statusText = '✓ OK';
         }
       } catch (err) {
         item.status = 'error';
