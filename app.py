@@ -1617,10 +1617,31 @@ def _encode_line_terminator(value: str | None) -> str:
     return value.encode('unicode_escape').decode('ascii')
 
 
+def _delete_with_retry(sql: str, params: dict, max_retries: int = 10) -> None:
+    """Executa DELETE com retry automático para lock timeouts."""
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            db.session.execute(text(sql), params)
+            db.session.commit()
+            return
+        except Exception as exc:
+            db.session.rollback()
+            error_str = str(exc)
+            if ('1205' in error_str or '1213' in error_str) and attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 3  # Backoff: 3s, 6s, 9s...
+                app.logger.warning('DELETE lock error (attempt %d/%d), retrying in %.1fs', 
+                                  attempt + 1, max_retries, wait_time)
+                time.sleep(wait_time)
+                continue
+            raise
+
+
 def _delete_existing_bras_records(
     arquivo_label: str | None,
     truncate: bool,
-    max_retries: int = 3,
+    max_retries: int = 10,
     *,
     aliquota_filter: Decimal | None = None,
     uf_filter: str | None = None,
@@ -1647,25 +1668,25 @@ def _delete_existing_bras_records(
             params['uf_pattern'] = f'%{uf_filter}%'
             params['uf_exact'] = uf_filter
         
-        # Deletar do índice de insumos pela alíquota
-        db.session.execute(
-            text(f"DELETE FROM insumos_index WHERE origem = 'BRAS' AND aliquota = :aliquota{uf_condition}"),
+        # Deletar do índice de insumos pela alíquota (com retry)
+        _delete_with_retry(
+            f"DELETE FROM insumos_index WHERE origem = 'BRAS' AND aliquota = :aliquota{uf_condition}",
             params,
         )
         
         # TAMBÉM deletar dados do arquivo específico das tabelas raw/normalized
         if arquivo_label:
             arquivo_params = {'arquivo': arquivo_label}
-            db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), arquivo_params)
-            db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), arquivo_params)
-            db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), arquivo_params)
+            _delete_with_retry('DELETE FROM bras_item_n WHERE arquivo = :arquivo', arquivo_params)
+            _delete_with_retry('DELETE FROM bras_raw WHERE arquivo = :arquivo', arquivo_params)
+            _delete_with_retry('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo', arquivo_params)
         
-        db.session.commit()
         return
     
     # Modo 2: Limpar TUDO (truncate sem filtro)
     if truncate:
-        db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'BRAS'"))
+        _delete_with_retry("DELETE FROM insumos_index WHERE origem = 'BRAS'", {})
+        # TRUNCATE é mais rápido e não precisa de lock por muito tempo
         db.session.execute(text('TRUNCATE TABLE bras_item_n'))
         db.session.execute(text('TRUNCATE TABLE bras_raw'))
         db.session.execute(text('TRUNCATE TABLE bras_fixed_stage'))
@@ -1678,29 +1699,14 @@ def _delete_existing_bras_records(
 
     params = {'arquivo': arquivo_label}
     
-    # Retry para erros de "Table definition has changed" (erro 1412)
-    for attempt in range(max_retries):
-        try:
-            db.session.execute(
-                text(
-                    "DELETE FROM insumos_index "
-                    "WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)"
-                ),
-                params,
-            )
-            db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), params)
-            db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), params)
-            db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), params)
-            db.session.commit()
-            return
-        except Exception as exc:
-            db.session.rollback()
-            # Erro 1412: Table definition has changed
-            if '1412' in str(exc) and attempt < max_retries - 1:
-                import time
-                time.sleep(0.5 * (attempt + 1))  # Backoff progressivo
-                continue
-            raise
+    # Deletar com retry
+    _delete_with_retry(
+        "DELETE FROM insumos_index WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)",
+        params,
+    )
+    _delete_with_retry('DELETE FROM bras_item_n WHERE arquivo = :arquivo', params)
+    _delete_with_retry('DELETE FROM bras_raw WHERE arquivo = :arquivo', params)
+    _delete_with_retry('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo', params)
 
 
 def _delete_existing_simpro_records(
@@ -1731,17 +1737,16 @@ def _delete_existing_simpro_records(
             params['uf_pattern'] = f'%{uf_filter}%'
             params['uf_exact'] = uf_filter
         
-        # Deletar do índice de insumos pela alíquota
-        db.session.execute(
-            text(f"DELETE FROM insumos_index WHERE origem = 'SIMPRO' AND aliquota = :aliquota{uf_condition}"),
+        # Deletar do índice de insumos pela alíquota (com retry)
+        _delete_with_retry(
+            f"DELETE FROM insumos_index WHERE origem = 'SIMPRO' AND aliquota = :aliquota{uf_condition}",
             params,
         )
-        db.session.commit()
         return
     
     # Modo 2: Limpar TUDO (truncate sem filtro)
     if truncate:
-        db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'SIMPRO'"))
+        _delete_with_retry("DELETE FROM insumos_index WHERE origem = 'SIMPRO'", {})
         db.session.execute(text('TRUNCATE TABLE simpro_item_norm'))
         db.session.execute(text('TRUNCATE TABLE simpro_fixed_stage'))
         db.session.commit()
@@ -1752,16 +1757,12 @@ def _delete_existing_simpro_records(
         return
 
     params = {'arquivo': arquivo_label}
-    db.session.execute(
-        text(
-            "DELETE FROM insumos_index "
-            "WHERE origem = 'SIMPRO' AND item_id IN (SELECT id FROM simpro_item_norm WHERE arquivo = :arquivo)"
-        ),
+    _delete_with_retry(
+        "DELETE FROM insumos_index WHERE origem = 'SIMPRO' AND item_id IN (SELECT id FROM simpro_item_norm WHERE arquivo = :arquivo)",
         params,
     )
-    db.session.execute(text('DELETE FROM simpro_item_norm WHERE arquivo = :arquivo'), params)
-    db.session.execute(text('DELETE FROM simpro_fixed_stage WHERE arquivo = :arquivo'), params)
-    db.session.commit()
+    _delete_with_retry('DELETE FROM simpro_item_norm WHERE arquivo = :arquivo', params)
+    _delete_with_retry('DELETE FROM simpro_fixed_stage WHERE arquivo = :arquivo', params)
 
 
 def _bras_load_data_delimited(
