@@ -1617,25 +1617,105 @@ def _encode_line_terminator(value: str | None) -> str:
     return value.encode('unicode_escape').decode('ascii')
 
 
-def _delete_with_retry(sql: str, params: dict, max_retries: int = 10) -> None:
-    """Executa DELETE com retry automático para lock timeouts."""
+def _delete_in_batches(sql: str, params: dict, batch_size: int = 500, max_retries: int = 5) -> int:
+    """
+    Executa DELETE em batches pequenos para evitar lock timeout.
+    Adiciona LIMIT ao SQL e repete até não haver mais registros.
+    """
     import time
     
-    for attempt in range(max_retries):
-        try:
-            db.session.execute(text(sql), params)
-            db.session.commit()
-            return
-        except Exception as exc:
-            db.session.rollback()
-            error_str = str(exc)
-            if ('1205' in error_str or '1213' in error_str) and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 3  # Backoff: 3s, 6s, 9s...
-                app.logger.warning('DELETE lock error (attempt %d/%d), retrying in %.1fs', 
-                                  attempt + 1, max_retries, wait_time)
-                time.sleep(wait_time)
+    total_deleted = 0
+    # Adiciona LIMIT ao SQL se não tiver
+    if 'LIMIT' not in sql.upper():
+        sql_with_limit = f"{sql} LIMIT {batch_size}"
+    else:
+        sql_with_limit = sql
+    
+    while True:
+        deleted_this_batch = 0
+        for attempt in range(max_retries):
+            try:
+                result = db.session.execute(text(sql_with_limit), params)
+                db.session.commit()
+                deleted_this_batch = result.rowcount or 0
+                break
+            except Exception as exc:
+                db.session.rollback()
+                error_str = str(exc)
+                if ('1205' in error_str or '1213' in error_str) and attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    app.logger.warning('DELETE batch lock error (attempt %d/%d), retrying in %.1fs', 
+                                      attempt + 1, max_retries, wait_time)
+                    time.sleep(wait_time)
+                    continue
+                raise
+        
+        total_deleted += deleted_this_batch
+        app.logger.debug('DELETE batch: deleted %d rows, total %d', deleted_this_batch, total_deleted)
+        
+        # Se deletou menos que o batch_size, acabou
+        if deleted_this_batch < batch_size:
+            break
+        
+        # Pequena pausa entre batches para liberar locks
+        time.sleep(0.1)
+    
+    return total_deleted
+
+
+def _delete_with_retry(sql: str, params: dict, max_retries: int = 5) -> None:
+    """Executa DELETE em batches para evitar lock timeout."""
+    _delete_in_batches(sql, params, batch_size=500, max_retries=max_retries)
+
+
+def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str, batch_size: int = 500) -> int:
+    """
+    Deleta insumos_index baseado em item_id de outra tabela, em batches.
+    Evita subquery com LIMIT que o MySQL não suporta.
+    """
+    import time
+    
+    total_deleted = 0
+    
+    while True:
+        # Primeiro, busca os IDs a deletar
+        ids_result = db.session.execute(
+            text(f"SELECT id FROM {item_table} WHERE arquivo = :arquivo LIMIT :batch_size"),
+            {'arquivo': arquivo_label, 'batch_size': batch_size}
+        ).fetchall()
+        
+        if not ids_result:
+            break
+        
+        ids = [row[0] for row in ids_result]
+        
+        # Deleta do insumos_index usando os IDs
+        if ids:
+            placeholders = ','.join([':id' + str(i) for i in range(len(ids))])
+            params = {f'id{i}': id_val for i, id_val in enumerate(ids)}
+            params['origem'] = origem
+            
+            try:
+                result = db.session.execute(
+                    text(f"DELETE FROM insumos_index WHERE origem = :origem AND item_id IN ({placeholders})"),
+                    params
+                )
+                db.session.commit()
+                total_deleted += result.rowcount or 0
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.warning('Delete insumos batch error: %s', str(exc)[:100])
+                time.sleep(1)
                 continue
-            raise
+        
+        # Pequena pausa entre batches
+        time.sleep(0.05)
+        
+        # Se buscou menos que o batch, pode ter mais - continua
+        if len(ids) < batch_size:
+            break
+    
+    return total_deleted
 
 
 def _delete_existing_bras_records(
@@ -1699,11 +1779,8 @@ def _delete_existing_bras_records(
 
     params = {'arquivo': arquivo_label}
     
-    # Deletar com retry
-    _delete_with_retry(
-        "DELETE FROM insumos_index WHERE origem = 'BRAS' AND item_id IN (SELECT id FROM bras_item_n WHERE arquivo = :arquivo)",
-        params,
-    )
+    # Deletar insumos_index primeiro (usando a função de batch por IDs)
+    _delete_insumos_by_arquivo('BRAS', 'bras_item_n', arquivo_label)
     _delete_with_retry('DELETE FROM bras_item_n WHERE arquivo = :arquivo', params)
     _delete_with_retry('DELETE FROM bras_raw WHERE arquivo = :arquivo', params)
     _delete_with_retry('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo', params)
@@ -1757,10 +1834,8 @@ def _delete_existing_simpro_records(
         return
 
     params = {'arquivo': arquivo_label}
-    _delete_with_retry(
-        "DELETE FROM insumos_index WHERE origem = 'SIMPRO' AND item_id IN (SELECT id FROM simpro_item_norm WHERE arquivo = :arquivo)",
-        params,
-    )
+    # Deletar insumos_index primeiro (usando a função de batch por IDs)
+    _delete_insumos_by_arquivo('SIMPRO', 'simpro_item_norm', arquivo_label)
     _delete_with_retry('DELETE FROM simpro_item_norm WHERE arquivo = :arquivo', params)
     _delete_with_retry('DELETE FROM simpro_fixed_stage WHERE arquivo = :arquivo', params)
 
