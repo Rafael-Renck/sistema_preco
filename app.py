@@ -1617,24 +1617,18 @@ def _encode_line_terminator(value: str | None) -> str:
     return value.encode('unicode_escape').decode('ascii')
 
 
-def _delete_in_batches(sql: str, params: dict, batch_size: int = 200, max_retries: int = 10) -> int:
+def _delete_in_batches(sql: str, params: dict, batch_size: int = 2000, max_retries: int = 5) -> int:
     """
-    Executa DELETE em batches pequenos para evitar lock timeout.
+    Executa DELETE em batches para evitar lock timeout.
     Adiciona LIMIT ao SQL e repete até não haver mais registros.
     """
     import time
     
-    # LOG IMPORTANTE: Confirma que o código novo está rodando
-    app.logger.info('=== DELETE_IN_BATCHES v2 === batch_size=%d, sql=%s', batch_size, sql[:80])
-    
     total_deleted = 0
-    # Adiciona LIMIT ao SQL se não tiver
     if 'LIMIT' not in sql.upper():
         sql_with_limit = f"{sql} LIMIT {batch_size}"
     else:
         sql_with_limit = sql
-    
-    app.logger.info('SQL with LIMIT: %s', sql_with_limit[:100])
     
     while True:
         deleted_this_batch = 0
@@ -1643,40 +1637,31 @@ def _delete_in_batches(sql: str, params: dict, batch_size: int = 200, max_retrie
                 result = db.session.execute(text(sql_with_limit), params)
                 db.session.commit()
                 deleted_this_batch = result.rowcount or 0
-                app.logger.info('Batch deleted: %d rows (attempt %d)', deleted_this_batch, attempt + 1)
                 break
             except Exception as exc:
                 db.session.rollback()
                 error_str = str(exc)
                 if ('1205' in error_str or '1213' in error_str) and attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 3  # Aumentado para 3s
-                    app.logger.warning('DELETE batch lock error (attempt %d/%d), retrying in %.1fs: %s', 
-                                      attempt + 1, max_retries, wait_time, error_str[:80])
-                    time.sleep(wait_time)
+                    time.sleep((attempt + 1) * 2)
                     continue
-                app.logger.error('DELETE batch FAILED after %d attempts: %s', attempt + 1, error_str[:200])
                 raise
         
         total_deleted += deleted_this_batch
-        app.logger.info('DELETE progress: batch=%d, total=%d', deleted_this_batch, total_deleted)
         
-        # Se deletou menos que o batch_size, acabou
         if deleted_this_batch < batch_size:
             break
         
-        # Pausa maior entre batches para liberar locks
-        time.sleep(0.3)
+        time.sleep(0.1)
     
-    app.logger.info('DELETE complete: total=%d rows deleted', total_deleted)
     return total_deleted
 
 
-def _delete_with_retry(sql: str, params: dict, max_retries: int = 10) -> None:
+def _delete_with_retry(sql: str, params: dict, max_retries: int = 5) -> None:
     """Executa DELETE em batches para evitar lock timeout."""
-    _delete_in_batches(sql, params, batch_size=200, max_retries=max_retries)
+    _delete_in_batches(sql, params, batch_size=2000, max_retries=max_retries)
 
 
-def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str, batch_size: int = 500) -> int:
+def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str, batch_size: int = 2000) -> int:
     """
     Deleta insumos_index baseado em item_id de outra tabela, em batches.
     Evita subquery com LIMIT que o MySQL não suporta.
@@ -1904,7 +1889,7 @@ def _bras_csv_fallback(
     skip_header: bool,
     encodings: list[str],
     arquivo_label: str,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> int:
     for enc in encodings:
         try:
@@ -1953,7 +1938,7 @@ def _stage_simpro_fixed(
     map_config: dict,
     encoding: str | None,
     arquivo_label: str,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> tuple[int, str]:
     encodings = _build_encoding_list(encoding)
     skip_header = bool(map_config.get('skip_header'))
@@ -2208,7 +2193,7 @@ def _stage_bras_fixed(
     encoding: str | None,
     line_terminator: str,
     arquivo_label: str,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> tuple[int, str]:
     columns_cfg = map_config.get('columns') or []
     if not columns_cfg:
@@ -2300,7 +2285,7 @@ def _execute_with_retry(sql, params: dict, max_retries: int = 10) -> int:
     return 0
 
 
-def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 500) -> int:
+def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -> int:
     """Materializa itens da view bras_item_v para bras_item_n em batches com retry para deadlocks."""
     _ensure_bras_item_view_exists()
     
@@ -2455,7 +2440,7 @@ def _sync_bras_insumo_index(
     uf_default: str | None = None,
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
-    batch_size: int = 500,
+    batch_size: int = 2000,
 ) -> None:
     """Sincroniza itens BRAS para insumos_index em batches para evitar lock timeout."""
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
