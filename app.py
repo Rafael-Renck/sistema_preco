@@ -3777,15 +3777,24 @@ def _upsert_linha_hashes(lote: Lote, entries: Sequence[tuple[str, str, str]], *,
     existing = {
         row.item_chave: row for row in session.query(LinhaHash).filter_by(lote_id=lote.id).all()
     }
-    new_keys = set()
+    
+    # Deduplica entries - mantém a última ocorrência de cada item_key
+    unique_entries: dict[str, tuple[str, str, str]] = {}
     for item_key, line_hash, payload_json in entries:
+        unique_entries[item_key] = (item_key, line_hash, payload_json)
+    
+    new_keys = set()
+    added_in_session: set[str] = set()  # Rastreia o que já foi adicionado nesta sessão
+    
+    for item_key, line_hash, payload_json in unique_entries.values():
         new_keys.add(item_key)
         row = existing.get(item_key)
         if row:
             if row.hash_linha != line_hash or row.payload_snapshot != payload_json:
                 row.hash_linha = line_hash
                 row.payload_snapshot = payload_json
-        else:
+        elif item_key not in added_in_session:
+            # Só adiciona se não adicionamos nesta sessão ainda
             session.add(
                 LinhaHash(
                     lote_id=lote.id,
@@ -3794,6 +3803,8 @@ def _upsert_linha_hashes(lote: Lote, entries: Sequence[tuple[str, str, str]], *,
                     payload_snapshot=payload_json,
                 )
             )
+            added_in_session.add(item_key)
+    
     for key, row in existing.items():
         if key not in new_keys:
             session.delete(row)
@@ -12064,6 +12075,7 @@ def _run_import_job(job_id: str) -> None:
                 metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
             except Exception as exc:  # noqa: BLE001
                 app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
+                db.session.rollback()  # Rollback antes de reutilizar a sessão
                 job = ImportJob.query.get(job_id)
                 if job:
                     job.message = _job_message_trim((job.message or '') + ' Consolidação posterior falhou.')
