@@ -1820,28 +1820,43 @@ def _bras_csv_fallback(
     skip_header: bool,
     encodings: list[str],
     arquivo_label: str,
+    batch_size: int = 500,
 ) -> int:
     for enc in encodings:
         try:
             with file_path.open('r', encoding=enc, newline='') as handle:
                 reader = csv.reader(handle, delimiter=delimiter, quotechar=quotechar or '"')
                 rows: list[dict] = []
+                total_inserted = 0
+                linha_num = 0
+                
                 for idx, raw in enumerate(reader, start=1):
                     if skip_header and idx == 1:
                         continue
+                    linha_num += 1
                     values = (raw or [])[:23]
                     values += [''] * (23 - len(values))
                     mapping = {
                         'arquivo': arquivo_label,
-                        'linha_num': len(rows) + 1,
+                        'linha_num': linha_num,
                         **{f'col{pos:02d}': (val.strip() or None) if isinstance(val, str) else None for pos, val in enumerate(values, start=1)}
                     }
                     rows.append(mapping)
-            if rows:
-                db.session.bulk_insert_mappings(BrasRaw, rows)
-                db.session.commit()
-                return len(rows)
-            return 0
+                    
+                    # Commit em batches para evitar lock timeout
+                    if len(rows) >= batch_size:
+                        db.session.bulk_insert_mappings(BrasRaw, rows)
+                        db.session.commit()
+                        total_inserted += len(rows)
+                        rows = []
+                
+                # Inserir linhas restantes
+                if rows:
+                    db.session.bulk_insert_mappings(BrasRaw, rows)
+                    db.session.commit()
+                    total_inserted += len(rows)
+                
+                return total_inserted
         except UnicodeDecodeError:
             db.session.rollback()
             continue
@@ -1854,6 +1869,7 @@ def _stage_simpro_fixed(
     map_config: dict,
     encoding: str | None,
     arquivo_label: str,
+    batch_size: int = 500,
 ) -> tuple[int, str]:
     encodings = _build_encoding_list(encoding)
     skip_header = bool(map_config.get('skip_header'))
@@ -1861,6 +1877,7 @@ def _stage_simpro_fixed(
     for enc in encodings:
         try:
             rows: list[dict] = []
+            total_inserted = 0
             with file_path.open('r', encoding=enc, newline='') as handle:
                 logical_idx = 0
                 for raw_idx, raw_line in enumerate(handle, start=1):
@@ -1873,10 +1890,22 @@ def _stage_simpro_fixed(
                         'linha_num': logical_idx,
                         'linha': line,
                     })
+                    
+                    # Commit em batches para evitar lock timeout
+                    if len(rows) >= batch_size:
+                        db.session.bulk_insert_mappings(SimproFixedStage, rows)
+                        db.session.commit()
+                        total_inserted += len(rows)
+                        rows = []
+            
+            # Inserir linhas restantes
             if rows:
                 db.session.bulk_insert_mappings(SimproFixedStage, rows)
                 db.session.commit()
-                inserted = len(rows)
+                total_inserted += len(rows)
+            
+            if total_inserted > 0:
+                inserted = total_inserted
                 break
         except UnicodeDecodeError:
             db.session.rollback()
@@ -2032,9 +2061,16 @@ def _materialize_simpro_items(
     if not parsed_rows:
         return 0
 
-    db.session.bulk_insert_mappings(SimproItemNormalized, parsed_rows)
-    db.session.commit()
-    return len(parsed_rows)
+    # Processar em batches para evitar lock timeout
+    batch_size = 500
+    total_inserted = 0
+    for i in range(0, len(parsed_rows), batch_size):
+        batch = parsed_rows[i:i + batch_size]
+        db.session.bulk_insert_mappings(SimproItemNormalized, batch)
+        db.session.commit()
+        total_inserted += len(batch)
+    
+    return total_inserted
 
 
 def _stage_bras_delimited(
@@ -2088,6 +2124,7 @@ def _stage_bras_fixed(
     encoding: str | None,
     line_terminator: str,
     arquivo_label: str,
+    batch_size: int = 500,
 ) -> tuple[int, str]:
     columns_cfg = map_config.get('columns') or []
     if not columns_cfg:
@@ -2099,6 +2136,8 @@ def _stage_bras_fixed(
         try:
             rows_stage: list[dict] = []
             rows_raw: list[dict] = []
+            total_inserted = 0
+            
             with file_path.open('r', encoding=enc, newline='') as handle:
                 for idx, raw_line in enumerate(handle, start=1):
                     line = raw_line.rstrip('\r\n')
@@ -2113,12 +2152,27 @@ def _stage_bras_fixed(
                         snippet = line[start:start + length]
                         mapping[name] = snippet.strip() or None
                     rows_raw.append(mapping)
+                    
+                    # Commit em batches para evitar lock timeout
+                    if len(rows_raw) >= batch_size:
+                        if rows_stage:
+                            db.session.bulk_insert_mappings(BrasFixedStage, rows_stage)
+                        if rows_raw:
+                            db.session.bulk_insert_mappings(BrasRaw, rows_raw)
+                        db.session.commit()
+                        total_inserted += len(rows_raw)
+                        rows_stage = []
+                        rows_raw = []
+            
+            # Inserir linhas restantes
             if rows_stage:
                 db.session.bulk_insert_mappings(BrasFixedStage, rows_stage)
             if rows_raw:
                 db.session.bulk_insert_mappings(BrasRaw, rows_raw)
             db.session.commit()
-            inserted = len(rows_raw)
+            total_inserted += len(rows_raw)
+            
+            inserted = total_inserted
             break
         except UnicodeDecodeError:
             db.session.rollback()
@@ -2139,7 +2193,7 @@ def _ensure_bras_item_view_exists() -> None:
     _bras_view_created = True
 
 
-def _execute_with_retry(sql, params: dict, max_retries: int = 5) -> int:
+def _execute_with_retry(sql, params: dict, max_retries: int = 10) -> int:
     """Executa SQL com retry automático para deadlocks e lock timeouts."""
     import time
     
@@ -2153,7 +2207,7 @@ def _execute_with_retry(sql, params: dict, max_retries: int = 5) -> int:
             error_str = str(exc)
             # Erro 1213: Deadlock, Erro 1205: Lock wait timeout
             if ('1213' in error_str or '1205' in error_str) and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 0.5  # Backoff progressivo: 0.5s, 1s, 1.5s, 2s
+                wait_time = (attempt + 1) * 2  # Backoff progressivo: 2s, 4s, 6s, 8s...
                 app.logger.warning('DB lock error (attempt %d/%d), retrying in %.1fs: %s', 
                                   attempt + 1, max_retries, wait_time, error_str[:100])
                 time.sleep(wait_time)
@@ -2162,7 +2216,7 @@ def _execute_with_retry(sql, params: dict, max_retries: int = 5) -> int:
     return 0
 
 
-def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -> int:
+def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 500) -> int:
     """Materializa itens da view bras_item_v para bras_item_n em batches com retry para deadlocks."""
     _ensure_bras_item_view_exists()
     
@@ -2317,7 +2371,7 @@ def _sync_bras_insumo_index(
     uf_default: str | None = None,
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
-    batch_size: int = 2000,
+    batch_size: int = 500,
 ) -> None:
     """Sincroniza itens BRAS para insumos_index em batches para evitar lock timeout."""
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
