@@ -13,6 +13,8 @@ services:
       --collation-server=utf8mb4_unicode_ci
       --innodb-buffer-pool-size=384M
       --innodb-log-file-size=96M
+      --innodb-lock-wait-timeout=120
+      --innodb-deadlock-detect=ON
       --max-connections=100
       --table-open-cache=2000
       --tmp-table-size=64M

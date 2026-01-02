@@ -1630,19 +1630,19 @@ def _delete_existing_bras_records(
     
     Modos de operação:
     - truncate=True, aliquota_filter=None: Limpa TUDO da Brasíndice
-    - truncate=True, aliquota_filter=X: Limpa apenas dados da alíquota X (mantém outras)
+    - truncate=True, aliquota_filter=X: Limpa índice da alíquota X + dados do arquivo atual
     - truncate=False, arquivo_label=X: Limpa apenas registros do arquivo X
     """
     
-    # Modo 1: Limpar por alíquota específica (mantém outras alíquotas)
+    # Modo 1: Limpar por alíquota específica no índice + arquivo atual nas tabelas raw
     if truncate and aliquota_filter is not None:
-        app.logger.info('Limpando Brasíndice apenas para alíquota %.2f / UF %s', aliquota_filter, uf_filter or 'todas')
+        app.logger.info('Limpando Brasíndice: alíquota %.2f / UF %s / arquivo %s', 
+                       aliquota_filter, uf_filter or 'todas', arquivo_label or 'N/A')
         
         # Construir filtro de UF
         uf_condition = ""
         params: dict = {'aliquota': float(aliquota_filter)}
         if uf_filter:
-            # uf_referencia pode ser "BA, PE" ou "BA" - usar LIKE para encontrar
             uf_condition = " AND (uf_referencia LIKE :uf_pattern OR uf_referencia = :uf_exact)"
             params['uf_pattern'] = f'%{uf_filter}%'
             params['uf_exact'] = uf_filter
@@ -1652,6 +1652,14 @@ def _delete_existing_bras_records(
             text(f"DELETE FROM insumos_index WHERE origem = 'BRAS' AND aliquota = :aliquota{uf_condition}"),
             params,
         )
+        
+        # TAMBÉM deletar dados do arquivo específico das tabelas raw/normalized
+        if arquivo_label:
+            arquivo_params = {'arquivo': arquivo_label}
+            db.session.execute(text('DELETE FROM bras_item_n WHERE arquivo = :arquivo'), arquivo_params)
+            db.session.execute(text('DELETE FROM bras_raw WHERE arquivo = :arquivo'), arquivo_params)
+            db.session.execute(text('DELETE FROM bras_fixed_stage WHERE arquivo = :arquivo'), arquivo_params)
+        
         db.session.commit()
         return
     
@@ -2131,60 +2139,105 @@ def _ensure_bras_item_view_exists() -> None:
     _bras_view_created = True
 
 
-def _materialize_bras_items(arquivo_label: str | None) -> int:
+def _execute_with_retry(sql, params: dict, max_retries: int = 5) -> int:
+    """Executa SQL com retry automático para deadlocks e lock timeouts."""
+    import time
+    
+    for attempt in range(max_retries):
+        try:
+            result = db.session.execute(sql, params)
+            db.session.commit()
+            return result.rowcount or 0
+        except Exception as exc:
+            db.session.rollback()
+            error_str = str(exc)
+            # Erro 1213: Deadlock, Erro 1205: Lock wait timeout
+            if ('1213' in error_str or '1205' in error_str) and attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 0.5  # Backoff progressivo: 0.5s, 1s, 1.5s, 2s
+                app.logger.warning('DB lock error (attempt %d/%d), retrying in %.1fs: %s', 
+                                  attempt + 1, max_retries, wait_time, error_str[:100])
+                time.sleep(wait_time)
+                continue
+            raise
+    return 0
+
+
+def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -> int:
+    """Materializa itens da view bras_item_v para bras_item_n em batches com retry para deadlocks."""
     _ensure_bras_item_view_exists()
-    params: dict[str, str] = {}
+    
+    params: dict[str, object] = {}
     where_clause = ''
     if arquivo_label:
         params['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
 
-    insert_sql = text(
-        """
-        INSERT INTO bras_item_n (
-            id, arquivo, linha_num,
-            laboratorio_codigo, laboratorio_nome,
-            produto_codigo, produto_nome,
-            apresentacao_codigo, apresentacao_descricao,
-            ean, registro_anvisa, edicao,
-            preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
-            aliquota_ou_ipi, quantidade_embalagem, imported_at
+    # Primeiro, conta quantos registros temos
+    count_sql = text(f"SELECT COUNT(*) FROM bras_item_v {where_clause}")
+    total_count = db.session.execute(count_sql, params).scalar() or 0
+    
+    if total_count == 0:
+        return 0
+    
+    # Processa em batches para evitar lock timeout
+    total_inserted = 0
+    offset = 0
+    
+    while offset < total_count:
+        batch_params = {**params, 'batch_size': batch_size, 'offset': offset}
+        
+        insert_sql = text(
+            """
+            INSERT INTO bras_item_n (
+                id, arquivo, linha_num,
+                laboratorio_codigo, laboratorio_nome,
+                produto_codigo, produto_nome,
+                apresentacao_codigo, apresentacao_descricao,
+                ean, registro_anvisa, edicao,
+                preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
+                aliquota_ou_ipi, quantidade_embalagem, imported_at
+            )
+            SELECT
+                id, arquivo, linha_num,
+                laboratorio_codigo, laboratorio_nome,
+                produto_codigo, produto_nome,
+                apresentacao_codigo, apresentacao_descricao,
+                ean, registro_anvisa, edicao,
+                preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
+                aliquota_ou_ipi, quantidade_embalagem, imported_at
+            FROM bras_item_v
+            {where_clause}
+            ORDER BY id
+            LIMIT :batch_size OFFSET :offset
+            ON DUPLICATE KEY UPDATE
+                arquivo = VALUES(arquivo),
+                linha_num = VALUES(linha_num),
+                laboratorio_codigo = VALUES(laboratorio_codigo),
+                laboratorio_nome = VALUES(laboratorio_nome),
+                produto_codigo = VALUES(produto_codigo),
+                produto_nome = VALUES(produto_nome),
+                apresentacao_codigo = VALUES(apresentacao_codigo),
+                apresentacao_descricao = VALUES(apresentacao_descricao),
+                ean = VALUES(ean),
+                registro_anvisa = VALUES(registro_anvisa),
+                edicao = VALUES(edicao),
+                preco_pmc_pacote = VALUES(preco_pmc_pacote),
+                preco_pfb_pacote = VALUES(preco_pfb_pacote),
+                preco_pmc_unit = VALUES(preco_pmc_unit),
+                preco_pfb_unit = VALUES(preco_pfb_unit),
+                aliquota_ou_ipi = VALUES(aliquota_ou_ipi),
+                quantidade_embalagem = VALUES(quantidade_embalagem),
+                imported_at = VALUES(imported_at)
+            """.replace('{where_clause}', where_clause)
         )
-        SELECT
-            id, arquivo, linha_num,
-            laboratorio_codigo, laboratorio_nome,
-            produto_codigo, produto_nome,
-            apresentacao_codigo, apresentacao_descricao,
-            ean, registro_anvisa, edicao,
-            preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
-            aliquota_ou_ipi, quantidade_embalagem, imported_at
-        FROM bras_item_v
-        {where_clause}
-        ON DUPLICATE KEY UPDATE
-            arquivo = VALUES(arquivo),
-            linha_num = VALUES(linha_num),
-            laboratorio_codigo = VALUES(laboratorio_codigo),
-            laboratorio_nome = VALUES(laboratorio_nome),
-            produto_codigo = VALUES(produto_codigo),
-            produto_nome = VALUES(produto_nome),
-            apresentacao_codigo = VALUES(apresentacao_codigo),
-            apresentacao_descricao = VALUES(apresentacao_descricao),
-            ean = VALUES(ean),
-            registro_anvisa = VALUES(registro_anvisa),
-            edicao = VALUES(edicao),
-            preco_pmc_pacote = VALUES(preco_pmc_pacote),
-            preco_pfb_pacote = VALUES(preco_pfb_pacote),
-            preco_pmc_unit = VALUES(preco_pmc_unit),
-            preco_pfb_unit = VALUES(preco_pfb_unit),
-            aliquota_ou_ipi = VALUES(aliquota_ou_ipi),
-            quantidade_embalagem = VALUES(quantidade_embalagem),
-            imported_at = VALUES(imported_at)
-        """.replace('{where_clause}', where_clause)
-    )
 
-    result = db.session.execute(insert_sql, params)
-    db.session.commit()
-    return result.rowcount or 0
+        batch_inserted = _execute_with_retry(insert_sql, batch_params)
+        total_inserted += batch_inserted
+        offset += batch_size
+        
+        app.logger.debug('Materialize BRAS batch: offset=%d, inserted=%d, total=%d', offset, batch_inserted, total_inserted)
+    
+    return total_count  # Retorna contagem real, não rowcount
 
 
 def _normalize_uf_codes(
@@ -2264,7 +2317,9 @@ def _sync_bras_insumo_index(
     uf_default: str | None = None,
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
+    batch_size: int = 2000,
 ) -> None:
+    """Sincroniza itens BRAS para insumos_index em batches para evitar lock timeout."""
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
     uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
     uf_storage = _encode_uf_codes(uf_codes)
@@ -2279,51 +2334,67 @@ def _sync_bras_insumo_index(
         params_base['arquivo'] = arquivo_label
         where_clause = 'WHERE arquivo = :arquivo'
 
+    # Conta quantos registros temos
+    count_sql = text(f"SELECT COUNT(*) FROM bras_item_n n {where_clause}")
+    total_count = db.session.execute(count_sql, params_base).scalar() or 0
+    
+    if total_count == 0:
+        return
+
     preco_expr = "COALESCE(n.preco_pmc_unit, n.preco_pmc_pacote, n.preco_pfb_unit, n.preco_pfb_pacote)"
     preco_sql = _sql_clamp_decimal(preco_expr)
     aliquota_expr = "COALESCE(n.aliquota_ou_ipi, :aliquota_default)"
     aliquota_sql = _sql_clamp_decimal(aliquota_expr, integer_digits=4, scale=4)
 
-    upsert_template = text(
-        """
-        INSERT INTO insumos_index (
-            origem, item_id, tuss, tiss, descricao, preco, aliquota,
-            fabricante, anvisa, versao_tabela, data_atualizacao,
-            uf_referencia, updated_at
+    # Processa em batches
+    offset = 0
+    while offset < total_count:
+        batch_params = {**params_base, 'batch_size': batch_size, 'offset': offset}
+        
+        upsert_template = text(
+            """
+            INSERT INTO insumos_index (
+                origem, item_id, tuss, tiss, descricao, preco, aliquota,
+                fabricante, anvisa, versao_tabela, data_atualizacao,
+                uf_referencia, updated_at
+            )
+            SELECT
+                'BRAS' AS origem,
+                n.id AS item_id,
+                n.produto_codigo AS tuss,
+                n.apresentacao_codigo AS tiss,
+                TRIM(CONCAT_WS(' • ', NULLIF(n.produto_nome, ''), NULLIF(n.apresentacao_descricao, ''))) AS descricao,
+                {preco_sql} AS preco,
+                {aliquota_sql} AS aliquota,
+                n.laboratorio_nome AS fabricante,
+                n.registro_anvisa AS anvisa,
+                COALESCE(n.edicao, n.arquivo) AS versao_tabela,
+                NULL AS data_atualizacao,
+                COALESCE(:uf_storage, :uf_default) AS uf_referencia,
+                NOW() AS updated_at
+            FROM bras_item_n n
+            {where_clause}
+            ORDER BY n.id
+            LIMIT :batch_size OFFSET :offset
+            ON DUPLICATE KEY UPDATE
+                tuss = VALUES(tuss),
+                tiss = VALUES(tiss),
+                descricao = VALUES(descricao),
+                preco = VALUES(preco),
+                aliquota = VALUES(aliquota),
+                fabricante = VALUES(fabricante),
+                anvisa = VALUES(anvisa),
+                versao_tabela = VALUES(versao_tabela),
+                data_atualizacao = VALUES(data_atualizacao),
+                uf_referencia = VALUES(uf_referencia),
+                updated_at = VALUES(updated_at)
+            """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
         )
-        SELECT
-            'BRAS' AS origem,
-            n.id AS item_id,
-            n.produto_codigo AS tuss,
-            n.apresentacao_codigo AS tiss,
-            TRIM(CONCAT_WS(' • ', NULLIF(n.produto_nome, ''), NULLIF(n.apresentacao_descricao, ''))) AS descricao,
-            {preco_sql} AS preco,
-            {aliquota_sql} AS aliquota,
-            n.laboratorio_nome AS fabricante,
-            n.registro_anvisa AS anvisa,
-            COALESCE(n.edicao, n.arquivo) AS versao_tabela,
-            NULL AS data_atualizacao,
-            COALESCE(:uf_storage, :uf_default) AS uf_referencia,
-            NOW() AS updated_at
-        FROM bras_item_n n
-        {where_clause}
-        ON DUPLICATE KEY UPDATE
-            tuss = VALUES(tuss),
-            tiss = VALUES(tiss),
-            descricao = VALUES(descricao),
-            preco = VALUES(preco),
-            aliquota = VALUES(aliquota),
-            fabricante = VALUES(fabricante),
-            anvisa = VALUES(anvisa),
-            versao_tabela = VALUES(versao_tabela),
-            data_atualizacao = VALUES(data_atualizacao),
-            uf_referencia = VALUES(uf_referencia),
-            updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
-    )
 
-    db.session.execute(upsert_template, params_base)
-    db.session.commit()
+        _execute_with_retry(upsert_template, batch_params)
+        offset += batch_size
+        
+        app.logger.debug('Sync BRAS index batch: offset=%d, total=%d', offset, total_count)
 
 
 def _sync_simpro_insumo_index(
@@ -2452,9 +2523,17 @@ def _import_bras(
             arquivo_label=arquivo_label,
         )
 
-    materialized = _materialize_bras_items(arquivo_label if not truncate else None)
+    # Sempre materializa apenas o arquivo atual
+    _materialize_bras_items(arquivo_label)
+    
+    # Conta as linhas reais materializadas para este arquivo
+    count_result = db.session.execute(
+        text("SELECT COUNT(*) FROM bras_item_n WHERE arquivo = :arquivo"),
+        {'arquivo': arquivo_label}
+    ).scalar() or 0
+    
     _sync_bras_insumo_index(
-        arquivo_label if not truncate else None,
+        arquivo_label,
         uf_default=uf_default,
         uf_values=uf_values,
         aliquota_default=aliquota_default,
@@ -2463,7 +2542,7 @@ def _import_bras(
     return {
         'arquivo': arquivo_label,
         'linhas_raw': inserted,
-        'linhas_materializadas': materialized,
+        'linhas_materializadas': count_result,
         'load_strategy': stage_strategy,
     }
 
@@ -2803,7 +2882,7 @@ def _import_simpro(
     )
 
     _sync_simpro_insumo_index(
-        arquivo_label if not truncate else None,
+        arquivo_label,
         uf_default=uf_default,
         uf_values=uf_values,
         aliquota_default=aliquota_default,
