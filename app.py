@@ -1617,12 +1617,15 @@ def _encode_line_terminator(value: str | None) -> str:
     return value.encode('unicode_escape').decode('ascii')
 
 
-def _delete_in_batches(sql: str, params: dict, batch_size: int = 500, max_retries: int = 5) -> int:
+def _delete_in_batches(sql: str, params: dict, batch_size: int = 200, max_retries: int = 10) -> int:
     """
     Executa DELETE em batches pequenos para evitar lock timeout.
     Adiciona LIMIT ao SQL e repete até não haver mais registros.
     """
     import time
+    
+    # LOG IMPORTANTE: Confirma que o código novo está rodando
+    app.logger.info('=== DELETE_IN_BATCHES v2 === batch_size=%d, sql=%s', batch_size, sql[:80])
     
     total_deleted = 0
     # Adiciona LIMIT ao SQL se não tiver
@@ -1631,6 +1634,8 @@ def _delete_in_batches(sql: str, params: dict, batch_size: int = 500, max_retrie
     else:
         sql_with_limit = sql
     
+    app.logger.info('SQL with LIMIT: %s', sql_with_limit[:100])
+    
     while True:
         deleted_this_batch = 0
         for attempt in range(max_retries):
@@ -1638,34 +1643,37 @@ def _delete_in_batches(sql: str, params: dict, batch_size: int = 500, max_retrie
                 result = db.session.execute(text(sql_with_limit), params)
                 db.session.commit()
                 deleted_this_batch = result.rowcount or 0
+                app.logger.info('Batch deleted: %d rows (attempt %d)', deleted_this_batch, attempt + 1)
                 break
             except Exception as exc:
                 db.session.rollback()
                 error_str = str(exc)
                 if ('1205' in error_str or '1213' in error_str) and attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2
-                    app.logger.warning('DELETE batch lock error (attempt %d/%d), retrying in %.1fs', 
-                                      attempt + 1, max_retries, wait_time)
+                    wait_time = (attempt + 1) * 3  # Aumentado para 3s
+                    app.logger.warning('DELETE batch lock error (attempt %d/%d), retrying in %.1fs: %s', 
+                                      attempt + 1, max_retries, wait_time, error_str[:80])
                     time.sleep(wait_time)
                     continue
+                app.logger.error('DELETE batch FAILED after %d attempts: %s', attempt + 1, error_str[:200])
                 raise
         
         total_deleted += deleted_this_batch
-        app.logger.debug('DELETE batch: deleted %d rows, total %d', deleted_this_batch, total_deleted)
+        app.logger.info('DELETE progress: batch=%d, total=%d', deleted_this_batch, total_deleted)
         
         # Se deletou menos que o batch_size, acabou
         if deleted_this_batch < batch_size:
             break
         
-        # Pequena pausa entre batches para liberar locks
-        time.sleep(0.1)
+        # Pausa maior entre batches para liberar locks
+        time.sleep(0.3)
     
+    app.logger.info('DELETE complete: total=%d rows deleted', total_deleted)
     return total_deleted
 
 
-def _delete_with_retry(sql: str, params: dict, max_retries: int = 5) -> None:
+def _delete_with_retry(sql: str, params: dict, max_retries: int = 10) -> None:
     """Executa DELETE em batches para evitar lock timeout."""
-    _delete_in_batches(sql, params, batch_size=500, max_retries=max_retries)
+    _delete_in_batches(sql, params, batch_size=200, max_retries=max_retries)
 
 
 def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str, batch_size: int = 500) -> int:
