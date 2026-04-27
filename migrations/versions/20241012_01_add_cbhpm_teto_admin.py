@@ -1,7 +1,7 @@
 """add cbhpm teto admin support
 
 Revision ID: 20241012_01_add_cbhpm_teto_admin
-Revises: 20241009_04_add_simpro_pipeline
+Revises: 20241009_04
 Create Date: 2025-09-29 10:22:36
 
 """
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import mysql
 
 
 revision: str = '20241012_01_add_cbhpm_teto_admin'
-down_revision: Union[str, None] = '20241009_04_add_simpro_pipeline'
+down_revision: Union[str, None] = '20241009_04'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
