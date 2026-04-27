@@ -14,7 +14,7 @@ from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = "20260427_01_add_simpro_fracionavel"
-down_revision: Union[str, None] = "20241024_02"
+down_revision: Union[str, None] = "20241024_02_add_operadora_to_procedimentos"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
