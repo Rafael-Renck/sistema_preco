@@ -82,6 +82,10 @@
                   <label class="form-check-label small" for="brasBatchTruncate">Substituir mesma alíquota</label>
                 </div>
                 <small class="text-muted d-block mt-1">Mantém outras alíquotas intactas</small>
+                <div class="form-check form-switch mt-2">
+                  <input class="form-check-input" type="checkbox" id="brasBatchKeepLatest" checked>
+                  <label class="form-check-label small" for="brasBatchKeepLatest">Manter só a versão mais nova</label>
+                </div>
               </div>
               <div class="col-12 d-none" id="brasBatchPreview">
                 <table class="table table-sm table-bordered mb-2">
@@ -100,6 +104,188 @@
         </div>
         
         <!-- Formulário Avançado (colapsado) -->
+        <div class="card border-info mb-3">
+          <div class="card-header bg-info text-white py-2">
+            <i class="bi bi-activity me-1"></i> Delta Brasíndice (arquivo grande + catálogo)
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">Use o arquivo grande para preço e o arquivo `TXT D INCL` para detectar inclusões e alterações cadastrais antes de importar. Ao importar, o processamento entra em <strong>Importações em andamento</strong> (origem BRAS, descrição com o nome dos arquivos) até concluir.</p>
+            <form id="brasDeltaForm" class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">Arquivo grande Brasíndice</label>
+                <input class="form-control" type="file" name="arquivo" accept=".txt,.csv" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label">Arquivo catálogo (TXT D INCL)</label>
+                <input class="form-control" type="file" name="catalogo" accept=".txt,.csv">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Versão</label>
+                <input class="form-control" name="versao" placeholder="ex.: 2026-04" required>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Versão cat. anterior</label>
+                <input class="form-control" name="catalog_prev_versao" placeholder="opcional">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Data ref.</label>
+                <input class="form-control" type="date" name="data_atualizacao">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Alíquota (%)</label>
+                <input class="form-control" name="aliquota" placeholder="ex.: 18">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">UFs (opcional)</label>
+                <select class="form-select" name="ufs" multiple size="4">
+                  {% for uf in UFS %}<option value="{{ uf }}">{{ uf }}</option>{% endfor %}
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Delimitador</label>
+                <input class="form-control" name="delimiter" value=",">
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Encoding</label>
+                <select class="form-select" name="encoding">
+                  <option value="latin-1">Latin-1</option>
+                  <option value="utf-8">UTF-8</option>
+                  <option value="cp1252">Windows-1252</option>
+                </select>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Delim. catálogo</label>
+                <input class="form-control" name="catalog_delimiter" value=";">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Encoding catálogo</label>
+                <select class="form-select" name="catalog_encoding">
+                  <option value="latin-1">Latin-1</option>
+                  <option value="utf-8">UTF-8</option>
+                  <option value="cp1252">Windows-1252</option>
+                </select>
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="skip_header" id="brasDeltaSkipHeader">
+                  <label class="form-check-label" for="brasDeltaSkipHeader">Sem cabeçalho</label>
+                </div>
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="truncate" id="brasDeltaTruncate">
+                  <label class="form-check-label" for="brasDeltaTruncate">Limpar antes</label>
+                </div>
+              </div>
+              <div class="col-12 d-flex gap-2">
+                <button class="btn btn-outline-info" type="button" id="brasDeltaAnalyzeBtn">
+                  <i class="bi bi-search me-1"></i> Analisar Delta
+                </button>
+                <button class="btn btn-info text-white" type="button" id="brasDeltaImportBtn">
+                  <i class="bi bi-upload me-1"></i> Importar Delta
+                </button>
+              </div>
+              <div class="col-12 small text-muted" id="brasDeltaMessage">Selecione os arquivos e analise antes de importar.</div>
+            </form>
+            <div class="mt-3 d-none" id="brasDeltaResults">
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <div class="card bg-light border-0 h-100">
+                    <div class="card-body">
+                      <h6 class="mb-2">Delta de Preço</h6>
+                      <div class="small" id="brasDeltaSummary"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="card bg-light border-0 h-100">
+                    <div class="card-body">
+                      <h6 class="mb-2">Delta de Catálogo</h6>
+                      <div class="small" id="brasCatalogSummary"></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="col-12">
+                  <div class="table-responsive">
+                    <table class="table table-sm table-bordered mb-0">
+                      <thead class="table-light">
+                        <tr>
+                          <th>Tipo</th>
+                          <th>EAN</th>
+                          <th>Produto</th>
+                          <th>Apresentação</th>
+                          <th>TUSS</th>
+                        </tr>
+                      </thead>
+                      <tbody id="brasDeltaSamples">
+                        <tr><td colspan="5" class="text-center text-muted">Nenhuma análise executada.</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card border-secondary mb-3">
+          <div class="card-header bg-secondary text-white py-2">
+            <i class="bi bi-currency-dollar me-1"></i> Só preços (split cadastro + alíquota)
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">Arquivo com o <strong>mesmo layout do delta</strong> (TXT D). Atualiza apenas preços em <code>bras_item_preco</code> para a edição e EAN já existentes em <code>bras_item_cadastro</code>. A <strong>edição</strong> precisa bater com a <strong>coluna 14 do arquivo</strong> (o que entrou no banco), não só com o rótulo “versão” da tela de import: se você usou <code>2026-1091</code> no formulário mas o TXT traz <code>1091</code>, o sistema agora tenta as duas formas. Use as sugestões abaixo quando existirem cadastros. Processamento em <strong>Importações em andamento</strong>.</p>
+            <form id="brasPrecosForm" class="row g-3">
+              <div class="col-md-4">
+                <label class="form-label">Arquivo de preços</label>
+                <input class="form-control" type="file" name="arquivo" accept=".txt,.csv" required>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Versão / edição</label>
+                <input class="form-control" name="versao" id="brasPrecosVersao" placeholder="ex.: 1091 ou 2026-1091" list="brasPrecosEdicoesDatalist" required autocomplete="off">
+                <datalist id="brasPrecosEdicoesDatalist"></datalist>
+                <div class="mt-1">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="brasPrecosLoadEdicoesBtn">Sugerir edições do banco</button>
+                </div>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Alíquota (%)</label>
+                <input class="form-control" type="text" name="aliquota" id="brasPrecosAliquota" placeholder="ex.: 20.5" required autocomplete="off" inputmode="decimal">
+                <div class="form-text small" id="brasPrecosAliquotaUfHint"></div>
+              </div>
+              <div class="col-md-2">
+                <label class="form-label">Delimitador</label>
+                <input class="form-control" name="delimiter" value=",">
+              </div>
+              <div class="col-md-3">
+                <label class="form-label">Encoding</label>
+                <select class="form-select" name="encoding">
+                  <option value="latin-1">Latin-1</option>
+                  <option value="utf-8">UTF-8</option>
+                  <option value="cp1252">Windows-1252</option>
+                </select>
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="skip_header" id="brasPrecosSkipHeader">
+                  <label class="form-check-label" for="brasPrecosSkipHeader">Sem cabeçalho</label>
+                </div>
+              </div>
+              <div class="col-md-3 d-flex align-items-end">
+                <div class="form-check form-switch">
+                  <input class="form-check-input" type="checkbox" name="no_legacy" id="brasPrecosNoLegacy">
+                  <label class="form-check-label" for="brasPrecosNoLegacy">Não atualizar <code>bras_item_n</code> / índice</label>
+                </div>
+              </div>
+              <div class="col-12 d-flex gap-2">
+                <button class="btn btn-secondary" type="button" id="brasPrecosImportBtn">
+                  <i class="bi bi-upload me-1"></i> Enfileirar importação de preços
+                </button>
+              </div>
+              <div class="col-12 small text-muted" id="brasPrecosMessage">Preencha edição e alíquota do arquivo; o cadastro deve existir (ex.: após <code>bras:backfill</code>).</div>
+            </form>
+          </div>
+        </div>
+
         <details class="mb-0">
           <summary class="text-muted small mb-2" style="cursor:pointer"><i class="bi bi-gear me-1"></i> Formulário Avançado (arquivo único)</summary>
           <div class="card p-3 mt-2" id="imp-bras">
@@ -179,6 +365,12 @@
             <label class="form-check-label" for="brasTruncate">Limpar tabela antes de importar</label>
           </div>
         </div>
+        <div class="col-md-4 d-flex align-items-center">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" name="keep_only_latest_version" id="brasKeepLatestVersion" checked>
+            <label class="form-check-label" for="brasKeepLatestVersion">Manter só a versão mais nova</label>
+          </div>
+        </div>
         <div class="col-12 d-flex gap-2">
           <button class="btn btn-primary" type="submit">Importar Brasíndice</button>
           <a class="btn btn-outline-secondary" href="{{ url_for('insumos_dashboard') }}" target="_blank">Abrir consulta</a>
@@ -213,22 +405,21 @@
             <i class="bi bi-lightning-charge-fill me-1"></i> Importação Rápida (Múltiplos Arquivos)
           </div>
           <div class="card-body">
-            <p class="text-muted small mb-3">Arraste múltiplos arquivos. Versão e alíquota são detectadas do nome (ex: MSG 50 2025 18.TXT).</p>
+            <p class="text-muted small mb-3">Arraste múltiplos arquivos. Versão e alíquota são detectadas do nome (ex: `MSG 50 2025 18.TXT` ou `MSG 17 2026 JSON.JSON`).</p>
             <div class="row g-3">
               <div class="col-md-8">
-                <input type="file" id="simproBatchFiles" accept=".txt,.csv" multiple class="d-none">
+                <input type="file" id="simproBatchFiles" accept=".txt,.csv,.json,.xml" multiple class="d-none">
                 <div class="dropzone-area dropzone-success" id="simproBatchDropzone">
                   <i class="bi bi-cloud-arrow-up fs-2 text-success"></i>
                   <p class="mb-0 mt-2">Arraste arquivos aqui ou <strong>clique para selecionar</strong></p>
-                  <small class="text-muted">.TXT - SIMPRO por alíquota (MSG XX YYYY ZZ.TXT)</small>
+                  <small class="text-muted">.TXT/.JSON - SIMPRO por nome de arquivo (ex.: MSG XX YYYY ZZ.TXT ou MSG XX YYYY JSON.JSON)</small>
                 </div>
               </div>
               <div class="col-md-4">
                 <div class="mb-2">
                   <label class="form-label small mb-1">Data Atualização</label>
                   <input type="date" class="form-control form-control-sm" id="simproBatchDataRef">
-                </div>
-                <div class="alert alert-info py-1 px-2 mb-0 small">
+                </div><div class="alert alert-info py-1 px-2 mb-0 small">
                   <i class="bi bi-info-circle me-1"></i> Modo acumulativo: dados são adicionados sem apagar
                 </div>
               </div>
@@ -896,6 +1087,288 @@
   });
 
   // ==================== BRASÍNDICE BATCH ====================
+  const brasDeltaForm = document.getElementById('brasDeltaForm');
+  const brasDeltaAnalyzeBtn = document.getElementById('brasDeltaAnalyzeBtn');
+  const brasDeltaImportBtn = document.getElementById('brasDeltaImportBtn');
+  const brasDeltaMessage = document.getElementById('brasDeltaMessage');
+  const brasDeltaResults = document.getElementById('brasDeltaResults');
+  const brasDeltaSummary = document.getElementById('brasDeltaSummary');
+  const brasCatalogSummary = document.getElementById('brasCatalogSummary');
+  const brasDeltaSamples = document.getElementById('brasDeltaSamples');
+
+  function setBrasDeltaMessage(type, text){
+    if(!brasDeltaMessage) return;
+    brasDeltaMessage.textContent = text;
+    brasDeltaMessage.classList.remove('text-muted', 'text-danger', 'text-success', 'text-warning');
+    if(type === 'error') brasDeltaMessage.classList.add('text-danger');
+    else if(type === 'success') brasDeltaMessage.classList.add('text-success');
+    else if(type === 'warning') brasDeltaMessage.classList.add('text-warning');
+    else brasDeltaMessage.classList.add('text-muted');
+  }
+
+  function renderBrasDeltaResult(payload){
+    brasDeltaResults?.classList.remove('d-none');
+    const priceLines = [
+      `Itens no arquivo: ${payload.total_arquivo ?? 0}`,
+      `Itens existentes: ${payload.total_existente ?? 0}`,
+      `Novos: ${payload.novos ?? 0}`,
+      `Alterados: ${payload.alterados ?? 0}`,
+      `Inalterados: ${payload.inalterados ?? 0}`,
+      `Removidos: ${payload.removidos ?? 0}`,
+    ];
+    if(brasDeltaSummary){
+      brasDeltaSummary.innerHTML = priceLines.map(line => `<div>${escapeHtml(String(line))}</div>`).join('');
+    }
+
+    const catalog = payload.catalog;
+    if(brasCatalogSummary){
+      if(catalog){
+        const catalogLines = [
+          `Versão atual: ${catalog.current_version || '—'}`,
+          `Versão anterior: ${catalog.previous_version || '—'}`,
+          `Itens atuais: ${catalog.current_total ?? 0}`,
+          `Itens anteriores: ${catalog.previous_total ?? 0}`,
+          `Novos: ${catalog.new_count ?? 0}`,
+          `Alterados: ${catalog.changed_count ?? 0}`,
+          `Removidos: ${catalog.removed_count ?? 0}`,
+        ];
+        brasCatalogSummary.innerHTML = catalogLines.map(line => `<div>${escapeHtml(String(line))}</div>`).join('');
+      } else {
+        brasCatalogSummary.innerHTML = '<div class="text-muted">Nenhum catálogo informado na análise.</div>';
+      }
+    }
+
+    const sampleRows = [];
+    (payload.detalhes_alterados || []).slice(0, 8).forEach(item => {
+      sampleRows.push(`<tr><td>Preço alterado</td><td>${escapeHtml(item.ean || '—')}</td><td>${escapeHtml(item.produto || '—')}</td><td>${escapeHtml(item.apresentacao || '—')}</td><td>—</td></tr>`);
+    });
+    if(catalog){
+      (catalog.sample_new || []).slice(0, 6).forEach(item => {
+        sampleRows.push(`<tr><td>Catálogo novo</td><td>${escapeHtml(item.ean || '—')}</td><td>${escapeHtml(item.produto_nome || '—')}</td><td>${escapeHtml(item.apresentacao_descricao || '—')}</td><td>${escapeHtml(item.tuss || '—')}</td></tr>`);
+      });
+      (catalog.sample_changed || []).slice(0, 6).forEach(item => {
+        sampleRows.push(`<tr><td>Catálogo alterado</td><td>${escapeHtml(item.ean || '—')}</td><td>${escapeHtml(item.produto_nome || '—')}</td><td>${escapeHtml(item.apresentacao_descricao || '—')}</td><td>${escapeHtml(item.tuss || '—')}</td></tr>`);
+      });
+      (catalog.sample_removed || []).slice(0, 6).forEach(item => {
+        sampleRows.push(`<tr><td>Catálogo removido</td><td>${escapeHtml(item.ean || '—')}</td><td>${escapeHtml(item.produto_nome || '—')}</td><td>${escapeHtml(item.apresentacao_descricao || '—')}</td><td>${escapeHtml(item.tuss || '—')}</td></tr>`);
+      });
+    }
+    if(brasDeltaSamples){
+      brasDeltaSamples.innerHTML = sampleRows.length
+        ? sampleRows.join('')
+        : '<tr><td colspan="5" class="text-center text-muted">Sem amostras para exibir.</td></tr>';
+    }
+  }
+
+  async function submitBrasDelta(mode){
+    if(!brasDeltaForm) return;
+    const formData = new FormData(brasDeltaForm);
+    const mainFile = brasDeltaForm.querySelector('input[name="arquivo"]')?.files?.[0];
+    if(!mainFile){
+      setBrasDeltaMessage('error', 'Selecione o arquivo grande Brasíndice.');
+      return;
+    }
+    const url = mode === 'analyze'
+      ? '{{ url_for("insumos_bras_analyze_delta") }}'
+      : '{{ url_for("insumos_bras_import_delta") }}';
+    const triggerBtn = mode === 'analyze' ? brasDeltaAnalyzeBtn : brasDeltaImportBtn;
+    if(triggerBtn) triggerBtn.disabled = true;
+    setBrasDeltaMessage('muted', mode === 'analyze' ? 'Analisando delta...' : 'Importando delta...');
+
+    try{
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      });
+      const raw = await response.text();
+      let payload;
+      try{
+        payload = raw ? JSON.parse(raw) : {};
+      } catch(_parseErr){
+        const tip = response.status === 401 || response.status === 302
+          ? ' Sessão expirou ou login necessário — atualize a página e faça login de novo.'
+          : (response.status === 403
+            ? ' Verifique se sua conta tem perfil de administrador e acesso a Insumos.'
+            : '');
+        setBrasDeltaMessage('error', `Resposta inválida (HTTP ${response.status}). O servidor devolveu HTML em vez de JSON (comum com redirect de login ou erro de proxy).${tip} Detalhe: ${(raw || '').trim().slice(0, 220)}…`);
+        return;
+      }
+      if(!response.ok || payload.status === 'error'){
+        setBrasDeltaMessage('error', payload.message || `Falha ao processar delta Brasíndice (HTTP ${response.status}).`);
+        return;
+      }
+      if(mode === 'analyze'){
+        renderBrasDeltaResult(payload);
+        setBrasDeltaMessage('success', 'Análise concluída. Revise o delta abaixo.');
+      } else {
+        if(payload.inline === false && payload.job_id){
+          setBrasDeltaMessage('success', (payload.message || 'Delta enfileirado. Veja a linha com protocolo em "Importações em andamento".') + (payload.prefix ? ' Protocolo: ' + String(payload.prefix) : ''));
+          loadJobs();
+          setTimeout(() => { loadJobs(); }, 2000);
+          return;
+        }
+        const extra = payload.catalog_current_version
+          ? ` Catálogo ${payload.catalog_current_version}: +${payload.catalog_new || 0} / ~${payload.catalog_changed || 0} / -${payload.catalog_removed || 0}.`
+          : '';
+        setBrasDeltaMessage('success', (payload.message || 'Importação incremental concluída.') + extra);
+        loadJobs();
+      }
+    } catch(err){
+      setBrasDeltaMessage('error', 'Erro ao processar delta: ' + (err?.message || err));
+    } finally {
+      if(triggerBtn) triggerBtn.disabled = false;
+    }
+  }
+
+  brasDeltaAnalyzeBtn?.addEventListener('click', () => submitBrasDelta('analyze'));
+  brasDeltaImportBtn?.addEventListener('click', () => submitBrasDelta('import'));
+
+  /** Alíquota (piso) → UFs (referência Brasíndice / tabela piso). */
+  const ALIQUOTA_UF_MAP = {
+    '17': ['DF', 'ES', 'MT', 'MS', 'RS', 'SC'],
+    '18': ['AP', 'MG', 'SP'],
+    '19': ['AC', 'AL', 'GO', 'PA', 'SE'],
+    '19.5': ['PR', 'RO'],
+    '20': ['AM', 'CE', 'PB', 'RN', 'RR', 'TO'],
+    '20.5': ['BA', 'PE'],
+    '22': ['RJ'],
+    '22.5': ['PI'],
+    '23': ['MA'],
+  };
+  function ufsListParaAliquotaBrasDigitada(valor) {
+    const t0 = String(valor || '').trim().replace(/\s/g, '').replace(',', '.');
+    if (!t0) return null;
+    if (ALIQUOTA_UF_MAP[t0]) return ALIQUOTA_UF_MAP[t0];
+    const n = parseFloat(t0);
+    if (Number.isNaN(n)) return null;
+    const cands = new Set([t0, String(n)]);
+    if (n % 1 === 0) cands.add(String(Math.round(n)));
+    else cands.add(n.toFixed(1));
+    for (const k of cands) {
+      if (k && ALIQUOTA_UF_MAP[k]) return ALIQUOTA_UF_MAP[k];
+    }
+    return null;
+  }
+  function refreshBrasPrecosUfHint() {
+    const el = document.getElementById('brasPrecosAliquotaUfHint');
+    const inp = document.getElementById('brasPrecosAliquota');
+    if (!el || !inp) return;
+    const raw = inp.value.trim();
+    if (!raw) {
+      el.textContent = 'Informe a alíquota para exibir as UFs de referência (piso).';
+      el.className = 'form-text small text-muted';
+      return;
+    }
+    const ufs = ufsListParaAliquotaBrasDigitada(raw);
+    if (ufs && ufs.length) {
+      el.textContent = 'UFs de referência: ' + ufs.join(', ') + '.';
+      el.className = 'form-text small text-body-secondary';
+    } else {
+      el.textContent = 'Sem mapeamento automático para esta alíquota (tabela usa 17, 18, 19, 19,5, 20, 20,5, 22, 22,5, 23).';
+      el.className = 'form-text small text-warning';
+    }
+  }
+
+  const brasPrecosForm = document.getElementById('brasPrecosForm');
+  const brasPrecosImportBtn = document.getElementById('brasPrecosImportBtn');
+  const brasPrecosMessage = document.getElementById('brasPrecosMessage');
+  function setBrasPrecosMessage(type, text){
+    if(!brasPrecosMessage) return;
+    brasPrecosMessage.textContent = text;
+    brasPrecosMessage.classList.remove('text-muted', 'text-danger', 'text-success', 'text-warning');
+    if(type === 'error') brasPrecosMessage.classList.add('text-danger');
+    else if(type === 'success') brasPrecosMessage.classList.add('text-success');
+    else if(type === 'warning') brasPrecosMessage.classList.add('text-warning');
+    else brasPrecosMessage.classList.add('text-muted');
+  }
+  async function submitBrasPrecos(){
+    if(!brasPrecosForm) return;
+    const formData = new FormData(brasPrecosForm);
+    const f = brasPrecosForm.querySelector('input[name="arquivo"]')?.files?.[0];
+    if(!f){
+      setBrasPrecosMessage('error', 'Selecione o arquivo de preços.');
+      return;
+    }
+    if(!formData.get('versao')?.toString().trim() || !formData.get('aliquota')?.toString().trim()){
+      setBrasPrecosMessage('error', 'Preencha versão/edição e alíquota.');
+      return;
+    }
+    const aliquotaRaw = (formData.get('aliquota') || '').toString().trim().replace(',', '.');
+    const inferredUFs = ALIQUOTA_UF_MAP[aliquotaRaw] || [];
+    if(inferredUFs.length) {
+      formData.delete('ufs');
+      inferredUFs.forEach((uf) => formData.append('ufs', uf));
+    }
+    if(brasPrecosImportBtn) brasPrecosImportBtn.disabled = true;
+    setBrasPrecosMessage('muted', 'Enfileirando importação de preços...');
+    const url = '{{ url_for("insumos_bras_import_precos") }}';
+    try{
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      });
+      const raw = await response.text();
+      let payload;
+      try{ payload = raw ? JSON.parse(raw) : {}; } catch(_e){
+        const tip = response.status === 401 || response.status === 302
+          ? ' Sessão expirou — faça login novamente.' : (response.status === 403 ? ' Acesso negado (admin/insumos).' : '');
+        setBrasPrecosMessage('error', `Resposta inválida (HTTP ${response.status}).${tip} ${(raw || '').trim().slice(0, 200)}…`);
+        return;
+      }
+      if(!response.ok || payload.status === 'error'){
+        setBrasPrecosMessage('error', payload.message || 'Falha na importação de preços.');
+        return;
+      }
+      if(payload.inline && payload.bras_somente_precos){
+        const s = payload.bras_somente_precos;
+        setBrasPrecosMessage('success', (payload.message || 'Concluído.')
+          + ` Lidas: ${s.linhas_lidas ?? 0}, atualizados: ${s.atualizados_preco ?? 0}, sem cadastro: ${s.sem_cadastro ?? 0}.`);
+        loadJobs();
+        return;
+      }
+      if(payload.inline === false && payload.job_id){
+        setBrasPrecosMessage('success', (payload.message || 'Enfileirado.') + (payload.prefix ? ' Protocolo: ' + String(payload.prefix) : ''));
+        loadJobs();
+        setTimeout(() => { loadJobs(); }, 2000);
+        return;
+      }
+      setBrasPrecosMessage('success', payload.message || 'Ok.');
+      loadJobs();
+    } catch(err){
+      setBrasPrecosMessage('error', 'Erro: ' + (err?.message || err));
+    } finally {
+      if(brasPrecosImportBtn) brasPrecosImportBtn.disabled = false;
+    }
+  }
+  brasPrecosImportBtn?.addEventListener('click', () => submitBrasPrecos());
+  document.getElementById('brasPrecosAliquota')?.addEventListener('input', refreshBrasPrecosUfHint);
+  document.getElementById('brasPrecosAliquota')?.addEventListener('change', refreshBrasPrecosUfHint);
+  refreshBrasPrecosUfHint();
+
+  const brasPrecosEdicoesDatalist = document.getElementById('brasPrecosEdicoesDatalist');
+  async function loadBrasPrecosEdicoesSugestoes(){
+    const url = '{{ url_for("insumos_bras_edicoes_cadastro") }}?limit=50';
+    try{
+      const r = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if(!r.ok) return;
+      const data = await r.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      if(!brasPrecosEdicoesDatalist) return;
+      brasPrecosEdicoesDatalist.replaceChildren();
+      items.forEach((e) => {
+        const o = document.createElement('option');
+        o.value = String(e);
+        brasPrecosEdicoesDatalist.appendChild(o);
+      });
+    } catch(_e){ /* silencioso */ }
+  }
+  document.getElementById('brasPrecosLoadEdicoesBtn')?.addEventListener('click', () => loadBrasPrecosEdicoesSugestoes());
+  loadBrasPrecosEdicoesSugestoes();
+
   const brasBatchFiles = document.getElementById('brasBatchFiles');
   const brasBatchDropzone = document.getElementById('brasBatchDropzone');
   const brasBatchPreview = document.getElementById('brasBatchPreview');
@@ -906,37 +1379,35 @@
   const brasBatchAliquota = document.getElementById('brasBatchAliquota');
   const brasBatchUFs = document.getElementById('brasBatchUFs');
   const brasBatchTruncate = document.getElementById('brasBatchTruncate');
+  const brasBatchKeepLatest = document.getElementById('brasBatchKeepLatest');
   
   let brasFilesQueue = [];
-  
-  const ALIQUOTA_UF_MAP = {
-    '17': ['DF', 'ES', 'MT', 'MS', 'RS', 'SC'],
-    '18': ['AP', 'MG', 'SP'],
-    '19': ['AC', 'AL', 'GO', 'PA', 'SE'],
-    '19.5': ['PR', 'RO'],
-    '20': ['AM', 'CE', 'PB', 'RN', 'RR', 'TO'],
-    '20.5': ['BA', 'PE'],
-    '22': ['RJ'],
-    '22.5': ['PI'],
-    '23': ['MA']
-  };
   
   function extractBrasInfo(filename) {
     const name = filename.toUpperCase();
     let versao = '', aliquota = '', ufs = [];
     
-    // Versão: Edição XXXX ou Edicao_XXXX
-    const versaoMatch = name.match(/EDI[ÇC][AÃ]O[_\s]*(\d{4})/i);
+    // Versão: EDIÇÃO XXXX / EDICAO_XXXX / EDICAO-XXXX
+    const versaoMatch = name.match(/EDI(?:Ç|C)(?:AO|ÃO)[_\s-]*(\d{4})/i);
     if (versaoMatch) versao = versaoMatch[1];
     
     // Alíquota: XX% ou _XX_ ou espaço XX espaço
     const aliqMatch = name.match(/(\d{1,2}(?:[,\.]\d)?)\s*%/) || name.match(/[_\s](\d{2})[_\s]/);
     if (aliqMatch) {
       aliquota = aliqMatch[1].replace(',', '.');
-      ufs = ALIQUOTA_UF_MAP[aliquota] || [];
+      ufs = ufsListParaAliquotaBrasDigitada(aliquota) || [];
     }
     
     return { versao, aliquota, ufs };
+  }
+
+  function maybeAutofillBrasBatchUFsFromAliquota() {
+    if (!brasBatchUFs || !brasBatchAliquota) return;
+    if (brasBatchUFs.value.trim()) return;
+    const inferred = ufsListParaAliquotaBrasDigitada(brasBatchAliquota.value);
+    if (inferred && inferred.length) {
+      brasBatchUFs.value = inferred.join(', ');
+    }
   }
   
   function renderBrasFilesPreview() {
@@ -951,8 +1422,10 @@
     
     const rows = brasFilesQueue.map((item, idx) => {
       const aliq = globalAliq || item.aliquota || '—';
-      const ufList = globalUFs || item.ufs.join(', ') || '—';
+      const inferredByAliq = ufsListParaAliquotaBrasDigitada(globalAliq || item.aliquota) || [];
+      const ufList = globalUFs || item.ufs.join(', ') || inferredByAliq.join(', ') || '—';
       const statusClass = item.status === 'ok' ? 'text-success' : (item.status === 'error' ? 'text-danger' : 'text-muted');
+      const ufsText = item.ufs.join(', ');
       return `<tr>
         <td>${escapeHtml(item.file.name)}</td>
         <td>${item.versao || '—'}</td>
@@ -997,7 +1470,14 @@
     renderBrasFilesPreview();
   });
   
-  brasBatchAliquota?.addEventListener('input', renderBrasFilesPreview);
+  brasBatchAliquota?.addEventListener('input', () => {
+    maybeAutofillBrasBatchUFsFromAliquota();
+    renderBrasFilesPreview();
+  });
+  brasBatchAliquota?.addEventListener('change', () => {
+    maybeAutofillBrasBatchUFsFromAliquota();
+    renderBrasFilesPreview();
+  });
   brasBatchUFs?.addEventListener('input', renderBrasFilesPreview);
   
   brasBatchImportBtn?.addEventListener('click', async () => {
@@ -1035,6 +1515,7 @@
       
       // Se marcado "Substituir mesma alíquota" e tem alíquota, usar truncate
       if (truncateFirst && aliq) formData.append('truncate', 'on');
+      if (brasBatchKeepLatest?.checked) formData.append('keep_only_latest_version', 'on');
       
       try {
         const resp = await fetch('{{ url_for("insumos_import") }}', {
@@ -1100,22 +1581,31 @@
   // SIMPRO é sempre acumulativo - não tem opção de truncate
   
   let simproFilesQueue = [];
-  
   function extractSimproInfo(filename) {
     const name = filename.toUpperCase();
     let versao = '', aliquota = '', ufs = [];
     
     // Padrão: MSG 50 2025 18.TXT => edição 50, ano 2025, alíquota 18
-    const match = name.match(/MSG\s*(\d+)\s*(\d{4})\s*(\d{1,2}(?:[,\.]\d)?)/i);
-    if (match) {
-      versao = `${match[2]}-${match[1]}`;
-      aliquota = match[3].replace(',', '.');
+    const legacyMatch = name.match(/MSG\s*(\d+)\s*(\d{4})\s*(\d{1,2}(?:[,\.]\d+)?)/i);
+    if (legacyMatch) {
+      versao = `${legacyMatch[2]}-${legacyMatch[1]}`;
+      aliquota = legacyMatch[3].replace(',', '.');
       ufs = ALIQUOTA_UF_MAP[aliquota] || [];
+      return { versao, aliquota, ufs };
+    }
+
+    const structuredMatch = name.match(/MSG\s*(\d+)\s*(\d{4})(?:\s*(JSON|XML|CSV))?/i);
+    if (structuredMatch) {
+      versao = `${structuredMatch[2]}-${structuredMatch[1]}`;
+      const fallbackAliquota = structuredMatch[1].replace(',', '.');
+      if (ALIQUOTA_UF_MAP[fallbackAliquota]) {
+        aliquota = fallbackAliquota;
+        ufs = ALIQUOTA_UF_MAP[aliquota] || [];
+      }
     }
     
     return { versao, aliquota, ufs };
   }
-  
   function renderSimproFilesPreview() {
     if (!simproFilesQueue.length) {
       simproBatchPreview?.classList.add('d-none');
@@ -1144,6 +1634,7 @@
         versao: info.versao,
         aliquota: info.aliquota,
         ufs: info.ufs,
+        format: /\.(json)$/i.test(file.name) ? 'json' : 'fixed',
         status: 'pending',
         statusText: 'Pendente'
       });
@@ -1186,7 +1677,7 @@
       formData.append('arquivo', item.file);
       formData.append('origem', 'SIMPRO');
       formData.append('versao', item.versao || '2025-01');
-      formData.append('format', 'fixed');
+      formData.append('format', item.format || 'fixed');
       if (dataRef) formData.append('data_atualizacao', dataRef);
       
       // Alíquota
@@ -1253,3 +1744,4 @@
 })();
 </script>
 {% endblock %}
+

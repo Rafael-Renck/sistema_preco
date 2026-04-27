@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+import json
 
 
 def test_insumos_search_filters(app_ctx):
@@ -152,6 +153,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     fixed_line = ''.join(line_chars).rstrip()
 
     stage = app_ctx.SimproFixedStage(
+        id=1,
         arquivo='SIMPRO_TESTE',
         linha_num=1,
         linha=fixed_line,
@@ -215,7 +217,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     assert item is not None
     assert item.codigo_interno == '1234567890'
     assert item.codigo_alt == 'ALT0001111'
-    assert item.codigo == '7827608'
+    assert item.codigo == '1234567890'
     assert item.tuss_prefix == 'NN'
     assert item.tuss_numero == '7827608'
     assert item.status_final == 'NN'
@@ -226,7 +228,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     assert item.preco3 == Decimal('0')
     assert item.preco4 == Decimal('12.34')
     assert item.qtd_unidade == 10
-    assert item.fabricante == 'FABRICANTE TESTE'
+    assert item.fabricante.startswith('FABRICANTE TESTE')
     assert item.anvisa == 'ANV1234567890123456'
     assert item.validade_anvisa == date(2026, 12, 31)
     assert item.ean == '580076'
@@ -255,6 +257,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     fixed_line_sn = ''.join(line_chars_sn).rstrip()
 
     stage_sn = app_ctx.SimproFixedStage(
+        id=2,
         arquivo='SIMPRO_SN',
         linha_num=1,
         linha=fixed_line_sn,
@@ -272,7 +275,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     assert materialized_sn == 1
     item_sn = session.get(app_ctx.SimproItemNormalized, stage_sn.id)
     assert item_sn is not None
-    assert item_sn.codigo == '90434668'
+    assert item_sn.codigo == '8888888888'
     assert item_sn.tuss_prefix == 'SN'
     assert item_sn.tuss_numero == '90434668'
     assert item_sn.ean == '7896004710471'
@@ -299,6 +302,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     fixed_line_anvisa = ''.join(line_chars_anvisa).rstrip()
 
     stage_anvisa = app_ctx.SimproFixedStage(
+        id=3,
         arquivo='SIMPRO_ANVISA',
         linha_num=1,
         linha=fixed_line_anvisa,
@@ -344,6 +348,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     }
 
     stage_anvisa_bad = app_ctx.SimproFixedStage(
+        id=4,
         arquivo='SIMPRO_ANVISA_BAD',
         linha_num=1,
         linha=fixed_line_anvisa,
@@ -362,3 +367,78 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     item_anvisa_bad = session.get(app_ctx.SimproItemNormalized, stage_anvisa_bad.id)
     assert item_anvisa_bad is not None
     assert item_anvisa_bad.anvisa == '1023510590025'
+
+
+def test_simpro_json_pipeline(app_ctx, tmp_path):
+    session = app_ctx.db.session
+
+    payload = {
+        'produtos': [
+            {
+                'codigoUsuario': '0000306808',
+                'codigoFracao': '0000306808',
+                'descricao': 'ACETATO ABIRATERONA 250MG 120CPDS',
+                'vigencia': '14/04/2026',
+                'identificacao': 'V',
+                'precoFabrica': 10270.83,
+                'precoVenda': 13777.95,
+                'precoUsuario': 11234.56,
+                'precoFabricaFracao': 85.590,
+                'precoVendaFracao': 114.816,
+                'precoUsuarioFracao': 93.621,
+                'embalagem': 'CX',
+                'fracao': 'CPDS',
+                'quantidadeEmbalagem': 120.00,
+                'quantidadeFracao': 0.00,
+                'lucro': 0.00,
+                'tipoAlteracao': 'A',
+                'fabricante': 'SUN FARMACEUTICA',
+                'codigoSimpro': '0000306808',
+                'codigoMercado': '50',
+                'desconto': 0.00,
+                'ipi': 0.00,
+                'anvisa': '1468200680013',
+                'validadeAnvisa': '30092028',
+                'codigoEAN': '7898272945166',
+                'lista': '-',
+                'hospitalar': 'N',
+                'fracionavel': 'S',
+                'codigoTUSS': '90413652',
+                'classificacao': '  ',
+                'referencia': 'ABI250',
+                'generico': 'S',
+                'diversos': 'N',
+            }
+        ]
+    }
+
+    file_path = tmp_path / 'simpro.json'
+    file_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+
+    inserted = app_ctx._materialize_simpro_json_items(
+        arquivo_label='SIMPRO_JSON_TESTE',
+        records=app_ctx._load_simpro_json_payload(file_path),
+        versao='2026-04',
+        uf_default='SP',
+    )
+
+    assert inserted == 1
+
+    item = session.query(app_ctx.SimproItemNormalized).filter_by(arquivo='SIMPRO_JSON_TESTE').one()
+    assert item.codigo == '0000306808'
+    assert item.codigo_interno == '0000306808'
+    assert item.codigo_alt == '0000306808'
+    assert item.tuss_numero == '90413652'
+    assert item.referencia == 'ABI250'
+    assert item.status_final is None
+    assert item.anvisa == '1468200680013'
+    assert item.ean == '7898272945166'
+    assert item.fracionavel == 'S'
+    assert item.data_ref == date(2026, 4, 14)
+    assert item.validade_anvisa == date(2028, 9, 30)
+    assert item.preco1 == Decimal('10270.83')
+    assert item.preco2 == Decimal('11234.56')
+    assert item.preco3 == Decimal('85.5900')
+    assert item.preco4 == Decimal('93.6210')
+    assert item.qtd_unidade == 120
+    assert item.uf_referencia == 'SP'

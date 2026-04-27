@@ -27,7 +27,7 @@ from flask_sqlalchemy import SQLAlchemy
 import pymysql
 from dotenv import load_dotenv
 from functools import wraps
-from sqlalchemy import text, or_, func
+from sqlalchemy import text, or_, and_, func
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
@@ -53,6 +53,27 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from werkzeug.security import generate_password_hash, check_password_hash
 from cachetools import TTLCache
+try:
+    from pypdf import PdfReader
+except Exception:  # noqa: BLE001
+    PdfReader = None
+
+try:
+    import pytesseract
+except Exception:  # noqa: BLE001
+    pytesseract = None
+
+try:
+    from pdf2image import convert_from_path
+except Exception:  # noqa: BLE001
+    convert_from_path = None
+
+try:
+    from PIL import Image as PILImage
+    from PIL import ImageOps
+except Exception:  # noqa: BLE001
+    PILImage = None
+    ImageOps = None
 # --- 1. CONFIGURAÇÃO INICIAL ---
 # Inicializa a aplicação Flask
 load_dotenv()
@@ -74,7 +95,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Otimizações de connection pool para múltiplos acessos
 engine_options = dict(app.config.get('SQLALCHEMY_ENGINE_OPTIONS') or {})
 connect_args = dict(engine_options.get('connect_args') or {})
-connect_args.setdefault('local_infile', 1)
+database_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+if not str(database_uri).startswith('sqlite:'):
+    connect_args.setdefault('local_infile', 1)
 engine_options['connect_args'] = connect_args
 
 # Pool otimizado para ~25 usuários simultâneos
@@ -102,9 +125,28 @@ def _safe_int_env(var_name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+
+def _bras_clamped_batch(var_name: str, default: int) -> int:
+    """Lotes pequenos e com teto evitam pico de CPU/memória e `IN` gigante (arquivos 10k+ linhas). Máx. 4000."""
+    v = _safe_int_env(var_name, default)
+    return max(200, min(4000, v))
+
+
+def _bras_throttle_between_batches() -> None:
+    """Pausa opcional entre lotes (ms) para aliviar MySQL/CPU em servidores fracos. 0 = desligado. Máx. 5s."""
+    ms = min(5000, max(0, _safe_int_env('BRAS_BETWEEN_BATCHES_MS', 0)))
+    if ms:
+        time.sleep(ms / 1000.0)
+
 _cbhpm_api_cache_ttl = _safe_int_env('CBHPM_API_CACHE_TTL', 300)
 _cbhpm_api_cache = TTLCache(maxsize=1000, ttl=_cbhpm_api_cache_ttl)
 _cbhpm_api_detail_cache = TTLCache(maxsize=2000, ttl=_cbhpm_api_cache_ttl)
+
+# Importação Brasíndice: padrão ~2000 linhas/lote (ex.: 14k linhas ≈ 7 passadas), teto 4000.
+# Arquivos grandes: lotes pequenos + BRAS_BETWEEN_BATCHES_MS deixam o servidor mais “respirar”.
+BRAS_MATERIALIZE_BATCH = _bras_clamped_batch('BRAS_MATERIALIZE_BATCH_SIZE', 2000)
+BRAS_INDEX_SYNC_BATCH = _bras_clamped_batch('BRAS_INDEX_SYNC_BATCH_SIZE', 2000)
+BRAS_RAW_CSV_BATCH = _bras_clamped_batch('BRAS_RAW_CSV_BATCH', 2000)
 
 def _load_public_api_tokens() -> set[str]:
     tokens: set[str] = set()
@@ -124,8 +166,12 @@ _PUBLIC_API_TOKENS = _load_public_api_tokens()
 
 def _clear_insumo_cache():
     """Limpa o cache de insumos (chamar após importações)"""
-    global _insumo_cache
+    global _insumo_cache, _CATALOGO_COUNT_CACHE
     _insumo_cache.clear()
+    try:
+        _CATALOGO_COUNT_CACHE.clear()
+    except Exception:
+        pass
 
 PASSWORD_EXPIRATION_DAYS = 90
 PASSWORD_HISTORY_SIZE = int(os.getenv('PASSWORD_HISTORY_SIZE', '5') or '5')
@@ -186,17 +232,63 @@ def _extract_bearer_token(auth_header: str | None) -> str | None:
     return token or None
 
 
+def _xhr_wants_json() -> bool:
+    """Requisições com fetch costumam enviar este header; evita redirect HTML que quebra JSON no browser."""
+    return request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         user_id = session.get('user_id')
         if not user_id:
+            if _xhr_wants_json() and (request.path or '').startswith('/insumos/'):
+                return (
+                    jsonify(
+                        {
+                            'status': 'error',
+                            'message': 'Sessão expirada ou não autenticado. Atualize a página e faça login novamente.',
+                        }
+                    ),
+                    401,
+                )
+            if os.getenv('DEV_AUTO_LOGIN', '0') == '1':
+                # Auto-login for dev to unblock access when auth is unstable
+                usuario = Usuario.query.order_by(Usuario.id.asc()).first()
+                if usuario:
+                    session.clear()
+                    session.permanent = True
+                    session['user_id'] = usuario.id
+                    session['perfil'] = usuario.perfil
+                    session['nome'] = usuario.nome
+                    nomes = [op.nome for op in usuario.operadoras]
+                    ids = [op.id for op in usuario.operadoras]
+                    session['operadora_ids'] = ids
+                    session['operadora_id'] = ids[0] if ids else None
+                    session['operadora_nomes'] = nomes
+                    session['operadora_nome'] = ', '.join(nomes) if nomes else None
+                    session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+                    session['feature_consulta'] = bool(usuario.acesso_consulta) or (usuario.perfil == 'adm')
+                    session['feature_contratos'] = bool(getattr(usuario, 'acesso_contratos', True)) or (usuario.perfil in {'adm', 'adm de contrato', 'operadora'})
+                    session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
+                    session['login_time'] = _now_utc().isoformat()
+                    session['session_nonce'] = uuid4().hex
+                    session['login_ip'] = _get_remote_addr()
+                    session['password_changed_at'] = usuario.senha_atualizada_em.isoformat() if usuario.senha_atualizada_em else None
+                    session['must_change_senha'] = False
+                    session.modified = True
+                    g.current_user = usuario
+                    return f(*args, **kwargs)
+            session_cookie_name = app.config.get('SESSION_COOKIE_NAME', 'session')
+            has_cookie = bool(request.cookies.get(session_cookie_name))
+            app.logger.warning('Auth redirect: sem user_id. path=%s has_cookie=%s', request.path, has_cookie)
             return redirect(url_for('login'))
         try:
             usuario = Usuario.query.get(user_id)
         except Exception:
             usuario = None
         if not usuario:
+            app.logger.warning('Auth redirect: usuario inexistente. user_id=%s path=%s', user_id, request.path)
             session.clear()
             session.modified = True
             return redirect(url_for('login'))
@@ -208,17 +300,37 @@ def login_required(f):
             session['login_time'] = login_time.isoformat()
             session.modified = True
         now = _now_utc()
-        if usuario.last_logout_at and login_time <= usuario.last_logout_at:
+        if usuario.last_logout_at and login_time < usuario.last_logout_at:
+            app.logger.warning(
+                'Auth redirect: last_logout_at. user_id=%s login_time=%s last_logout_at=%s path=%s',
+                user_id,
+                login_time,
+                usuario.last_logout_at,
+                request.path,
+            )
             session.clear()
             session.modified = True
             _safe_flash('Sua sessão expirou. Faça login novamente.', 'warning')
             return redirect(url_for('login'))
         if usuario.senha_atualizada_em and login_time < usuario.senha_atualizada_em:
+            app.logger.warning(
+                'Auth redirect: senha_atualizada. user_id=%s login_time=%s senha_atualizada_em=%s path=%s',
+                user_id,
+                login_time,
+                usuario.senha_atualizada_em,
+                request.path,
+            )
             session.clear()
             session.modified = True
             _safe_flash('Sua sessão foi invalidada após a troca de senha. Faça login novamente.', 'warning')
             return redirect(url_for('login'))
         if usuario.locked_until and usuario.locked_until > now:
+            app.logger.warning(
+                'Auth redirect: locked_until. user_id=%s locked_until=%s path=%s',
+                user_id,
+                usuario.locked_until,
+                request.path,
+            )
             session.clear()
             session.modified = True
             _safe_flash('Conta temporariamente bloqueada. Faça login novamente após o desbloqueio.', 'danger')
@@ -241,6 +353,16 @@ def admin_required(f):
     @login_required
     def wrapper(*args, **kwargs):
         if session.get('perfil') != 'adm':
+            if _xhr_wants_json() and (request.path or '').startswith('/insumos/'):
+                return (
+                    jsonify(
+                        {
+                            'status': 'error',
+                            'message': 'Acesso negado. A importação/rotina requer perfil de administrador.',
+                        }
+                    ),
+                    403,
+                )
             return redirect(url_for('consulta_comparar'))
         return f(*args, **kwargs)
     return wrapper
@@ -274,6 +396,16 @@ def feature_required(feature_key: str):
         @wraps(f)
         def wrapper(*args, **kwargs):
             if not _feature_enabled(feature_key):
+                if _xhr_wants_json() and (request.path or '').startswith('/insumos/'):
+                    return (
+                        jsonify(
+                            {
+                                'status': 'error',
+                                'message': 'Sem permissão para acessar Insumos/Brasíndice. Solicite acesso ao administrador.',
+                            }
+                        ),
+                        403,
+                    )
                 abort(403)
             return f(*args, **kwargs)
         return wrapper
@@ -419,15 +551,44 @@ class ContractSummary(db.Model):
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'),
     )
-    updated_at = db.Column(
-        db.DateTime,
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'),
-        server_onupdate=text('CURRENT_TIMESTAMP'),
-    )
 
-    # Relacionamento
-    operadora = db.relationship('Operadora', backref='contratos')
+
+class ReembolsoDocumento(db.Model):
+    __tablename__ = 'reembolso_documentos'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    usuario_id = db.Column(db.Integer, db.ForeignKey('usuarios.id', ondelete='SET NULL'), nullable=True, index=True)
+    tipo_documento = db.Column(
+        db.Enum('NOTA_FISCAL', 'RECIBO', 'COMPROVANTE', 'DESCONHECIDO', name='reembolso_tipo_documento'),
+        nullable=False,
+        default='DESCONHECIDO',
+        server_default='DESCONHECIDO',
+    )
+    original_filename = db.Column(db.String(255), nullable=False)
+    stored_filename = db.Column(db.String(255), nullable=False)
+    storage_path = db.Column(db.String(512), nullable=False)
+    mime_type = db.Column(db.String(120), nullable=True)
+    is_pdf_native = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    texto_extraido = db.Column(db.Text, nullable=True)
+    dados_extraidos = db.Column(db.JSON, nullable=True)
+    dados_validado = db.Column(db.JSON, nullable=True)
+    status = db.Column(
+        db.Enum('PENDENTE', 'VALIDADO', 'REJEITADO', name='reembolso_status'),
+        nullable=False,
+        default='PENDENTE',
+        server_default='PENDENTE',
+    )
+    ocr_status = db.Column(db.String(40), nullable=True)
+    ocr_message = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=_now_utc)
+    updated_at = db.Column(db.DateTime, nullable=False, default=_now_utc, onupdate=_now_utc)
+
+    usuario = db.relationship('Usuario', backref=db.backref('reembolsos', lazy='dynamic'))
+
+    __table_args__ = (
+        db.Index('idx_reembolso_usuario', 'usuario_id'),
+        db.Index('idx_reembolso_created_at', 'created_at'),
+    )
 
 
 class AuditLog(db.Model):
@@ -884,6 +1045,91 @@ class BrasItemNormalized(db.Model):
     )
 
 
+class BrasCatalogSnapshot(db.Model):
+    __tablename__ = 'bras_catalog_snapshot'
+
+    id = db.Column(db.BigInteger, primary_key=True)
+    versao = db.Column(db.String(50), nullable=False, index=True)
+    source_file = db.Column(db.String(255), nullable=True)
+    item_key = db.Column(db.String(255), nullable=False)
+    key_kind = db.Column(db.String(32), nullable=False)
+    laboratorio_codigo = db.Column(db.String(50), nullable=True)
+    laboratorio_nome = db.Column(db.String(255), nullable=True)
+    produto_codigo = db.Column(db.String(50), nullable=True)
+    produto_nome = db.Column(db.String(255), nullable=True)
+    apresentacao_codigo = db.Column(db.String(50), nullable=True)
+    apresentacao_descricao = db.Column(db.String(255), nullable=True)
+    codigo_composto = db.Column(db.String(100), nullable=True)
+    ean = db.Column(db.String(32), nullable=True, index=True)
+    codigo_interno = db.Column(db.String(50), nullable=True)
+    tuss = db.Column(db.String(32), nullable=True, index=True)
+    row_hash = db.Column(db.String(64), nullable=False)
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint('versao', 'item_key', name='uq_bras_catalog_snapshot_versao_item'),
+        db.Index('idx_bras_catalog_snapshot_item', 'item_key'),
+        db.Index('idx_bras_catalog_snapshot_version_hash', 'versao', 'row_hash'),
+    )
+
+
+class BrasItemCadastro(db.Model):
+    """
+    Identidade do item (cadastro) por edição — alinhado a uma única linha lógica por (edição, EAN).
+    Preços por alíquota ficam em `BrasItemPreco` (carga 1x cadastro, depois só preços leves).
+    """
+
+    __tablename__ = 'bras_item_cadastro'
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    edicao = db.Column(db.String(50), nullable=False, index=True)
+    ean = db.Column(db.String(20), index=True, nullable=True)
+    laboratorio_codigo = db.Column(db.String(50), nullable=True)
+    laboratorio_nome = db.Column(db.String(255), nullable=True)
+    produto_codigo = db.Column(db.String(50), nullable=True)
+    produto_nome = db.Column(db.String(255), nullable=True)
+    apresentacao_codigo = db.Column(db.String(50), nullable=True)
+    apresentacao_descricao = db.Column(db.String(255), nullable=True)
+    registro_anvisa = db.Column(db.String(50), nullable=True)
+    quantidade_embalagem = db.Column(db.Integer, nullable=True)
+    linha_num = db.Column(db.Integer, nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True, server_default=text('CURRENT_TIMESTAMP'))
+
+    __table_args__ = (
+        db.UniqueConstraint('edicao', 'ean', name='uq_bras_cadastro_edicao_ean'),
+        db.Index('idx_bras_cad_edicao', 'edicao', 'ean'),
+    )
+
+
+class BrasItemPreco(db.Model):
+    """Preços de um item por alíquota (Uma linha por (cadastro, alíquota))."""
+
+    __tablename__ = 'bras_item_preco'
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    cadastro_id = db.Column(db.BigInteger, db.ForeignKey('bras_item_cadastro.id'), nullable=False, index=True)
+    aliquota = db.Column(db.Numeric(6, 2), nullable=False, index=True)
+    preco_pmc_pacote = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pfb_pacote = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pmc_unit = db.Column(db.Numeric(15, 4), nullable=True)
+    preco_pfb_unit = db.Column(db.Numeric(15, 4), nullable=True)
+    arquivo_fonte = db.Column(db.String(255), nullable=True)
+    imported_at = db.Column(
+        db.DateTime,
+        nullable=True,
+        server_default=text('CURRENT_TIMESTAMP'),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint('cadastro_id', 'aliquota', name='uq_bras_preco_cadastro_aliquota'),
+        db.Index('idx_bras_preco_cad', 'cadastro_id', 'aliquota'),
+    )
+
+
 class SimproItem(db.Model):
     __tablename__ = 'simpro_item'
 
@@ -944,10 +1190,12 @@ class SimproItemNormalized(db.Model):
     unidade = db.Column(db.String(16), nullable=True)
     qtd_unidade = db.Column(db.Integer, nullable=True)
     fabricante = db.Column(db.String(80), nullable=True)
+    referencia = db.Column(db.String(120), nullable=True)
     anvisa = db.Column(db.String(20), index=True, nullable=True)
     validade_anvisa = db.Column(db.Date, nullable=True)
     ean = db.Column(db.String(32), index=True, nullable=True)
     situacao = db.Column(db.String(40), nullable=True)
+    fracionavel = db.Column(db.String(1), nullable=True)
     versao = db.Column(db.String(100), nullable=True)
     uf_referencia = db.Column(db.String(64), nullable=True)
     tuss_prefix = db.Column(db.String(4), nullable=True)
@@ -1017,6 +1265,9 @@ def _load_json_relaxed(text: str) -> dict:
 
 _SIMPRO_FIELD_MAP_DEFAULT: dict[str, str] = {
     'codigo': 'codigo',
+    'codigo_simpro': 'codigo',
+    'codigo_usuario': 'codigo_interno',
+    'codigo_fracao': 'codigo_alt',
     'codigo_alt': 'codigo_alt',
     'codigo_interno': 'codigo_interno',
     'codigo_alternativo': 'codigo_alt',
@@ -1038,16 +1289,19 @@ _SIMPRO_FIELD_MAP_DEFAULT: dict[str, str] = {
     'unidade_comercial': 'unidade',
     'qtd_unidade': 'qtd_unidade',
     'fabricante': 'fabricante',
+    'referencia': 'referencia',
     'registro_anvisa': 'anvisa',
     'anvisa': 'anvisa',
     'validade_anvisa': 'validade_anvisa',
     'ean': 'ean',
     'situacao': 'situacao',
+    'fracionavel': 'fracionavel',
     'versao': 'versao',
     'tuss_prefix': 'tuss_prefix',
     'tuss_numero': 'tuss_numero',
+    'classificacao': 'status_final',
+    'classificacao_produto': 'status_final',
     'status_final': 'status_final',
-    'tuss': 'codigo',
 }
 
 _SIMPRO_ALLOWED_COLUMNS: set[str] = {column.name for column in SimproItemNormalized.__table__.columns}
@@ -1056,6 +1310,7 @@ _TERNARY_CONCAT_RE = re.compile(
     re.IGNORECASE,
 )
 _TUSS_INLINE_RE = re.compile(r'(?:[#\-\+\s]?)([NS][A-Z])\s*([0-9]{6,12})', re.IGNORECASE)
+_TUSS_SUFFIX_MARKER_RE = re.compile(r'([#\-\+\s]?)([NS][A-Z])\s*$', re.IGNORECASE)
 _ANVISA_DIGITS_RE = re.compile(r'(\d{13,})')
 _ANVISA_INLINE_RE = re.compile(r'[A-Z]{3,}\s{2,}(\d{13,})')
 
@@ -1177,6 +1432,13 @@ def _enrich_tuss_from_ean(record: dict[str, object | None]) -> None:
 
     extracted = _extract_tuss_parts(text)
     if not extracted:
+        marker_match = _TUSS_SUFFIX_MARKER_RE.search(text)
+        if marker_match:
+            base = text[:marker_match.start(1)].rstrip('#-+ ').strip()
+            record['ean'] = base or None
+            if not record.get('tuss_prefix'):
+                record['tuss_prefix'] = marker_match.group(2).upper()
+            return
         record['ean'] = text
         return
 
@@ -1190,25 +1452,18 @@ def _enrich_tuss_from_ean(record: dict[str, object | None]) -> None:
                     break
 
     record['ean'] = base or None
-    if not record.get('tuss_prefix'):
-        record['tuss_prefix'] = prefix
-    if not record.get('tuss_numero'):
-        record['tuss_numero'] = numero
+    record['tuss_prefix'] = prefix
+    record['tuss_numero'] = numero
 
 
 def _ensure_tuss_from_line(record: dict[str, object | None], line: str) -> None:
+    if record.get('tuss_numero'):
+        return
     extracted = _extract_tuss_parts(line)
     if not extracted:
         return
 
     prefix, numero, _, _ = extracted
-    existing_raw = record.get('tuss_numero')
-    existing_digits = ''.join(ch for ch in str(existing_raw).strip() if ch.isdigit()) if existing_raw else ''
-    if existing_digits and len(existing_digits) >= len(numero):
-        if not record.get('tuss_prefix'):
-            record['tuss_prefix'] = prefix
-        return
-
     if not record.get('tuss_prefix'):
         record['tuss_prefix'] = prefix
     record['tuss_numero'] = numero
@@ -1355,12 +1610,12 @@ def _build_simpro_payload(record: dict[str, object | None], field_map: dict[str,
         if source not in record:
             continue
         value = record[source]
-        if target == 'codigo':
-            value = _format_tuss_display(value, record.get('tuss_numero'))
+        if target == 'tuss_numero':
+            value = _format_tuss_display(None, value)
+        elif isinstance(value, str):
+            value = value.strip() or None
         payload[target] = value
 
-    if payload.get('codigo') in (None, '') and record.get('tuss_numero'):
-        payload['codigo'] = record.get('tuss_numero')
     if payload.get('codigo') in (None, '') and record.get('codigo_interno'):
         payload['codigo'] = record.get('codigo_interno')
     return payload
@@ -1428,8 +1683,10 @@ class CatalogoSimpro(db.Model):
     sequencia = db.Column(db.SmallInteger, nullable=True)
     etag_versao = db.Column(db.String(128), nullable=True)
     item_id = db.Column(db.BigInteger, primary_key=True)
+    codigo_interno = db.Column(db.String(20), nullable=True)
     codigo = db.Column(db.String(20), nullable=True)
     codigo_alt = db.Column(db.String(20), nullable=True)
+    tuss_numero = db.Column(db.String(16), nullable=True)
     descricao = db.Column(db.String(255), nullable=True)
     data_ref = db.Column(db.Date, nullable=True)
     preco1 = db.Column(db.Numeric(15, 4))
@@ -1438,10 +1695,13 @@ class CatalogoSimpro(db.Model):
     preco4 = db.Column(db.Numeric(15, 4))
     qtd_unidade = db.Column(db.Integer, nullable=True)
     fabricante = db.Column(db.String(80), nullable=True)
+    referencia = db.Column(db.String(120), nullable=True)
     anvisa = db.Column(db.String(20), nullable=True)
     validade_anvisa = db.Column(db.Date, nullable=True)
     ean = db.Column(db.String(32), nullable=True)
     situacao = db.Column(db.String(40), nullable=True)
+    fracionavel = db.Column(db.String(1), nullable=True)
+    status_final = db.Column(db.String(8), nullable=True)
     imported_at = db.Column(db.DateTime, nullable=True)
     etag_catalogo = db.Column(db.String(255), nullable=True)
 
@@ -1471,9 +1731,9 @@ class InsumoIndex(db.Model):
 
 BRAS_DEFAULT_COLUMNS = ['tuss', 'tiss', 'anvisa', 'descricao', 'preco', 'fabricante', 'aliquota']
 SIMPRO_DEFAULT_COLUMNS = [
-    'codigo', 'codigo_alt', 'descricao', 'data_ref', 'tipo_reg',
+    'codigo_interno', 'codigo', 'codigo_alt', 'tuss_numero', 'descricao', 'data_ref', 'tipo_reg',
     'preco1', 'preco2', 'preco3', 'preco4', 'unidade', 'qtd_unidade',
-    'fabricante', 'anvisa', 'validade_anvisa', 'ean', 'situacao'
+    'fabricante', 'referencia', 'anvisa', 'validade_anvisa', 'ean', 'situacao', 'status_final'
 ]
 DECIMAL_FIELDS = {'preco', 'aliquota'}
 DATE_FIELDS = {'data_atualizacao'}
@@ -1481,6 +1741,307 @@ DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
 TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
 INSUMO_IMPORT_ASYNC_DIR = Path(tempfile.gettempdir()) / 'insumo_async_imports'
 INSUMO_IMPORT_ASYNC_DIR.mkdir(parents=True, exist_ok=True)
+
+REEMBOLSO_STORAGE_DIR = Path(os.getenv('REEMBOLSO_STORAGE_DIR', Path(__file__).parent / 'data' / 'reembolsos'))
+REEMBOLSO_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+REEMBOLSO_MAX_FILE_MB = _safe_int_env('REEMBOLSO_MAX_FILE_MB', 12)
+REEMBOLSO_OCR_MAX_PAGES = _safe_int_env('REEMBOLSO_OCR_MAX_PAGES', 2)
+REEMBOLSO_OCR_DPI = _safe_int_env('REEMBOLSO_OCR_DPI', 220)
+REEMBOLSO_PDF_TEXT_MIN_CHARS = _safe_int_env('REEMBOLSO_PDF_TEXT_MIN_CHARS', 120)
+REEMBOLSO_TESSERACT_LANG = (os.getenv('REEMBOLSO_TESSERACT_LANG') or 'por+eng').strip()
+REEMBOLSO_ALLOWED_EXTENSIONS = {'.pdf', '.png', '.jpg', '.jpeg'}
+
+REEMBOLSO_FIELDS_BY_TYPE: dict[str, list[tuple[str, str]]] = {
+    'NOTA_FISCAL': [
+        ('cpf_cnpj', 'CPF/CNPJ'),
+        ('razao_social', 'Razão social'),
+        ('valor', 'Valor'),
+        ('data', 'Data'),
+        ('numero_documento', 'Número'),
+        ('serie', 'Série'),
+        ('chave_acesso', 'Chave de acesso'),
+        ('descricao', 'Descrição'),
+    ],
+    'RECIBO': [
+        ('cpf_cnpj', 'CPF/CNPJ'),
+        ('nome_razao', 'Nome/Razão social'),
+        ('valor', 'Valor'),
+        ('data', 'Data'),
+        ('descricao', 'Descrição'),
+    ],
+    'COMPROVANTE': [
+        ('cpf_cnpj', 'CPF/CNPJ'),
+        ('pagador', 'Pagador'),
+        ('recebedor', 'Recebedor'),
+        ('valor', 'Valor'),
+        ('data', 'Data'),
+        ('meio_pagamento', 'Meio de pagamento'),
+        ('status_pagamento', 'Status'),
+    ],
+    'DESCONHECIDO': [
+        ('cpf_cnpj', 'CPF/CNPJ'),
+        ('valor', 'Valor'),
+        ('data', 'Data'),
+        ('descricao', 'Descrição'),
+    ],
+}
+
+
+def _reembolso_allowed_extension(filename: str) -> bool:
+    if not filename:
+        return False
+    return Path(filename).suffix.lower() in REEMBOLSO_ALLOWED_EXTENSIONS
+
+
+def _reembolso_fields_for_type(tipo_documento: str | None) -> list[tuple[str, str]]:
+    tipo = (tipo_documento or 'DESCONHECIDO').upper()
+    return REEMBOLSO_FIELDS_BY_TYPE.get(tipo, REEMBOLSO_FIELDS_BY_TYPE['DESCONHECIDO'])
+
+
+def _reembolso_infer_tipo(texto: str) -> str:
+    if not texto:
+        return 'DESCONHECIDO'
+    raw = texto.lower()
+    if 'nota fiscal' in raw or 'nfe' in raw or 'nf-e' in raw:
+        return 'NOTA_FISCAL'
+    if 'recibo' in raw:
+        return 'RECIBO'
+    if 'comprovante' in raw or 'pagamento' in raw or 'transa' in raw or 'pix' in raw:
+        return 'COMPROVANTE'
+    return 'DESCONHECIDO'
+
+
+def _reembolso_extract_pdf_text(path: Path, max_pages: int) -> str:
+    if PdfReader is None:
+        return ''
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return ''
+    chunks: list[str] = []
+    for idx, page in enumerate(reader.pages):
+        if idx >= max_pages:
+            break
+        try:
+            text = page.extract_text() or ''
+        except Exception:
+            text = ''
+        if text:
+            chunks.append(text)
+    return '\n'.join(chunks).strip()
+
+
+def _reembolso_is_pdf_native(texto: str) -> bool:
+    if not texto:
+        return False
+    compact = re.sub(r'\s+', '', texto)
+    return len(compact) >= REEMBOLSO_PDF_TEXT_MIN_CHARS
+
+
+def _reembolso_ocr_image(image: "PILImage") -> str:
+    if pytesseract is None or PILImage is None or ImageOps is None:
+        return ''
+    prepared = ImageOps.grayscale(image)
+    prepared = ImageOps.autocontrast(prepared)
+    return pytesseract.image_to_string(prepared, lang=REEMBOLSO_TESSERACT_LANG) or ''
+
+
+def _reembolso_extract_text(path: Path) -> tuple[str, bool, str | None, str | None]:
+    suffix = path.suffix.lower()
+    if suffix == '.pdf':
+        text = _reembolso_extract_pdf_text(path, REEMBOLSO_OCR_MAX_PAGES)
+        if _reembolso_is_pdf_native(text):
+            return text, True, 'PDF_NATIVE', None
+        if convert_from_path is None or pytesseract is None or PILImage is None:
+            return text, False, 'OCR_NAO_DISPONIVEL', 'OCR indisponível (dependências ausentes).'
+        try:
+            images = convert_from_path(
+                str(path),
+                first_page=1,
+                last_page=REEMBOLSO_OCR_MAX_PAGES,
+                dpi=REEMBOLSO_OCR_DPI,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return text, False, 'OCR_ERRO', f'Falha ao converter PDF: {exc}'
+        ocr_chunks = []
+        for image in images:
+            ocr_chunks.append(_reembolso_ocr_image(image))
+        ocr_text = '\n'.join(chunk for chunk in ocr_chunks if chunk).strip()
+        return ocr_text, False, 'OCR_OK', None
+    if pytesseract is None or PILImage is None:
+        return '', False, 'OCR_NAO_DISPONIVEL', 'OCR indisponível (dependências ausentes).'
+    try:
+        with PILImage.open(path) as img:
+            text = _reembolso_ocr_image(img)
+    except Exception as exc:  # noqa: BLE001
+        return '', False, 'OCR_ERRO', f'Falha ao ler imagem: {exc}'
+    return text.strip(), False, 'OCR_OK', None
+
+
+def _reembolso_extract_fields(texto: str) -> dict[str, str]:
+    payload: dict[str, str] = {}
+    if not texto:
+        return payload
+    raw = texto
+    cpf_match = re.search(r'\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b', raw)
+    cnpj_match = re.search(r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b', raw)
+    if cnpj_match:
+        payload['cpf_cnpj'] = cnpj_match.group(0)
+    elif cpf_match:
+        payload['cpf_cnpj'] = cpf_match.group(0)
+
+    date_match = re.search(r'\b\d{2}[/-]\d{2}[/-]\d{4}\b', raw)
+    if date_match:
+        payload['data'] = date_match.group(0)
+
+    value_match = re.search(r'(R\$)?\s*\d{1,3}(?:\.\d{3})*,\d{2}', raw)
+    if value_match:
+        payload['valor'] = value_match.group(0).strip()
+
+    access_match = re.search(r'\b\d{44}\b', raw)
+    if access_match:
+        payload['chave_acesso'] = access_match.group(0)
+
+    numero_match = re.search(r'(?i)\b(n[ºo°]|numero)\s*[:#]?\s*(\d{3,})', raw)
+    if numero_match:
+        payload['numero_documento'] = numero_match.group(2)
+
+    serie_match = re.search(r'(?i)\bs[eé]rie\s*[:#]?\s*([A-Z0-9]+)', raw)
+    if serie_match:
+        payload['serie'] = serie_match.group(1)
+
+    if 'pix' in raw.lower():
+        payload['meio_pagamento'] = 'PIX'
+    elif 'boleto' in raw.lower():
+        payload['meio_pagamento'] = 'Boleto'
+    elif 'cart' in raw.lower():
+        payload['meio_pagamento'] = 'Cartão'
+    elif 'transfer' in raw.lower() or 'ted' in raw.lower():
+        payload['meio_pagamento'] = 'Transferência'
+
+    return payload
+
+
+def _reembolso_extract_tuss_codes(texto: str) -> list[str]:
+    if not texto:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for match in re.finditer(r'(?i)\bTUSS\s*[:#-]?\s*([0-9]{6,12})\b', texto):
+        code = match.group(1)
+        if code and code not in seen:
+            seen.add(code)
+            candidates.append(code)
+
+    for line in texto.splitlines():
+        if 'tuss' not in line.lower():
+            continue
+        for match in re.finditer(r'\b([0-9]{6,12})\b', line):
+            code = match.group(1)
+            if code and code not in seen:
+                seen.add(code)
+                candidates.append(code)
+
+    if not candidates:
+        for match in re.finditer(r'\b([0-9]{8,12})\b', texto):
+            code = match.group(1)
+            if code and code not in seen:
+                seen.add(code)
+                candidates.append(code)
+            if len(candidates) >= 10:
+                break
+
+    return candidates
+
+
+def _reembolso_lookup_tuss_values(codigos: list[str], operadora_id: int | None) -> dict[str, list[dict[str, object]]]:
+    if not codigos:
+        return {}
+    result: dict[str, list[dict[str, object]]] = {code: [] for code in codigos}
+
+    query = (
+        db.session.query(
+            Procedimento.codigo,
+            Procedimento.descricao,
+            Procedimento.valor,
+            Procedimento.prestador,
+            Tabela.nome,
+            Tabela.tipo_tabela,
+            Tabela.uf,
+            Tabela.data_vigencia,
+        )
+        .join(Tabela, Procedimento.id_tabela == Tabela.id)
+        .filter(Procedimento.codigo.in_(codigos))
+    )
+    if operadora_id:
+        query = query.filter(Procedimento.operadora_id == operadora_id)
+    query = query.order_by(
+        (Tabela.data_vigencia.is_(None)).asc(),
+        Tabela.data_vigencia.desc(),
+        Tabela.nome.asc(),
+    )
+
+    for row in query.all():
+        bucket = result.get(row.codigo)
+        if bucket is None or len(bucket) >= 6:
+            continue
+        bucket.append({
+            'codigo': row.codigo,
+            'descricao': row.descricao,
+            'valor': _stringify_for_output(row.valor),
+            'tabela': row.nome,
+            'tipo_tabela': row.tipo_tabela,
+            'prestador': row.prestador,
+            'uf': row.uf,
+            'vigencia': row.data_vigencia.isoformat() if row.data_vigencia else None,
+        })
+
+    missing = [code for code, items in result.items() if not items]
+    if missing:
+        cbhpm_query = (
+            db.session.query(
+                CBHPMItem.codigo,
+                CBHPMItem.procedimento,
+                CBHPMItem.subtotal,
+                CBHPMItem.total_porte,
+                CBHPMItem.valor_porte,
+                CBHPMItem.total_uco,
+                CBHPMItem.uco,
+                CBHPMItem.total_filme,
+                CBHPMItem.filme,
+                Tabela.nome,
+                Tabela.uf,
+                Tabela.data_vigencia,
+            )
+            .join(Tabela, CBHPMItem.id_tabela == Tabela.id)
+            .filter(Tabela.tipo_tabela == 'cbhpm', CBHPMItem.codigo.in_(missing))
+        )
+        if operadora_id:
+            cbhpm_query = cbhpm_query.filter(Tabela.id_operadora == operadora_id)
+        cbhpm_query = cbhpm_query.order_by(
+            (Tabela.data_vigencia.is_(None)).asc(),
+            Tabela.data_vigencia.desc(),
+            Tabela.nome.asc(),
+        )
+
+        for row in cbhpm_query.all():
+            bucket = result.get(row.codigo)
+            if bucket is None or len(bucket) >= 6:
+                continue
+            valor = row.subtotal or row.total_porte or row.valor_porte or row.total_uco or row.uco or row.total_filme or row.filme
+            bucket.append({
+                'codigo': row.codigo,
+                'descricao': row.procedimento,
+                'valor': _stringify_for_output(valor),
+                'tabela': row.nome,
+                'tipo_tabela': 'cbhpm',
+                'prestador': None,
+                'uf': row.uf,
+                'vigencia': row.data_vigencia.isoformat() if row.data_vigencia else None,
+            })
+
+    return result
 
 _TETO_IMPORT_JOBS_LOCK = threading.Lock()
 _TETO_IMPORT_JOBS: dict[str, dict] = {}
@@ -1763,6 +2324,18 @@ def _delete_existing_bras_records(
         db.session.execute(text('TRUNCATE TABLE bras_item_n'))
         db.session.execute(text('TRUNCATE TABLE bras_raw'))
         db.session.execute(text('TRUNCATE TABLE bras_fixed_stage'))
+        try:
+            db.session.execute(text('TRUNCATE TABLE bras_catalog_snapshot'))
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning('Falha ao TRUNCATE bras_catalog_snapshot: %s', exc)
+        try:
+            db.session.execute(text('TRUNCATE TABLE bras_item_preco'))
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning('Falha ao TRUNCATE bras_item_preco: %s', exc)
+        try:
+            db.session.execute(text('TRUNCATE TABLE bras_item_cadastro'))
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning('Falha ao TRUNCATE bras_item_cadastro: %s', exc)
         db.session.commit()
         return
 
@@ -1889,7 +2462,7 @@ def _bras_csv_fallback(
     skip_header: bool,
     encodings: list[str],
     arquivo_label: str,
-    batch_size: int = 2000,
+    batch_size: int = BRAS_RAW_CSV_BATCH,
 ) -> int:
     for enc in encodings:
         try:
@@ -1996,6 +2569,20 @@ def _parse_fixed_date(value: str | None, fmt: str | None) -> date | None:
         return datetime.strptime(value, python_fmt).date()
     except ValueError:
         return None
+
+
+def _parse_simpro_json_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    for fmt in ('%d/%m/%Y', '%d%m%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _sanitize_numeric(value: str) -> str:
@@ -2142,6 +2729,109 @@ def _materialize_simpro_items(
     return total_inserted
 
 
+def _load_simpro_json_payload(file_path: Path, encoding: str | None = None) -> list[dict]:
+    encodings = _build_encoding_list(encoding)
+    last_error: Exception | None = None
+    for enc in encodings:
+        try:
+            text = file_path.read_text(encoding=enc)
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                items = payload.get('produtos')
+            elif isinstance(payload, list):
+                items = payload
+            else:
+                items = None
+            if not isinstance(items, list):
+                raise click.ClickException('JSON SIMPRO deve conter uma lista em "produtos" ou na raiz.')
+            normalized_items = [item for item in items if isinstance(item, dict)]
+            if not normalized_items:
+                raise click.ClickException('JSON SIMPRO não possui registros válidos.')
+            return normalized_items
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+        except json.JSONDecodeError as exc:
+            raise click.ClickException(f'Não foi possível interpretar o JSON do SIMPRO: {exc}') from exc
+    raise click.ClickException('Não foi possível decodificar o arquivo JSON do SIMPRO.') from last_error
+
+
+def _materialize_simpro_json_items(
+    *,
+    arquivo_label: str,
+    records: Sequence[dict],
+    versao: str,
+    uf_default: str | None,
+) -> int:
+    if not records:
+        return 0
+
+    max_id = db.session.query(func.max(SimproItemNormalized.id)).scalar() or 0
+    next_id = int(max_id) + 1
+    rows: list[dict[str, object | None]] = []
+
+    for idx, source in enumerate(records, start=1):
+        codigo_simpro = (source.get('codigoSimpro') or source.get('codigoUsuario') or '').strip()
+        descricao = (source.get('descricao') or '').strip()
+        if not codigo_simpro or not descricao:
+            continue
+
+        tuss_raw = source.get('codigoTUSS')
+        tuss_digits = ''.join(ch for ch in str(tuss_raw).strip() if ch.isdigit()) if tuss_raw is not None else ''
+        anvisa_record = {
+            'anvisa': source.get('anvisa'),
+        }
+        _normalize_anvisa_field(anvisa_record)
+
+        preco_fabrica = _coerce_decimal(source.get('precoFabrica'))
+        preco_usuario = _coerce_decimal(source.get('precoUsuario'))
+        preco_fabrica_fracao = _coerce_decimal(source.get('precoFabricaFracao'))
+        preco_usuario_fracao = _coerce_decimal(source.get('precoUsuarioFracao'))
+
+        rows.append({
+            'id': next_id + idx - 1,
+            'arquivo': arquivo_label,
+            'linha_num': idx,
+            'codigo_interno': (source.get('codigoUsuario') or '').strip() or None,
+            'codigo': codigo_simpro,
+            'codigo_alt': (source.get('codigoFracao') or '').strip() or None,
+            'descricao': descricao,
+            'data_ref': _parse_simpro_json_date(source.get('vigencia')),
+            'tipo_reg': (source.get('identificacao') or '').strip() or None,
+            'preco1': Decimal(preco_fabrica) if preco_fabrica is not None else None,
+            'preco2': Decimal(preco_usuario) if preco_usuario is not None else None,
+            'preco3': Decimal(preco_fabrica_fracao) if preco_fabrica_fracao is not None else None,
+            'preco4': Decimal(preco_usuario_fracao) if preco_usuario_fracao is not None else None,
+            'unidade': ((source.get('embalagem') or '').strip() or (source.get('fracao') or '').strip() or None),
+            'qtd_unidade': int(Decimal(str(source.get('quantidadeEmbalagem')))) if source.get('quantidadeEmbalagem') not in (None, '') else None,
+            'fabricante': (source.get('fabricante') or '').strip() or None,
+            'referencia': (source.get('referencia') or '').strip() or None,
+            'anvisa': anvisa_record.get('anvisa'),
+            'validade_anvisa': _parse_simpro_json_date(source.get('validadeAnvisa')),
+            'ean': (source.get('codigoEAN') or '').strip() or None,
+            'situacao': (source.get('tipoAlteracao') or '').strip() or None,
+            'fracionavel': ((source.get('fracionavel') or '').strip()[:1].upper() or None),
+            'versao': versao,
+            'uf_referencia': uf_default,
+            'tuss_prefix': None,
+            'tuss_numero': tuss_digits or None,
+            'status_final': (source.get('classificacao') or '').strip() or None,
+        })
+
+    if not rows:
+        return 0
+
+    batch_size = 500
+    total_inserted = 0
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i:i + batch_size]
+        db.session.bulk_insert_mappings(SimproItemNormalized, batch)
+        db.session.commit()
+        total_inserted += len(batch)
+
+    return total_inserted
+
+
 def _stage_bras_delimited(
     *,
     file_path: Path,
@@ -2285,32 +2975,68 @@ def _execute_with_retry(sql, params: dict, max_retries: int = 10) -> int:
     return 0
 
 
-def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -> int:
-    """Materializa itens da view bras_item_v para bras_item_n em batches com retry para deadlocks."""
+def _materialize_bras_items(
+    arquivo_label: str | None, batch_size: int | None = None,
+) -> int:
+    """Materializa itens da view bras_item_v para bras_item_n em batches (keyset id; evita OFFSET lento)."""
     _ensure_bras_item_view_exists()
-    
+    if batch_size is not None:
+        bs = max(200, min(4000, int(batch_size)))
+    else:
+        bs = BRAS_MATERIALIZE_BATCH
+
     params: dict[str, object] = {}
-    where_clause = ''
+    where_w = 'w.arquivo = :arquivo'
     if arquivo_label:
         params['arquivo'] = arquivo_label
-        where_clause = 'WHERE arquivo = :arquivo'
+    else:
+        where_w = '1=1'
 
-    # Primeiro, conta quantos registros temos
-    count_sql = text(f"SELECT COUNT(*) FROM bras_item_v {where_clause}")
-    total_count = db.session.execute(count_sql, params).scalar() or 0
-    
+    count_sql = text(
+        f"SELECT COUNT(*) FROM bras_item_v w WHERE {where_w}" if arquivo_label
+        else 'SELECT COUNT(*) FROM bras_item_v w',
+    )
+    if arquivo_label is None:
+        count_params: dict = {}
+    else:
+        count_params = params
+    total_count = db.session.execute(count_sql, count_params).scalar() or 0
+
     if total_count == 0:
         return 0
-    
-    # Processa em batches para evitar lock timeout
-    total_inserted = 0
-    offset = 0
-    
-    while offset < total_count:
-        batch_params = {**params, 'batch_size': batch_size, 'offset': offset}
-        
+
+    # Keyset: lotes consecutivos por `id` (não depende de OFFSET; escala muito melhor)
+    last_id: int = 0
+    batch_idx = 0
+    while True:
+        if arquivo_label is not None:
+            id_list_sql = text(
+                f"""
+                SELECT w.id FROM bras_item_v w
+                WHERE {where_w} AND w.id > :last_id
+                ORDER BY w.id
+                LIMIT :bs
+                """
+            )
+        else:
+            id_list_sql = text(
+                """
+                SELECT w.id FROM bras_item_v w
+                WHERE w.id > :last_id
+                ORDER BY w.id
+                LIMIT :bs
+                """
+            )
+        batch_params = {**params, 'last_id': last_id, 'bs': bs}
+        rows = db.session.execute(id_list_sql, batch_params).fetchall()
+        if not rows:
+            break
+        ids: list[int] = [int(r[0]) for r in rows]
+        last_id = ids[-1]
+        in_clause = f"({ids[0]})" if len(ids) == 1 else str(tuple(ids))
+
         insert_sql = text(
-            """
+            f"""
             INSERT INTO bras_item_n (
                 id, arquivo, linha_num,
                 laboratorio_codigo, laboratorio_nome,
@@ -2321,17 +3047,15 @@ def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -
                 aliquota_ou_ipi, quantidade_embalagem, imported_at
             )
             SELECT
-                id, arquivo, linha_num,
-                laboratorio_codigo, laboratorio_nome,
-                produto_codigo, produto_nome,
-                apresentacao_codigo, apresentacao_descricao,
-                ean, registro_anvisa, edicao,
-                preco_pmc_pacote, preco_pfb_pacote, preco_pmc_unit, preco_pfb_unit,
-                aliquota_ou_ipi, quantidade_embalagem, imported_at
-            FROM bras_item_v
-            {where_clause}
-            ORDER BY id
-            LIMIT :batch_size OFFSET :offset
+                v.id, v.arquivo, v.linha_num,
+                v.laboratorio_codigo, v.laboratorio_nome,
+                v.produto_codigo, v.produto_nome,
+                v.apresentacao_codigo, v.apresentacao_descricao,
+                v.ean, v.registro_anvisa, v.edicao,
+                v.preco_pmc_pacote, v.preco_pfb_pacote, v.preco_pmc_unit, v.preco_pfb_unit,
+                v.aliquota_ou_ipi, v.quantidade_embalagem, v.imported_at
+            FROM bras_item_v v
+            WHERE v.id IN {in_clause}
             ON DUPLICATE KEY UPDATE
                 arquivo = VALUES(arquivo),
                 linha_num = VALUES(linha_num),
@@ -2351,16 +3075,21 @@ def _materialize_bras_items(arquivo_label: str | None, batch_size: int = 2000) -
                 aliquota_ou_ipi = VALUES(aliquota_ou_ipi),
                 quantidade_embalagem = VALUES(quantidade_embalagem),
                 imported_at = VALUES(imported_at)
-            """.replace('{where_clause}', where_clause)
+            """,
         )
 
-        batch_inserted = _execute_with_retry(insert_sql, batch_params)
-        total_inserted += batch_inserted
-        offset += batch_size
-        
-        app.logger.debug('Materialize BRAS batch: offset=%d, inserted=%d, total=%d', offset, batch_inserted, total_inserted)
-    
-    return total_count  # Retorna contagem real, não rowcount
+        _execute_with_retry(insert_sql, {})
+        batch_idx += 1
+        _bras_throttle_between_batches()
+        app.logger.debug(
+            'Materialize BRAS keyset: batch=%d, last_id=%d, tamanho_lote=%d, total_espalhado~=%d',
+            batch_idx,
+            last_id,
+            len(ids),
+            total_count,
+        )
+
+    return total_count
 
 
 def _normalize_uf_codes(
@@ -2422,6 +3151,271 @@ def _combine_uf_codes(*values: str | None) -> list[str]:
     return combined
 
 
+def _clean_bras_catalog_text(value: object | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _build_bras_catalog_key(
+    *,
+    ean: str | None,
+    codigo_composto: str | None,
+    laboratorio_codigo: str | None,
+    produto_codigo: str | None,
+    apresentacao_codigo: str | None,
+) -> tuple[str, str]:
+    ean_clean = ''.join(ch for ch in str(ean or '').strip() if ch.isdigit())
+    if ean_clean:
+        return f'ean:{ean_clean}', 'ean'
+
+    composed = _clean_bras_catalog_text(codigo_composto)
+    if composed:
+        return f'comp:{composed.upper()}', 'codigo_composto'
+
+    parts = [
+        (_clean_bras_catalog_text(laboratorio_codigo) or '').upper(),
+        (_clean_bras_catalog_text(produto_codigo) or '').upper(),
+        (_clean_bras_catalog_text(apresentacao_codigo) or '').upper(),
+    ]
+    return f'fallback:{"|".join(parts)}', 'fallback'
+
+
+def _build_bras_catalog_row_hash(payload: dict[str, object | None]) -> str:
+    fingerprint = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=_json_default)
+    return hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()
+
+
+def _parse_bras_catalog_row(row: Sequence[str]) -> dict[str, str | None] | None:
+    if len(row) < 10:
+        return None
+
+    laboratorio_codigo = _clean_bras_catalog_text(row[0])
+    laboratorio_nome = _clean_bras_catalog_text(row[1])
+    produto_codigo = _clean_bras_catalog_text(row[2])
+    produto_nome = _clean_bras_catalog_text(row[3])
+    apresentacao_codigo = _clean_bras_catalog_text(row[4])
+    apresentacao_descricao = _clean_bras_catalog_text(row[5])
+    codigo_composto = _clean_bras_catalog_text(row[6])
+    ean = _clean_bras_catalog_text(row[7])
+    codigo_interno = _clean_bras_catalog_text(row[8])
+    tuss = _clean_bras_catalog_text(row[9])
+
+    item_key, key_kind = _build_bras_catalog_key(
+        ean=ean,
+        codigo_composto=codigo_composto,
+        laboratorio_codigo=laboratorio_codigo,
+        produto_codigo=produto_codigo,
+        apresentacao_codigo=apresentacao_codigo,
+    )
+
+    payload = {
+        'item_key': item_key,
+        'key_kind': key_kind,
+        'laboratorio_codigo': laboratorio_codigo,
+        'laboratorio_nome': laboratorio_nome,
+        'produto_codigo': produto_codigo,
+        'produto_nome': produto_nome,
+        'apresentacao_codigo': apresentacao_codigo,
+        'apresentacao_descricao': apresentacao_descricao,
+        'codigo_composto': codigo_composto,
+        'ean': ean,
+        'codigo_interno': codigo_interno,
+        'tuss': tuss,
+    }
+    payload['row_hash'] = _build_bras_catalog_row_hash(payload)
+    return payload
+
+
+def _load_bras_catalog_file(
+    file_path: Path,
+    *,
+    delimiter: str = ';',
+    quotechar: str = '"',
+    encoding: str | None = 'latin-1',
+) -> list[dict[str, str | None]]:
+    import csv
+
+    rows: list[dict[str, str | None]] = []
+    encodings = _build_encoding_list(encoding)
+    last_error: Exception | None = None
+
+    for enc in encodings:
+        try:
+            with file_path.open('r', encoding=enc, errors='strict', newline='') as handle:
+                reader = csv.reader(handle, delimiter=delimiter, quotechar=quotechar)
+                for row in reader:
+                    parsed = _parse_bras_catalog_row(row)
+                    if parsed:
+                        rows.append(parsed)
+            return rows
+        except UnicodeDecodeError as exc:
+            rows.clear()
+            last_error = exc
+            continue
+
+    raise click.ClickException('Não foi possível decodificar o arquivo de catálogo Brasíndice.') from last_error
+
+
+def _sync_bras_catalog_snapshot(
+    *,
+    file_path: Path,
+    versao: str,
+    delimiter: str = ';',
+    quotechar: str = '"',
+    encoding: str | None = 'latin-1',
+) -> dict[str, int | str]:
+    max_id = db.session.query(func.max(BrasCatalogSnapshot.id)).scalar() or 0
+    records = _load_bras_catalog_file(
+        file_path,
+        delimiter=delimiter,
+        quotechar=quotechar,
+        encoding=encoding,
+    )
+
+    db.session.query(BrasCatalogSnapshot).filter_by(versao=versao).delete(synchronize_session=False)
+    db.session.commit()
+
+    if not records:
+        return {'versao': versao, 'rows': 0}
+
+    source_name = file_path.name
+    batch: list[dict[str, object | None]] = []
+    for idx, record in enumerate(records, start=1):
+        batch.append({
+            'id': int(max_id) + idx,
+            'versao': versao,
+            'source_file': source_name,
+            **record,
+        })
+
+    db.session.bulk_insert_mappings(BrasCatalogSnapshot, batch)
+    db.session.commit()
+    return {'versao': versao, 'rows': len(batch)}
+
+
+def _resolve_previous_bras_catalog_version(current_version: str) -> str | None:
+    rows = (
+        db.session.query(BrasCatalogSnapshot.versao)
+        .filter(BrasCatalogSnapshot.versao != current_version)
+        .distinct()
+        .order_by(BrasCatalogSnapshot.versao.desc())
+        .all()
+    )
+    return rows[0][0] if rows else None
+
+
+def _analyze_bras_catalog_delta(
+    *,
+    current_version: str,
+    previous_version: str | None = None,
+) -> dict[str, object]:
+    previous_version = previous_version or _resolve_previous_bras_catalog_version(current_version)
+
+    current_rows = (
+        BrasCatalogSnapshot.query
+        .with_entities(
+            BrasCatalogSnapshot.item_key,
+            BrasCatalogSnapshot.row_hash,
+            BrasCatalogSnapshot.ean,
+            BrasCatalogSnapshot.produto_nome,
+            BrasCatalogSnapshot.apresentacao_descricao,
+            BrasCatalogSnapshot.tuss,
+        )
+        .filter_by(versao=current_version)
+        .all()
+    )
+    current_map = {
+        row.item_key: {
+            'row_hash': row.row_hash,
+            'ean': row.ean,
+            'produto_nome': row.produto_nome,
+            'apresentacao_descricao': row.apresentacao_descricao,
+            'tuss': row.tuss,
+        }
+        for row in current_rows
+    }
+
+    previous_map: dict[str, dict[str, object | None]] = {}
+    if previous_version:
+        previous_rows = (
+            BrasCatalogSnapshot.query
+            .with_entities(
+                BrasCatalogSnapshot.item_key,
+                BrasCatalogSnapshot.row_hash,
+                BrasCatalogSnapshot.ean,
+                BrasCatalogSnapshot.produto_nome,
+                BrasCatalogSnapshot.apresentacao_descricao,
+                BrasCatalogSnapshot.tuss,
+            )
+            .filter_by(versao=previous_version)
+            .all()
+        )
+        previous_map = {
+            row.item_key: {
+                'row_hash': row.row_hash,
+                'ean': row.ean,
+                'produto_nome': row.produto_nome,
+                'apresentacao_descricao': row.apresentacao_descricao,
+                'tuss': row.tuss,
+            }
+            for row in previous_rows
+        }
+
+    new_keys = sorted(key for key in current_map.keys() if key not in previous_map)
+    changed_keys = sorted(
+        key for key, current in current_map.items()
+        if key in previous_map and current['row_hash'] != previous_map[key]['row_hash']
+    )
+    removed_keys = sorted(key for key in previous_map.keys() if key not in current_map)
+
+    def _sample(keys: list[str], source_map: dict[str, dict[str, object | None]]) -> list[dict[str, object | None]]:
+        sample: list[dict[str, object | None]] = []
+        for key in keys[:20]:
+            payload = dict(source_map.get(key) or {})
+            payload['item_key'] = key
+            sample.append(payload)
+        return sample
+
+    return {
+        'current_version': current_version,
+        'previous_version': previous_version,
+        'current_total': len(current_map),
+        'previous_total': len(previous_map),
+        'new_keys': set(new_keys),
+        'changed_keys': set(changed_keys),
+        'removed_keys': set(removed_keys),
+        'new_count': len(new_keys),
+        'changed_count': len(changed_keys),
+        'removed_count': len(removed_keys),
+        'sample_new': _sample(new_keys, current_map),
+        'sample_changed': _sample(changed_keys, current_map),
+        'sample_removed': _sample(removed_keys, previous_map),
+    }
+
+
+def _build_bras_main_row_key(row: Sequence[str]) -> tuple[str | None, str | None]:
+    if len(row) < 20:
+        return None, None
+
+    ean = row[16].strip() if len(row) > 16 and row[16] else None
+    laboratorio_codigo = row[0].strip() if len(row) > 0 and row[0] else None
+    produto_codigo = row[19].strip() if len(row) > 19 and row[19] else None
+    apresentacao_codigo = row[17].strip() if len(row) > 17 and row[17] else None
+    codigo_composto = None
+    if laboratorio_codigo and produto_codigo and apresentacao_codigo:
+        codigo_composto = f'{laboratorio_codigo}.{produto_codigo}.{apresentacao_codigo}'
+
+    return _build_bras_catalog_key(
+        ean=ean,
+        codigo_composto=codigo_composto,
+        laboratorio_codigo=laboratorio_codigo,
+        produto_codigo=produto_codigo,
+        apresentacao_codigo=apresentacao_codigo,
+    )
+
+
 def _sql_clamp_decimal(expr: str, *, integer_digits: int = 8, scale: int = 4) -> str:
     max_value = f"{'9' * integer_digits}.{ '9' * scale}"
     return (
@@ -2440,27 +3434,31 @@ def _sync_bras_insumo_index(
     uf_default: str | None = None,
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
-    batch_size: int = 2000,
+    versao_label: str | None = None,
+    batch_size: int | None = None,
 ) -> None:
-    """Sincroniza itens BRAS para insumos_index em batches para evitar lock timeout."""
+    """Sincroniza itens BRAS para insumos_index em lotes (keyset por n.id; evita OFFSET lento)."""
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
     uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
     uf_storage = _encode_uf_codes(uf_codes)
 
-    where_clause = ''
+    if batch_size is not None:
+        bs = max(200, min(4000, int(batch_size)))
+    else:
+        bs = BRAS_INDEX_SYNC_BATCH
+
     params_base: dict[str, object] = {
         'aliquota_default': aliquota_default,
         'uf_default': uf_default,
         'uf_storage': uf_storage,
+        'versao_label': (versao_label or '').strip() or None,
     }
     if arquivo_label:
         params_base['arquivo'] = arquivo_label
-        where_clause = 'WHERE arquivo = :arquivo'
 
-    # Conta quantos registros temos
-    count_sql = text(f"SELECT COUNT(*) FROM bras_item_n n {where_clause}")
-    total_count = db.session.execute(count_sql, params_base).scalar() or 0
-    
+    where_count = 'WHERE n.arquivo = :arquivo' if arquivo_label else ''
+    count_sql = text(f'SELECT COUNT(*) FROM bras_item_n n {where_count}')
+    total_count = db.session.execute(count_sql, params_base if arquivo_label else {}).scalar() or 0
     if total_count == 0:
         return
 
@@ -2469,13 +3467,38 @@ def _sync_bras_insumo_index(
     aliquota_expr = "COALESCE(n.aliquota_ou_ipi, :aliquota_default)"
     aliquota_sql = _sql_clamp_decimal(aliquota_expr, integer_digits=4, scale=4)
 
-    # Processa em batches
-    offset = 0
-    while offset < total_count:
-        batch_params = {**params_base, 'batch_size': batch_size, 'offset': offset}
-        
+    last_n_id: int = 0
+    batch_n = 0
+    while True:
+        if arquivo_label:
+            id_list_sql = text(
+                """
+                SELECT n.id FROM bras_item_n n
+                WHERE n.arquivo = :arquivo AND n.id > :last_n_id
+                ORDER BY n.id
+                LIMIT :bs
+                """,
+            )
+        else:
+            id_list_sql = text(
+                """
+                SELECT n.id FROM bras_item_n n
+                WHERE n.id > :last_n_id
+                ORDER BY n.id
+                LIMIT :bs
+                """,
+            )
+        list_params = {**params_base, 'last_n_id': last_n_id, 'bs': bs}
+        rows = db.session.execute(id_list_sql, list_params).fetchall()
+        if not rows:
+            break
+        ids: list[int] = [int(r[0]) for r in rows]
+        last_n_id = ids[-1]
+        in_clause = f"({ids[0]})" if len(ids) == 1 else str(tuple(ids))
+        batch_n += 1
+
         upsert_template = text(
-            """
+            f"""
             INSERT INTO insumos_index (
                 origem, item_id, tuss, tiss, descricao, preco, aliquota,
                 fabricante, anvisa, versao_tabela, data_atualizacao,
@@ -2491,14 +3514,15 @@ def _sync_bras_insumo_index(
                 {aliquota_sql} AS aliquota,
                 n.laboratorio_nome AS fabricante,
                 n.registro_anvisa AS anvisa,
-                COALESCE(n.edicao, n.arquivo) AS versao_tabela,
+                COALESCE(:versao_label, n.edicao, n.arquivo) AS versao_tabela,
                 NULL AS data_atualizacao,
-                COALESCE(:uf_storage, :uf_default) AS uf_referencia,
+                COALESCE(:uf_storage, :uf_default, idx.uf_referencia) AS uf_referencia,
                 NOW() AS updated_at
             FROM bras_item_n n
-            {where_clause}
-            ORDER BY n.id
-            LIMIT :batch_size OFFSET :offset
+            LEFT JOIN insumos_index idx
+              ON idx.origem = 'BRAS'
+             AND idx.item_id = n.id
+            WHERE n.id IN {in_clause}
             ON DUPLICATE KEY UPDATE
                 tuss = VALUES(tuss),
                 tiss = VALUES(tiss),
@@ -2509,15 +3533,908 @@ def _sync_bras_insumo_index(
                 anvisa = VALUES(anvisa),
                 versao_tabela = VALUES(versao_tabela),
                 data_atualizacao = VALUES(data_atualizacao),
-                uf_referencia = VALUES(uf_referencia),
+                uf_referencia = COALESCE(VALUES(uf_referencia), insumos_index.uf_referencia),
                 updated_at = VALUES(updated_at)
-            """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
+            """
         )
+        _execute_with_retry(upsert_template, params_base)
+        _bras_throttle_between_batches()
+        app.logger.debug('Sync BRAS index keyset: batch=%d, last_n_id=%d, lote=%d, total~%d', batch_n, last_n_id, len(ids), total_count)
 
-        _execute_with_retry(upsert_template, batch_params)
-        offset += batch_size
-        
-        app.logger.debug('Sync BRAS index batch: offset=%d, total=%d', offset, total_count)
+
+def _br_norm_aliquota(value: Decimal | None) -> Decimal | None:
+    if value is None:
+        return None
+    return value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def _br_aliquota_certeiro(a: Decimal | None, b: Decimal | None) -> bool:
+    if a is None or b is None:
+        return False
+    return abs(a - b) < Decimal('0.02')
+
+
+def _candidatas_edicao_bras(rotulo: str) -> list[str]:
+    """
+    Gera rótulos alternativos para bater `edicao` no cadastro (vem da **col. 14** do TXT),
+    que muitas vezes é só `1091`, enquanto o usuário informa `2026-1091` na tela.
+    """
+    import re
+
+    t = (rotulo or '').strip()
+    if not t:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(x: str) -> None:
+        v = (x or '').strip()
+        if v and v not in seen:
+            seen.add(v)
+            out.append(v)
+
+    add(t)
+    if '-' in t:
+        tail = t.rsplit('-', 1)[-1].strip()
+        if tail and tail != t and re.match(r'^\d{3,5}$', tail):
+            add(tail)
+    return out
+
+
+def _align_bras_n_import_version(
+    versao: str | None,
+    *,
+    arquivo_label: str | None = None,
+) -> int:
+    """
+    Faz a versão importada prevalecer em `bras_item_n.edicao`.
+
+    A Brasíndice pode trazer a col. 14 com edições antigas dentro do mesmo arquivo publicado.
+    Para o fluxo operacional do sistema, a chave do split deve seguir a versão importada
+    (ex.: `1091`), mantendo o valor original apenas implicitamente no arquivo fonte.
+    """
+    versao_norm = (versao or '').strip()
+    if not versao_norm:
+        return 0
+
+    query = BrasItemNormalized.query
+    if arquivo_label:
+        query = query.filter(BrasItemNormalized.arquivo == arquivo_label)
+    else:
+        version_tokens = _candidatas_edicao_bras(versao_norm) or [versao_norm]
+        like_clauses = [
+            func.coalesce(BrasItemNormalized.arquivo, '').like(f'%{token}%')
+            for token in version_tokens
+            if token
+        ]
+        if like_clauses:
+            query = query.filter(or_(*like_clauses))
+        else:
+            return 0
+
+    rows = query.with_entities(BrasItemNormalized.id, BrasItemNormalized.edicao).all()
+    touched_ids = [int(row.id) for row in rows if (row.edicao or '').strip() != versao_norm]
+    if not touched_ids:
+        return 0
+
+    (
+        BrasItemNormalized.query
+        .filter(BrasItemNormalized.id.in_(touched_ids))
+        .update({'edicao': versao_norm}, synchronize_session=False)
+    )
+    db.session.commit()
+    return len(touched_ids)
+
+
+def _patch_insumo_from_bras_item_n(n: BrasItemNormalized) -> None:
+    """Atualiza linha de `insumos_index` a partir de um `bras_item_n` (após ajuste de preço leve)."""
+    idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=n.id).first()
+    if not idx:
+        return
+    preco = n.preco_pmc_unit or n.preco_pmc_pacote or n.preco_pfb_unit or n.preco_pfb_pacote
+    idx.preco = preco
+    idx.aliquota = n.aliquota_ou_ipi
+    idx.tuss = n.produto_codigo
+    idx.tiss = n.apresentacao_codigo
+    idx.anvisa = n.registro_anvisa
+    idx.fabricante = n.laboratorio_nome
+    idx.versao_tabela = n.edicao or n.arquivo
+    p1 = (n.produto_nome or '').strip()
+    p2 = (n.apresentacao_descricao or '').strip()
+    idx.descricao = ' • '.join([p for p in (p1, p2) if p]) or None
+    idx.updated_at = _now_utc()
+    db.session.add(idx)
+
+
+def _ufs_pertencentes_a_aliquota_piso(alq: Decimal) -> list[str]:
+    """
+    UFs atribuídas à alíquota na tabela piso (ANVISA), inverso do mapa UF→alíquota.
+    Usado para preencher `insumos_index.uf_referencia` após import por alíquota.
+    """
+    pairs: list[tuple[str, list[str]]] = [
+        ('17', ['DF', 'ES', 'MT', 'MS', 'RS', 'SC']),
+        ('18', ['AP', 'MG', 'SP']),
+        ('19', ['AC', 'AL', 'GO', 'PA', 'SE']),
+        ('19.5', ['PR', 'RO']),
+        ('20', ['AM', 'CE', 'PB', 'RN', 'RR', 'TO']),
+        ('20.5', ['BA', 'PE']),
+        ('22', ['RJ']),
+        ('22.5', ['PI']),
+        ('23', ['MA']),
+    ]
+    aln = _br_norm_aliquota(alq) or alq
+    out: set[str] = set()
+    for a_str, ufs in pairs:
+        a = _br_norm_aliquota(Decimal(a_str)) or Decimal(a_str)
+        if _br_aliquota_certeiro(a, aln):
+            out.update(ufs)
+    return sorted(out)
+
+
+def _reatribuir_insumo_bras_apos_import_precos(
+    n_ids: set[int],
+    aliquota: Decimal,
+    versao_label: str | None = None,
+) -> int:
+    """
+    Após `import-precos`, alinha `insumos_index` com a alíquota do ficheiro e com as UFs do piso,
+    e com preço vindo de `bras_item_preco` (ou `bras_item_n`). Cria linha de índice se ainda não existir.
+    """
+    if not n_ids:
+        return 0
+    alq = _br_norm_aliquota(aliquota) or aliquota
+    ufs = _ufs_pertencentes_a_aliquota_piso(alq)
+    uf_str = _encode_uf_codes(ufs)
+    n_atual = 0
+    for nid in n_ids:
+        n = BrasItemNormalized.query.get(nid)
+        if not n:
+            continue
+        ean = (n.ean or '').strip()
+        if not ean:
+            continue
+        ed = (n.edicao or '').strip() or (n.arquivo or '')[:50] or '—'
+        ed = (versao_label or '').strip() or ed
+        cands = _candidatas_edicao_bras(ed)
+        cad = (
+            BrasItemCadastro.query.filter(
+                and_(
+                    func.trim(BrasItemCadastro.ean) == ean,
+                    or_(*[func.trim(BrasItemCadastro.edicao) == c for c in cands]),
+                )
+            )
+            .first()
+        )
+        p_row: BrasItemPreco | None = None
+        if cad is not None:
+            p_row = (
+                BrasItemPreco.query.filter(BrasItemPreco.cadastro_id == cad.id)
+                .filter(BrasItemPreco.aliquota == alq)
+                .first()
+            )
+        preco = None
+        if p_row is not None:
+            preco = p_row.preco_pmc_unit or p_row.preco_pmc_pacote or p_row.preco_pfb_unit or p_row.preco_pfb_pacote
+        if preco is None:
+            preco = n.preco_pmc_unit or n.preco_pmc_pacote or n.preco_pfb_unit or n.preco_pfb_pacote
+        p1 = (n.produto_nome or '').strip()
+        p2 = (n.apresentacao_descricao or '').strip()
+        desc = ' • '.join([x for x in (p1, p2) if x]) or None
+        vtab_source = (versao_label or '').strip() or n.edicao or n.arquivo
+        vtab = vtab_source[:100] if vtab_source else None
+        idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=nid).first()
+        if idx is None:
+            idx = InsumoIndex(
+                origem='BRAS',
+                item_id=int(nid),
+                tuss=n.produto_codigo,
+                tiss=n.apresentacao_codigo,
+                descricao=desc,
+                preco=preco,
+                aliquota=alq,
+                fabricante=n.laboratorio_nome,
+                anvisa=n.registro_anvisa,
+                versao_tabela=vtab,
+                data_atualizacao=None,
+                uf_referencia=uf_str,
+                updated_at=_now_utc(),
+            )
+            db.session.add(idx)
+        else:
+            idx.aliquota = alq
+            idx.uf_referencia = uf_str
+            if preco is not None:
+                idx.preco = preco
+            idx.tuss = n.produto_codigo
+            idx.tiss = n.apresentacao_codigo
+            idx.descricao = desc
+            idx.fabricante = n.laboratorio_nome
+            idx.anvisa = n.registro_anvisa
+            idx.versao_tabela = vtab
+            idx.updated_at = _now_utc()
+        n_atual += 1
+    if n_atual:
+        db.session.commit()
+    return n_atual
+
+
+def _autobackfill_bras_cadastro_se_necessario() -> dict | None:
+    """
+    Se `bras_item_n` tem dados mas `bras_item_cadastro` está vazio, o backfill antigo não criava
+    nada (alíquota nula no `n`). Garante uma passada de preenchimento de cadastro antes de `import-precos`.
+    """
+    try:
+        n_n = int(db.session.query(func.count(BrasItemNormalized.id)).scalar() or 0)
+        n_c = int(db.session.query(func.count(BrasItemCadastro.id)).scalar() or 0)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('autobackfill BRAS: contagem: %s', exc)
+        return None
+    if n_n == 0 or n_c > 0:
+        return None
+    st = _sync_bras_split_from_bras_n_fast()
+    app.logger.info('autobackfill bras_item_cadastro a partir de bras_item_n: %s', st)
+    return st
+
+
+def _autobackfill_bras_cadastro_para_edicao_se_necessario(edicao: str) -> dict | None:
+    """
+    Garante que o split BRAS tenha o cadastro da ediÃ§Ã£o alvo antes de uma carga "sÃ³ preÃ§os".
+
+    Caso comum: o banco jÃ¡ possui alguns cadastros antigos, entÃ£o o autobackfill global nÃ£o dispara,
+    mas a ediÃ§Ã£o atual ainda nÃ£o foi sincronizada para `bras_item_cadastro`.
+    """
+    edicao_cands = _candidatas_edicao_bras((edicao or '').strip())
+    if not edicao_cands:
+        return None
+
+    n_rows = (
+        BrasItemNormalized.query.with_entities(BrasItemNormalized.id, BrasItemNormalized.ean)
+        .filter(
+            BrasItemNormalized.ean.isnot(None),
+            func.trim(BrasItemNormalized.ean) != '',
+            or_(*[func.coalesce(BrasItemNormalized.edicao, '') == c for c in edicao_cands]),
+        )
+        .all()
+    )
+    if not n_rows:
+        return None
+
+    n_ids = [int(row.id) for row in n_rows if row.id is not None]
+    n_eans = {(row.ean or '').strip() for row in n_rows if (row.ean or '').strip()}
+    if not n_ids or not n_eans:
+        return None
+
+    cad_rows = (
+        BrasItemCadastro.query.with_entities(BrasItemCadastro.ean)
+        .filter(
+            BrasItemCadastro.ean.isnot(None),
+            func.trim(BrasItemCadastro.ean) != '',
+            or_(*[func.trim(BrasItemCadastro.edicao) == c for c in edicao_cands]),
+        )
+        .all()
+    )
+    cad_eans = {(row.ean or '').strip() for row in cad_rows if (row.ean or '').strip()}
+    missing_eans = n_eans - cad_eans
+    if not missing_eans:
+        return None
+
+    st = _sync_bras_split_from_bras_n_fast(n_ids=n_ids)
+    st['edicao_candidatas'] = edicao_cands
+    st['cadastros_faltantes_antes'] = len(missing_eans)
+    app.logger.info('autobackfill bras_item_cadastro para edição %s: %s', edicao, st)
+    return st
+
+
+def _import_bras_somente_precos(
+    *,
+    file_path: Path,
+    edicao: str,
+    aliquota: Decimal,
+    delimiter: str = ',',
+    quotechar: str = '"',
+    encoding: str | None = 'latin-1',
+    skip_header: bool = False,
+    arquivo_fonte: str = 'import-precos',
+    update_legacy: bool = True,
+    commit_cada: int = 500,
+) -> dict:
+    """
+    Atualiza só preços (mesmo layout TXT D delimitado) para itens **já** presentes em `BrasItemCadastro`.
+    Também replica em `bras_item_n` (linhas cujo EAN+edição+alíquota batem) e em `insumos_index` quando possível.
+    """
+    import csv
+
+    aliquota = _br_norm_aliquota(aliquota) or aliquota
+    edicao = (edicao or '').strip()
+    if not edicao:
+        raise ValueError('edição/versão é obrigatória.')
+    if aliquota is None:
+        raise ValueError('alíquota é obrigatória.')
+    aligned_rows = _align_bras_n_import_version(edicao)
+    edicao_cands = _candidatas_edicao_bras(edicao)
+
+    autobf = _autobackfill_bras_cadastro_se_necessario()
+    autobf_edicao = _autobackfill_bras_cadastro_para_edicao_se_necessario(edicao)
+    enc = encoding or 'latin-1'
+    stat = {
+        'linhas_lidas': 0,
+        'atualizados_preco': 0,
+        'sem_cadastro': 0,
+        'erros': 0,
+        'legacy_atualizados': 0,
+        'edicao_candidatas': edicao_cands,
+        'bras_n_aligned': aligned_rows,
+        'autobackfill_cadastro': autobf,
+        'autobackfill_edicao': autobf_edicao,
+    }
+    next_preco_id = int(db.session.query(func.max(BrasItemPreco.id)).scalar() or 0) + 1
+    n_ids_tocados: set[int] = set()
+    n_ids_para_insumo_index: set[int] = set()
+    price_by_ean: dict[str, dict[str, Decimal | None]] = {}
+    eans_in_file: set[str] = set()
+
+    with file_path.open('r', encoding=enc, errors='replace', newline='') as f:
+        reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar or '"')
+        for linha_num, row in enumerate(reader, start=1):
+            if skip_header and linha_num == 1:
+                continue
+            if len(row) < 17:
+                continue
+            try:
+                ean = (row[16] or '').strip()
+                if not ean:
+                    continue
+                stat['linhas_lidas'] += 1
+                eans_in_file.add(ean)
+                price_by_ean[ean] = {
+                    'pmc_p': Decimal((row[6] or '0').replace(',', '.')) if (row[6] or '').strip() else None,
+                    'pfb_p': Decimal((row[7] or '0').replace(',', '.')) if (row[7] or '').strip() else None,
+                    'pmc_u': Decimal((row[10] or '0').replace(',', '.')) if (row[10] or '').strip() else None,
+                    'pfb_u': Decimal((row[12] or '0').replace(',', '.')) if (row[12] or '').strip() else None,
+                }
+            except (InvalidOperation, ValueError, TypeError) as exc:
+                stat['erros'] += 1
+                app.logger.debug('import precos leve linha %s: %s', linha_num, exc)
+                continue
+
+    if eans_in_file:
+        cad_rows = (
+            BrasItemCadastro.query.filter(
+                BrasItemCadastro.ean.in_(list(eans_in_file)),
+                BrasItemCadastro.edicao.in_(edicao_cands),
+            )
+            .all()
+        )
+        cadastro_by_ean = {(row.ean or '').strip(): row for row in cad_rows if (row.ean or '').strip()}
+        cadastro_ids = [int(row.id) for row in cad_rows if row.id is not None]
+        preco_rows = (
+            BrasItemPreco.query.filter(
+                BrasItemPreco.cadastro_id.in_(cadastro_ids),
+                BrasItemPreco.aliquota == aliquota,
+            )
+            .all()
+            if cadastro_ids else []
+        )
+        preco_by_cadastro = {int(row.cadastro_id): row for row in preco_rows if row.cadastro_id is not None}
+        normalized_rows = (
+            BrasItemNormalized.query.filter(
+                BrasItemNormalized.ean.in_(list(eans_in_file)),
+                BrasItemNormalized.edicao.in_(edicao_cands),
+            )
+            .all()
+        )
+        normalized_by_ean: dict[str, list[BrasItemNormalized]] = {}
+        for row in normalized_rows:
+            ean = (row.ean or '').strip()
+            if ean:
+                normalized_by_ean.setdefault(ean, []).append(row)
+
+        now_ts = _now_utc()
+        new_precos: list[BrasItemPreco] = []
+        for ean, payload in price_by_ean.items():
+            cad = cadastro_by_ean.get(ean)
+            if cad is None:
+                stat['sem_cadastro'] += 1
+                continue
+
+            p_row = preco_by_cadastro.get(int(cad.id))
+            if p_row is None:
+                p_row = BrasItemPreco(
+                    id=next_preco_id,
+                    cadastro_id=cad.id,
+                    aliquota=aliquota,
+                    arquivo_fonte=arquivo_fonte,
+                    imported_at=now_ts,
+                )
+                next_preco_id += 1
+                preco_by_cadastro[int(cad.id)] = p_row
+                new_precos.append(p_row)
+
+            p_row.preco_pmc_pacote = payload['pmc_p']
+            p_row.preco_pfb_pacote = payload['pfb_p']
+            p_row.preco_pmc_unit = payload['pmc_u']
+            p_row.preco_pfb_unit = payload['pfb_u']
+            p_row.arquivo_fonte = arquivo_fonte
+            p_row.imported_at = now_ts
+            stat['atualizados_preco'] += 1
+
+            n_match = normalized_by_ean.get(ean, [])
+            for n_row in n_match:
+                n_ids_para_insumo_index.add(int(n_row.id))
+
+            if update_legacy:
+                for n in n_match:
+                    if n is None or (n.aliquota_ou_ipi is not None and not _br_aliquota_certeiro(n.aliquota_ou_ipi, aliquota)):
+                        continue
+                    n.preco_pmc_pacote = payload['pmc_p']
+                    n.preco_pfb_pacote = payload['pfb_p']
+                    n.preco_pmc_unit = payload['pmc_u']
+                    n.preco_pfb_unit = payload['pfb_u']
+                    n.aliquota_ou_ipi = aliquota
+                    stat['legacy_atualizados'] += 1
+                    n_ids_tocados.add(int(n.id))
+
+        if new_precos:
+            db.session.add_all(new_precos)
+
+    db.session.commit()
+    n_idx = _reatribuir_insumo_bras_apos_import_precos(
+        n_ids_para_insumo_index,
+        aliquota,
+        versao_label=edicao,
+    )
+    stat['insumos_index_vinculados'] = n_idx
+    if n_ids_tocados or n_ids_para_insumo_index:
+        _clear_insumo_cache()
+    return stat
+
+
+def _backfill_bras_cadastro_preco_from_bras_n(*, commit_cada: int = 2000, dry_run: bool = False) -> dict:
+    """
+    A partir de `bras_item_n`, cria/ajusta `BrasItemCadastro` (dedup por edição+EAN) e `BrasItemPreco` por alíquota.
+    A view `bras_item_v` e o pipeline raw deixam `aliquota_ou_ipi` nulo; mesmo assim o **cadastro** é criado,
+    e `BrasItemPreco` só recebe linha quando há alíquota (senão preços vêm de `import-precos` / delta).
+    """
+    stat = {
+        'linhas_bras_n': 0,
+        'cadastros_unicos': 0,
+        'preco_linhas': 0,
+        'puladas_sem_ean': 0,
+        'n_sem_aliquota_so_cadastro': 0,
+    }
+    next_cadastro_id = int(db.session.query(func.max(BrasItemCadastro.id)).scalar() or 0) + 1
+    next_preco_id = int(db.session.query(func.max(BrasItemPreco.id)).scalar() or 0) + 1
+    n_desde = 0
+    q = BrasItemNormalized.query.order_by(BrasItemNormalized.id.asc())
+    for row in q.yield_per(2000):
+        stat['linhas_bras_n'] += 1
+        ean = (row.ean or '').strip()
+        if not ean:
+            stat['puladas_sem_ean'] += 1
+            continue
+        ed = (row.edicao or '').strip() or (row.arquivo or '')[:50]
+        if not ed:
+            ed = (row.arquivo or '')[:50] or '—'
+
+        cad: BrasItemCadastro | None = None
+        if not dry_run:
+            cad = (
+                BrasItemCadastro.query.filter(
+                    and_(
+                        func.trim(BrasItemCadastro.edicao) == ed,
+                        func.trim(BrasItemCadastro.ean) == ean,
+                    )
+                )
+                .first()
+            )
+            if cad is None:
+                cad = BrasItemCadastro(
+                    edicao=ed,
+                    ean=ean,
+                    laboratorio_codigo=row.laboratorio_codigo,
+                    laboratorio_nome=row.laboratorio_nome,
+                    produto_codigo=row.produto_codigo,
+                    produto_nome=row.produto_nome,
+                    apresentacao_codigo=row.apresentacao_codigo,
+                    apresentacao_descricao=row.apresentacao_descricao,
+                    registro_anvisa=row.registro_anvisa,
+                    quantidade_embalagem=row.quantidade_embalagem,
+                    linha_num=row.linha_num,
+                    imported_at=_now_utc(),
+                )
+                db.session.add(cad)
+                db.session.flush()
+                stat['cadastros_unicos'] += 1
+            n_desde += 1
+            if n_desde >= commit_cada:
+                db.session.commit()
+                n_desde = 0
+
+        if row.aliquota_ou_ipi is None:
+            stat['n_sem_aliquota_so_cadastro'] += 1
+            continue
+
+        if dry_run:
+            continue
+
+        if not cad:
+            continue
+        ali = _br_norm_aliquota(row.aliquota_ou_ipi)
+        p_row = (
+            BrasItemPreco.query.filter(BrasItemPreco.cadastro_id == cad.id)
+            .filter(BrasItemPreco.aliquota == ali)
+            .first()
+        )
+        if p_row is None:
+            p_row = BrasItemPreco(
+                id=next_preco_id,
+                cadastro_id=cad.id,
+                aliquota=ali,
+                arquivo_fonte=row.arquivo,
+                imported_at=row.imported_at or _now_utc(),
+            )
+            next_preco_id += 1
+            db.session.add(p_row)
+        p_row.preco_pmc_pacote = row.preco_pmc_pacote
+        p_row.preco_pfb_pacote = row.preco_pfb_pacote
+        p_row.preco_pmc_unit = row.preco_pmc_unit
+        p_row.preco_pfb_unit = row.preco_pfb_unit
+        p_row.arquivo_fonte = row.arquivo
+        stat['preco_linhas'] += 1
+        n_desde += 1
+        if n_desde >= commit_cada:
+            db.session.commit()
+            n_desde = 0
+
+    if not dry_run:
+        db.session.commit()
+    return stat
+
+
+def _sync_bras_split_from_bras_n(
+    *,
+    arquivo_label: str | None = None,
+    n_ids: Sequence[int] | None = None,
+    aliquota_override: Decimal | None = None,
+    commit_cada: int = 1000,
+) -> dict:
+    """
+    Sincroniza o split BRAS (`bras_item_cadastro` + `bras_item_preco`) a partir de linhas jÃ¡ materializadas
+    em `bras_item_n`, limitado por arquivo ou por IDs tocados.
+
+    Fecha o ciclo operacional da arquitetura nova sem depender de backfill manual apÃ³s a carga base/delta.
+    """
+    stat = {
+        'linhas_bras_n': 0,
+        'cadastros_criados': 0,
+        'cadastros_atualizados': 0,
+        'precos_criados': 0,
+        'precos_atualizados': 0,
+        'puladas_sem_ean': 0,
+        'puladas_sem_aliquota': 0,
+    }
+    if n_ids is not None and not list(n_ids):
+        return stat
+
+    normalized_override = None
+    if aliquota_override is not None:
+        normalized_override = _br_norm_aliquota(aliquota_override) or aliquota_override
+
+    query = BrasItemNormalized.query
+    if arquivo_label:
+        query = query.filter(BrasItemNormalized.arquivo == arquivo_label)
+    if n_ids is not None:
+        query = query.filter(BrasItemNormalized.id.in_(list(n_ids)))
+    query = query.order_by(BrasItemNormalized.id.asc())
+
+    next_cadastro_id = int(db.session.query(func.max(BrasItemCadastro.id)).scalar() or 0) + 1
+    next_preco_id = int(db.session.query(func.max(BrasItemPreco.id)).scalar() or 0) + 1
+    cadastro_cache: dict[tuple[str, str], BrasItemCadastro] = {}
+    preco_cache: dict[tuple[int, str], BrasItemPreco] = {}
+    n_desde = 0
+
+    rows = query.all()
+    for row in rows:
+        stat['linhas_bras_n'] += 1
+        ean = (row.ean or '').strip()
+        if not ean:
+            stat['puladas_sem_ean'] += 1
+            continue
+
+        ed = (row.edicao or '').strip() or (row.arquivo or '')[:50] or 'â€”'
+        cad_key = (ed, ean)
+        cad = cadastro_cache.get(cad_key)
+        if cad is None:
+            cad = (
+                BrasItemCadastro.query.filter(
+                    and_(
+                        func.trim(BrasItemCadastro.edicao) == ed,
+                        func.trim(BrasItemCadastro.ean) == ean,
+                    )
+                )
+                .first()
+            )
+            if cad is None:
+                cad = BrasItemCadastro(
+                    id=next_cadastro_id,
+                    edicao=ed,
+                    ean=ean,
+                    laboratorio_codigo=row.laboratorio_codigo,
+                    laboratorio_nome=row.laboratorio_nome,
+                    produto_codigo=row.produto_codigo,
+                    produto_nome=row.produto_nome,
+                    apresentacao_codigo=row.apresentacao_codigo,
+                    apresentacao_descricao=row.apresentacao_descricao,
+                    registro_anvisa=row.registro_anvisa,
+                    quantidade_embalagem=row.quantidade_embalagem,
+                    linha_num=row.linha_num,
+                    imported_at=_now_utc(),
+                )
+                next_cadastro_id += 1
+                db.session.add(cad)
+                db.session.flush()
+                stat['cadastros_criados'] += 1
+            cadastro_cache[cad_key] = cad
+
+        cadastro_changed = False
+        cadastro_fields = {
+            'laboratorio_codigo': row.laboratorio_codigo,
+            'laboratorio_nome': row.laboratorio_nome,
+            'produto_codigo': row.produto_codigo,
+            'produto_nome': row.produto_nome,
+            'apresentacao_codigo': row.apresentacao_codigo,
+            'apresentacao_descricao': row.apresentacao_descricao,
+            'registro_anvisa': row.registro_anvisa,
+            'quantidade_embalagem': row.quantidade_embalagem,
+            'linha_num': row.linha_num,
+        }
+        for field_name, field_value in cadastro_fields.items():
+            if getattr(cad, field_name) != field_value:
+                setattr(cad, field_name, field_value)
+                cadastro_changed = True
+        if cadastro_changed:
+            cad.imported_at = _now_utc()
+            stat['cadastros_atualizados'] += 1
+
+        alq = normalized_override
+        if alq is None and row.aliquota_ou_ipi is not None:
+            alq = _br_norm_aliquota(row.aliquota_ou_ipi) or row.aliquota_ou_ipi
+        if alq is None:
+            stat['puladas_sem_aliquota'] += 1
+            n_desde += 1
+            if n_desde >= commit_cada:
+                db.session.commit()
+                n_desde = 0
+            continue
+
+        preco_key = (int(cad.id), format(alq, 'f'))
+        preco_row = preco_cache.get(preco_key)
+        if preco_row is None:
+            preco_row = (
+                BrasItemPreco.query.filter(BrasItemPreco.cadastro_id == cad.id)
+                .filter(BrasItemPreco.aliquota == alq)
+                .first()
+            )
+            if preco_row is None:
+                preco_row = BrasItemPreco(
+                    id=next_preco_id,
+                    cadastro_id=cad.id,
+                    aliquota=alq,
+                    arquivo_fonte=row.arquivo,
+                    imported_at=_now_utc(),
+                )
+                next_preco_id += 1
+                db.session.add(preco_row)
+                stat['precos_criados'] += 1
+            else:
+                stat['precos_atualizados'] += 1
+            preco_cache[preco_key] = preco_row
+        else:
+            stat['precos_atualizados'] += 1
+
+        preco_row.preco_pmc_pacote = row.preco_pmc_pacote
+        preco_row.preco_pfb_pacote = row.preco_pfb_pacote
+        preco_row.preco_pmc_unit = row.preco_pmc_unit
+        preco_row.preco_pfb_unit = row.preco_pfb_unit
+        preco_row.arquivo_fonte = row.arquivo
+        preco_row.imported_at = _now_utc()
+
+        n_desde += 1
+        if n_desde >= commit_cada:
+            db.session.commit()
+            n_desde = 0
+
+    db.session.commit()
+    return stat
+
+
+def _sync_bras_split_from_bras_n_fast(
+    *,
+    arquivo_label: str | None = None,
+    n_ids: Sequence[int] | None = None,
+    aliquota_override: Decimal | None = None,
+    versao_override: str | None = None,
+) -> dict:
+    """
+    Variante otimizada do sync BRAS split.
+    Evita SELECT por linha em `bras_item_cadastro`/`bras_item_preco` e trabalha em lote.
+    """
+    stat = {
+        'linhas_bras_n': 0,
+        'cadastros_criados': 0,
+        'cadastros_atualizados': 0,
+        'precos_criados': 0,
+        'precos_atualizados': 0,
+        'puladas_sem_ean': 0,
+        'puladas_sem_aliquota': 0,
+    }
+    if n_ids is not None and not list(n_ids):
+        return stat
+
+    normalized_override = None
+    if aliquota_override is not None:
+        normalized_override = _br_norm_aliquota(aliquota_override) or aliquota_override
+
+    query = BrasItemNormalized.query
+    if arquivo_label:
+        query = query.filter(BrasItemNormalized.arquivo == arquivo_label)
+    if n_ids is not None:
+        query = query.filter(BrasItemNormalized.id.in_(list(n_ids)))
+    rows = query.order_by(BrasItemNormalized.id.asc()).all()
+    if not rows:
+        return stat
+
+    stat['linhas_bras_n'] = len(rows)
+    now_ts = _now_utc()
+    next_cadastro_id = int(db.session.query(func.max(BrasItemCadastro.id)).scalar() or 0) + 1
+    next_preco_id = int(db.session.query(func.max(BrasItemPreco.id)).scalar() or 0) + 1
+
+    prepared_rows: list[tuple[BrasItemNormalized, str, str, Decimal | None]] = []
+    eans: set[str] = set()
+    edicoes: set[str] = set()
+    for row in rows:
+        ean = (row.ean or '').strip()
+        if not ean:
+            stat['puladas_sem_ean'] += 1
+            continue
+        ed = (versao_override or '').strip() or (row.edicao or '').strip() or (row.arquivo or '')[:50] or '-'
+        alq = normalized_override
+        if alq is None and row.aliquota_ou_ipi is not None:
+            alq = _br_norm_aliquota(row.aliquota_ou_ipi) or row.aliquota_ou_ipi
+        if alq is None:
+            stat['puladas_sem_aliquota'] += 1
+        prepared_rows.append((row, ed, ean, alq))
+        eans.add(ean)
+        edicoes.add(ed)
+
+    existing_cadastros = (
+        BrasItemCadastro.query.filter(
+            BrasItemCadastro.ean.in_(list(eans)),
+            BrasItemCadastro.edicao.in_(list(edicoes)),
+        ).all()
+        if eans and edicoes else []
+    )
+    cadastro_map = {
+        ((cad.edicao or '').strip(), (cad.ean or '').strip()): cad
+        for cad in existing_cadastros
+        if (cad.edicao or '').strip() and (cad.ean or '').strip()
+    }
+
+    new_cadastros: list[dict[str, object]] = []
+    pending_cadastro_keys: set[tuple[str, str]] = set()
+    for row, ed, ean, _alq in prepared_rows:
+        cadastro_key = (ed, ean)
+        cad = cadastro_map.get(cadastro_key)
+        if cad is None:
+            if cadastro_key in pending_cadastro_keys:
+                continue
+            mapping = {
+                'id': next_cadastro_id,
+                'edicao': ed,
+                'ean': ean,
+                'laboratorio_codigo': row.laboratorio_codigo,
+                'laboratorio_nome': row.laboratorio_nome,
+                'produto_codigo': row.produto_codigo,
+                'produto_nome': row.produto_nome,
+                'apresentacao_codigo': row.apresentacao_codigo,
+                'apresentacao_descricao': row.apresentacao_descricao,
+                'registro_anvisa': row.registro_anvisa,
+                'quantidade_embalagem': row.quantidade_embalagem,
+                'linha_num': row.linha_num,
+                'imported_at': now_ts,
+            }
+            new_cadastros.append(mapping)
+            pending_cadastro_keys.add(cadastro_key)
+            next_cadastro_id += 1
+            stat['cadastros_criados'] += 1
+            continue
+
+        changed = False
+        for field_name, field_value in (
+            ('laboratorio_codigo', row.laboratorio_codigo),
+            ('laboratorio_nome', row.laboratorio_nome),
+            ('produto_codigo', row.produto_codigo),
+            ('produto_nome', row.produto_nome),
+            ('apresentacao_codigo', row.apresentacao_codigo),
+            ('apresentacao_descricao', row.apresentacao_descricao),
+            ('registro_anvisa', row.registro_anvisa),
+            ('quantidade_embalagem', row.quantidade_embalagem),
+            ('linha_num', row.linha_num),
+        ):
+            if getattr(cad, field_name) != field_value:
+                setattr(cad, field_name, field_value)
+                changed = True
+        if changed:
+            cad.imported_at = now_ts
+            stat['cadastros_atualizados'] += 1
+
+    if new_cadastros:
+        db.session.bulk_insert_mappings(BrasItemCadastro, new_cadastros)
+        db.session.commit()
+        existing_cadastros = BrasItemCadastro.query.filter(
+            BrasItemCadastro.ean.in_(list(eans)),
+            BrasItemCadastro.edicao.in_(list(edicoes)),
+        ).all()
+        cadastro_map = {
+            ((cad.edicao or '').strip(), (cad.ean or '').strip()): cad
+            for cad in existing_cadastros
+            if (cad.edicao or '').strip() and (cad.ean or '').strip()
+        }
+    else:
+        db.session.flush()
+
+    cadastro_ids = [int(cad.id) for cad in cadastro_map.values() if cad.id is not None]
+    existing_precos = (
+        BrasItemPreco.query.filter(BrasItemPreco.cadastro_id.in_(cadastro_ids)).all()
+        if cadastro_ids else []
+    )
+    preco_map = {
+        (int(preco.cadastro_id), format((_br_norm_aliquota(preco.aliquota) or preco.aliquota), 'f')): preco
+        for preco in existing_precos
+        if preco.cadastro_id is not None and preco.aliquota is not None
+    }
+
+    new_precos: list[dict[str, object]] = []
+    pending_preco_keys: set[tuple[int, str]] = set()
+    for row, ed, ean, alq in prepared_rows:
+        if alq is None:
+            continue
+        cad = cadastro_map.get((ed, ean))
+        if cad is None or cad.id is None:
+            continue
+        preco_key = (int(cad.id), format(alq, 'f'))
+        preco_row = preco_map.get(preco_key)
+        if preco_row is None:
+            if preco_key in pending_preco_keys:
+                continue
+            new_precos.append({
+                'id': next_preco_id,
+                'cadastro_id': cad.id,
+                'aliquota': alq,
+                'preco_pmc_pacote': row.preco_pmc_pacote,
+                'preco_pfb_pacote': row.preco_pfb_pacote,
+                'preco_pmc_unit': row.preco_pmc_unit,
+                'preco_pfb_unit': row.preco_pfb_unit,
+                'arquivo_fonte': row.arquivo,
+                'imported_at': now_ts,
+            })
+            pending_preco_keys.add(preco_key)
+            next_preco_id += 1
+            stat['precos_criados'] += 1
+            continue
+
+        preco_row.preco_pmc_pacote = row.preco_pmc_pacote
+        preco_row.preco_pfb_pacote = row.preco_pfb_pacote
+        preco_row.preco_pmc_unit = row.preco_pmc_unit
+        preco_row.preco_pfb_unit = row.preco_pfb_unit
+        preco_row.arquivo_fonte = row.arquivo
+        preco_row.imported_at = now_ts
+        stat['precos_atualizados'] += 1
+
+    if new_precos:
+        db.session.bulk_insert_mappings(BrasItemPreco, new_precos)
+    db.session.commit()
+    return stat
 
 
 def _sync_simpro_insumo_index(
@@ -2544,6 +4461,7 @@ def _sync_simpro_insumo_index(
     preco_expr = "COALESCE(n.preco2, n.preco1, n.preco3, n.preco4)"
     preco_sql = _sql_clamp_decimal(preco_expr)
     aliquota_sql = _sql_clamp_decimal(":aliquota_default", integer_digits=4, scale=4)
+    descricao_expr = "TRIM(COALESCE(n.descricao, ''))"
 
     upsert_template = text(
         """
@@ -2561,7 +4479,7 @@ def _sync_simpro_insumo_index(
                 n.codigo
             ) AS tuss,
             n.codigo_alt AS tiss,
-            n.descricao AS descricao,
+            {descricao_expr} AS descricao,
             {preco_sql} AS preco,
             {aliquota_sql} AS aliquota,
             n.fabricante AS fabricante,
@@ -2584,11 +4502,107 @@ def _sync_simpro_insumo_index(
             data_atualizacao = VALUES(data_atualizacao),
             uf_referencia = VALUES(uf_referencia),
             updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql)
+        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql).replace('{descricao_expr}', descricao_expr)
     )
 
     db.session.execute(upsert_template, params_base)
     db.session.commit()
+
+
+def _backfill_catalogo_simpro_identifiers() -> None:
+    try:
+        db.session.execute(text("""
+            UPDATE mv_catalogo_vigente_simpro c
+            JOIN simpro_item_norm n ON n.id = c.item_id
+            SET
+                c.codigo_interno = n.codigo_interno,
+                c.tuss_numero = n.tuss_numero,
+                c.referencia = n.referencia,
+                c.fracionavel = n.fracionavel,
+                c.status_final = n.status_final
+            WHERE
+                (c.codigo_interno IS NULL OR c.codigo_interno = '')
+                OR (c.tuss_numero IS NULL OR c.tuss_numero = '')
+                OR (c.referencia IS NULL OR c.referencia = '')
+                OR (c.fracionavel IS NULL OR c.fracionavel = '')
+                OR (c.status_final IS NULL OR c.status_final = '')
+        """))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _purge_bras_versions_except(keep_version: str) -> dict[str, int]:
+    """Remove dados BRAS de versões antigas, mantendo apenas a versão informada."""
+    keep = (keep_version or '').strip()
+    if not keep:
+        return {}
+
+    summary = {
+        'insumos_index': 0,
+        'bras_item_preco': 0,
+        'bras_item_cadastro': 0,
+        'bras_item_n': 0,
+        'bras_catalog_snapshot': 0,
+    }
+
+    summary['insumos_index'] = (
+        db.session.query(InsumoIndex)
+        .filter(
+            InsumoIndex.origem == 'BRAS',
+            func.coalesce(InsumoIndex.versao_tabela, '') != keep,
+        )
+        .delete(synchronize_session=False)
+    ) or 0
+
+    dialect = (db.session.bind.dialect.name if db.session.bind is not None else '').lower()
+    if dialect in {'mysql', 'mariadb'}:
+        summary['bras_item_preco'] = db.session.execute(
+            text(
+                """
+                DELETE p
+                FROM bras_item_preco p
+                INNER JOIN bras_item_cadastro c ON c.id = p.cadastro_id
+                WHERE COALESCE(c.edicao, '') <> :keep_version
+                """
+            ),
+            {'keep_version': keep},
+        ).rowcount or 0
+    else:
+        cadastro_ids = [
+            row[0]
+            for row in db.session.query(BrasItemCadastro.id)
+            .filter(func.coalesce(BrasItemCadastro.edicao, '') != keep)
+            .all()
+        ]
+        if cadastro_ids:
+            summary['bras_item_preco'] = (
+                db.session.query(BrasItemPreco)
+                .filter(BrasItemPreco.cadastro_id.in_(cadastro_ids))
+                .delete(synchronize_session=False)
+            ) or 0
+
+    summary['bras_item_cadastro'] = (
+        db.session.query(BrasItemCadastro)
+        .filter(func.coalesce(BrasItemCadastro.edicao, '') != keep)
+        .delete(synchronize_session=False)
+    ) or 0
+
+    summary['bras_item_n'] = (
+        db.session.query(BrasItemNormalized)
+        .filter(func.coalesce(BrasItemNormalized.edicao, '') != keep)
+        .delete(synchronize_session=False)
+    ) or 0
+
+    summary['bras_catalog_snapshot'] = (
+        db.session.query(BrasCatalogSnapshot)
+        .filter(func.coalesce(BrasCatalogSnapshot.versao, '') != keep)
+        .delete(synchronize_session=False)
+    ) or 0
+
+    db.session.commit()
+    app.logger.info('BRAS purge versões antigas (mantida=%s): %s', keep, summary)
+    return summary
 
 
 def _import_bras(
@@ -2608,6 +4622,7 @@ def _import_bras(
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
     arquivo_label_override: str | None = None,
+    keep_only_latest_version: bool = False,
 ) -> dict:
     del data_ref
     arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
@@ -2648,25 +4663,41 @@ def _import_bras(
 
     # Sempre materializa apenas o arquivo atual
     _materialize_bras_items(arquivo_label)
+    aligned_rows = _align_bras_n_import_version(versao, arquivo_label=arquivo_label)
     
     # Conta as linhas reais materializadas para este arquivo
     count_result = db.session.execute(
         text("SELECT COUNT(*) FROM bras_item_n WHERE arquivo = :arquivo"),
         {'arquivo': arquivo_label}
     ).scalar() or 0
-    
+    split_sync = _sync_bras_split_from_bras_n_fast(
+        arquivo_label=arquivo_label,
+        aliquota_override=aliquota_default,
+        versao_override=versao,
+    )
+    sync_ufs: list[str] = list(uf_values) if uf_values else []
+    if aliquota_default is not None and not sync_ufs and not uf_default:
+        sync_ufs = _ufs_pertencentes_a_aliquota_piso(aliquota_default)
     _sync_bras_insumo_index(
         arquivo_label,
         uf_default=uf_default,
-        uf_values=uf_values,
+        uf_values=sync_ufs or None,
         aliquota_default=aliquota_default,
+        versao_label=versao,
     )
+
+    purge_summary: dict[str, int] | None = None
+    if keep_only_latest_version:
+        purge_summary = _purge_bras_versions_except(versao)
 
     return {
         'arquivo': arquivo_label,
         'linhas_raw': inserted,
         'linhas_materializadas': count_result,
         'load_strategy': stage_strategy,
+        'aligned_version_rows': aligned_rows,
+        'split_sync': split_sync,
+        'purge_summary': purge_summary,
     }
 
 
@@ -2805,6 +4836,10 @@ def _import_bras_delta(
     uf_default: str | None = None,
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
+    catalog_file: Path | None = None,
+    catalog_encoding: str | None = 'latin-1',
+    catalog_delimiter: str = ';',
+    previous_catalog_version: str | None = None,
 ) -> dict:
     """
     Importa apenas itens novos ou com preços alterados da Brasíndice.
@@ -2812,6 +4847,22 @@ def _import_bras_delta(
     Suporta alíquota, UFs e data de referência para vincular corretamente os dados.
     """
     import csv
+
+    aligned_rows = _align_bras_n_import_version(versao)
+    catalog_delta: dict[str, object] | None = None
+    catalog_candidate_keys: set[str] = set()
+    if catalog_file is not None:
+        _sync_bras_catalog_snapshot(
+            file_path=catalog_file,
+            versao=versao,
+            delimiter=catalog_delimiter,
+            encoding=catalog_encoding,
+        )
+        catalog_delta = _analyze_bras_catalog_delta(
+            current_version=versao,
+            previous_version=previous_catalog_version,
+        )
+        catalog_candidate_keys = set(catalog_delta['new_keys']) | set(catalog_delta['changed_keys'])
     
     # Carregar dados existentes indexados por EAN
     existing_items: dict[str, dict] = {}
@@ -2848,13 +4899,14 @@ def _import_bras_delta(
             
             try:
                 ean = row[16].strip() if row[16] else ''
-                if not ean:
-                    continue
-                
+                row_key, _key_kind = _build_bras_main_row_key(row)
                 pmc_pacote = Decimal(row[6].replace(',', '.')) if row[6] else None
                 pfb_pacote = Decimal(row[7].replace(',', '.')) if row[7] else None
+                force_catalog_import = bool(row_key and row_key in catalog_candidate_keys)
+                if not ean and not force_catalog_import:
+                    continue
                 
-                if ean not in existing_items:
+                if force_catalog_import or ean not in existing_items:
                     # Novo item - marcar linha para importação
                     linhas_para_importar.append(linha_num)
                     novos_count += 1
@@ -2885,6 +4937,7 @@ def _import_bras_delta(
                 continue
     
     # Aplicar atualizações em batch
+    updated_ids: set[int] = set()
     for upd in atualizacoes:
         BrasItemNormalized.query.filter_by(id=upd['id']).update({
             'preco_pmc_pacote': upd['pmc_pacote'],
@@ -2893,8 +4946,22 @@ def _import_bras_delta(
             'preco_pfb_unit': upd['pfb_unit'],
             'edicao': versao,
         })
+        updated_ids.add(int(upd['id']))
     
     db.session.commit()
+    split_sync_updates = None
+    if updated_ids:
+        split_sync_updates = _sync_bras_split_from_bras_n_fast(
+            n_ids=sorted(updated_ids),
+            aliquota_override=aliquota_default,
+            versao_override=versao,
+        )
+        if aliquota_default is not None:
+            _reatribuir_insumo_bras_apos_import_precos(
+                updated_ids,
+                aliquota_default,
+                versao_label=versao,
+            )
     
     # Se houver itens novos, importar via pipeline normal (somente linhas específicas)
     novos_importados = 0
@@ -2958,6 +5025,13 @@ def _import_bras_delta(
         'novos_importados': novos_importados,
         'alterados': alterados_count,
         'total_processado': novos_count + alterados_count,
+        'catalog_current_version': catalog_delta['current_version'] if catalog_delta else None,
+        'catalog_previous_version': catalog_delta['previous_version'] if catalog_delta else None,
+        'catalog_new': catalog_delta['new_count'] if catalog_delta else 0,
+        'catalog_changed': catalog_delta['changed_count'] if catalog_delta else 0,
+        'catalog_removed': catalog_delta['removed_count'] if catalog_delta else 0,
+        'aligned_version_rows': aligned_rows,
+        'split_sync_updates': split_sync_updates,
     }
 
 
@@ -2974,9 +5048,6 @@ def _import_simpro(
     aliquota_default: Decimal | None,
     arquivo_label_override: str | None = None,
 ) -> dict:
-    if fmt != 'fixed':
-        raise click.ClickException('Importação SIMPRO suporta apenas formato de largura fixa no momento.')
-
     arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
     arquivo_label = arquivo_label_base
     if uf_default:
@@ -2990,19 +5061,32 @@ def _import_simpro(
         uf_filter=uf_default if truncate else None,
     )
 
-    inserted, stage_strategy = _stage_simpro_fixed(
-        file_path=file_path,
-        map_config=map_config,
-        encoding=encoding,
-        arquivo_label=arquivo_label,
-    )
+    if fmt == 'json':
+        payload = _load_simpro_json_payload(file_path, encoding)
+        inserted = len(payload)
+        materialized = _materialize_simpro_json_items(
+            arquivo_label=arquivo_label,
+            records=payload,
+            versao=versao,
+            uf_default=uf_default,
+        )
+        stage_strategy = 'json_native'
+    elif fmt == 'fixed':
+        inserted, stage_strategy = _stage_simpro_fixed(
+            file_path=file_path,
+            map_config=map_config,
+            encoding=encoding,
+            arquivo_label=arquivo_label,
+        )
 
-    materialized = _materialize_simpro_items(
-        arquivo_label=arquivo_label,
-        map_config=map_config,
-        versao=versao,
-        uf_default=uf_default,
-    )
+        materialized = _materialize_simpro_items(
+            arquivo_label=arquivo_label,
+            map_config=map_config,
+            versao=versao,
+            uf_default=uf_default,
+        )
+    else:
+        raise click.ClickException('Importação SIMPRO suporta apenas formatos JSON e largura fixa.')
 
     _sync_simpro_insumo_index(
         arquivo_label,
@@ -3010,6 +5094,7 @@ def _import_simpro(
         uf_values=uf_values,
         aliquota_default=aliquota_default,
     )
+    _backfill_catalogo_simpro_identifiers()
 
     return {
         'arquivo': arquivo_label,
@@ -3558,11 +5643,11 @@ _SUPPLIER_CONFIGS: dict[str, SupplierConfig] = {
         origem='SIMPRO',
         model=SimproItemNormalized,
         hash_fields=(
-            'codigo', 'codigo_alt', 'descricao', 'data_ref', 'tipo_reg',
+            'codigo_interno', 'codigo', 'codigo_alt', 'tuss_numero', 'descricao', 'data_ref', 'tipo_reg',
             'preco1', 'preco2', 'preco3', 'preco4', 'fabricante', 'anvisa',
-            'validade_anvisa', 'ean', 'situacao'
+            'validade_anvisa', 'ean', 'situacao', 'fracionavel'
         ),
-        item_key_fields=('codigo', 'ean'),
+        item_key_fields=('codigo', 'tuss_numero', 'ean'),
     ),
 }
 
@@ -4048,7 +6133,7 @@ def _catalogo_filter_simpro(query, filters: dict):
         target_bp = int((filters['aliquota'] * Decimal('100')).to_integral_value(rounding=ROUND_HALF_UP))
         query = query.filter(CatalogoSimpro.aliquota_bp == target_bp)
     if filters.get('tuss'):
-        query = query.filter(CatalogoSimpro.codigo == filters['tuss'])
+        query = query.filter(CatalogoSimpro.tuss_numero == filters['tuss'])
     if filters.get('tiss'):
         query = query.filter(CatalogoSimpro.codigo_alt == filters['tiss'])
     if filters.get('anvisa'):
@@ -4067,7 +6152,9 @@ def _catalogo_filter_simpro(query, filters: dict):
         query = query.filter(
             or_(
                 func.lower(func.coalesce(CatalogoSimpro.descricao, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoSimpro.referencia, '')).like(pattern),
                 func.lower(func.coalesce(CatalogoSimpro.codigo, '')).like(pattern),
+                func.lower(func.coalesce(CatalogoSimpro.tuss_numero, '')).like(pattern),
                 func.lower(func.coalesce(CatalogoSimpro.ean, '')).like(pattern),
             )
         )
@@ -4100,20 +6187,31 @@ def _serialize_catalogo_bras(row: CatalogoBrasindice) -> dict:
 
 
 def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
-    preco_fav = row.preco2 or row.preco1 or row.preco3 or row.preco4
+    preco_fav, preco_pmc, preco_pfb = _split_simpro_prices(
+        row.preco1,
+        row.preco2,
+        row.preco3,
+        row.preco4,
+    )
     aliquota_decimal = _aliquota_bp_to_decimal(row.aliquota_bp)
-    tuss_digits = _format_tuss_display(row.codigo, getattr(row, 'tuss_numero', None))
+    tuss_digits = _format_tuss_display(None, getattr(row, 'tuss_numero', None))
+    descricao = (row.descricao or '').strip() or None
     return {
         'origem': 'SIMPRO',
         'item_id': row.item_id,
+        'codigo_simpro': row.codigo,
+        'codigo_usuario': getattr(row, 'codigo_interno', None),
+        'codigo_fracao': row.codigo_alt,
         'tuss': tuss_digits,
         'tuss_numero': tuss_digits,
-        'tuss_raw': row.codigo,
+        'tuss_raw': getattr(row, 'tuss_numero', None),
         'tiss': row.codigo_alt,
-        'descricao': row.descricao,
+        'descricao': descricao,
+        'embalagem': row.unidade,
+        'qtd_unidade': row.qtd_unidade,
         'preco': _decimal_to_float(preco_fav),
-        'preco_pmc': None,
-        'preco_pfb': _decimal_to_float(preco_fav),
+        'preco_pmc': _decimal_to_float(preco_pmc),
+        'preco_pfb': _decimal_to_float(preco_pfb),
         'aliquota': _decimal_to_float(aliquota_decimal),
         'fabricante': row.fabricante,
         'anvisa': row.anvisa,
@@ -4122,6 +6220,242 @@ def _serialize_catalogo_simpro(row: CatalogoSimpro) -> dict:
         'updated_at': row.imported_at.isoformat() if isinstance(row.imported_at, datetime) else None,
         'uf_referencia': row.uf,
     }
+
+
+def _build_uf_piso_aliquota_bras() -> dict[str, Decimal]:
+    """
+    Tabela piso (ANVISA / fórmula) por UF, mesma usada no front da importação.
+    Usada na busca quando a UF não tem linha no índice, mas o preço da alíquota está em `bras_item_preco`.
+    """
+    pairs: list[tuple[str, list[str]]] = [
+        ('17', ['DF', 'ES', 'MT', 'MS', 'RS', 'SC']),
+        ('18', ['AP', 'MG', 'SP']),
+        ('19', ['AC', 'AL', 'GO', 'PA', 'SE']),
+        ('19.5', ['PR', 'RO']),
+        ('20', ['AM', 'CE', 'PB', 'RN', 'RR', 'TO']),
+        ('20.5', ['BA', 'PE']),
+        ('22', ['RJ']),
+        ('22.5', ['PI']),
+        ('23', ['MA']),
+    ]
+    out: dict[str, Decimal] = {}
+    for a_str, ufs in pairs:
+        al = _br_norm_aliquota(Decimal(a_str)) or Decimal(a_str)
+        for u in ufs:
+            out[u] = al
+    return out
+
+
+_UF_PISO_ALIQUOTA_BRAS: dict[str, Decimal] = _build_uf_piso_aliquota_bras()
+
+
+def _serialize_bras_split_preco(
+    n: 'BrasItemNormalized',
+    cad: 'BrasItemCadastro',
+    p: 'BrasItemPreco',
+    uf: str,
+    alq_display: Decimal,
+) -> dict:
+    pmc = p.preco_pmc_unit or p.preco_pmc_pacote
+    pfb = p.preco_pfb_unit or p.preco_pfb_pacote
+    preco_disp = pmc or pfb
+    tuss_display = _format_tuss_display(n.produto_codigo)
+    p1 = (n.produto_nome or '').strip()
+    p2 = (n.apresentacao_descricao or '').strip()
+    desc = ' • '.join([x for x in (p1, p2) if x]) or None
+    return {
+        'origem': 'BRAS',
+        'item_id': n.id,
+        'codigo_simpro': None,
+        'codigo_usuario': None,
+        'codigo_fracao': None,
+        'embalagem': None,
+        'qtd_unidade': n.quantidade_embalagem,
+        'tuss': tuss_display,
+        'tuss_numero': tuss_display,
+        'tuss_raw': n.produto_codigo,
+        'tiss': n.apresentacao_codigo,
+        'descricao': desc,
+        'preco': _decimal_to_string(preco_disp),
+        'preco_pmc': _decimal_to_string(pmc),
+        'preco_pfb': _decimal_to_string(pfb),
+        'aliquota': _decimal_to_string(_br_norm_aliquota(alq_display) or alq_display),
+        'fabricante': n.laboratorio_nome,
+        'anvisa': n.registro_anvisa,
+        'versao_tabela': cad.edicao,
+        'data_atualizacao': None,
+        'updated_at': p.imported_at.isoformat() if isinstance(p.imported_at, datetime) else None,
+        'uf_referencia': uf,
+        'uf_referencia_codes': [uf],
+    }
+
+
+def _serialize_bras_split_somente_n(
+    n: 'BrasItemNormalized',
+    cad: 'BrasItemCadastro',
+    uf: str,
+    alq_referencia: Decimal,
+) -> dict:
+    """Quando ainda não há `bras_item_preco`, mas `bras_item_n` traz preços (import base)."""
+    pmc = n.preco_pmc_unit or n.preco_pmc_pacote
+    pfb = n.preco_pfb_unit or n.preco_pfb_pacote
+    preco_disp = pmc or pfb
+    alq_show: Decimal | None = n.aliquota_ou_ipi
+    if alq_show is None:
+        alq_show = alq_referencia
+    alq_show = _br_norm_aliquota(alq_show) or alq_show
+    tuss_display = _format_tuss_display(n.produto_codigo)
+    p1 = (n.produto_nome or '').strip()
+    p2 = (n.apresentacao_descricao or '').strip()
+    desc = ' • '.join([x for x in (p1, p2) if x]) or None
+    return {
+        'origem': 'BRAS',
+        'item_id': n.id,
+        'codigo_simpro': None,
+        'codigo_usuario': None,
+        'codigo_fracao': None,
+        'embalagem': None,
+        'qtd_unidade': n.quantidade_embalagem,
+        'tuss': tuss_display,
+        'tuss_numero': tuss_display,
+        'tuss_raw': n.produto_codigo,
+        'tiss': n.apresentacao_codigo,
+        'descricao': desc,
+        'preco': _decimal_to_string(preco_disp),
+        'preco_pmc': _decimal_to_string(pmc),
+        'preco_pfb': _decimal_to_string(pfb),
+        'aliquota': _decimal_to_string(alq_show),
+        'fabricante': n.laboratorio_nome,
+        'anvisa': n.registro_anvisa,
+        'versao_tabela': cad.edicao,
+        'data_atualizacao': None,
+        'updated_at': n.imported_at.isoformat() if isinstance(n.imported_at, datetime) else None,
+        'uf_referencia': uf,
+        'uf_referencia_codes': [uf],
+    }
+
+
+def _escolher_preco_cadastro(
+    cad: 'BrasItemCadastro',
+    alq_ideal: Decimal,
+) -> 'BrasItemPreco | None':
+    """
+    1) linha com alíquota exata; 2) a mais próxima em valor; 3) qualquer linha.
+    Útil quando a UF piso exige 20% mas o sistema só importou 20,5% (arquivo de outro estado).
+    """
+    q = (
+        BrasItemPreco.query.filter(BrasItemPreco.cadastro_id == cad.id)
+        .order_by(BrasItemPreco.id.asc())
+        .all()
+    )
+    if not q:
+        return None
+    for pr in q:
+        if _br_aliquota_certeiro(pr.aliquota, alq_ideal):
+            return pr
+    def dist(pr: 'BrasItemPreco') -> float:
+        try:
+            a = pr.aliquota
+            if a is None:
+                return 999.0
+            return float(abs(a - alq_ideal))
+        except (InvalidOperation, TypeError, ValueError):
+            return 999.0
+    return min(q, key=dist)
+
+
+def _catalogo_search_bras_cadastro_preco_fallback(
+    filters: dict,
+    page: int,
+    per_page: int,
+) -> dict | None:
+    """
+    Se catálogo MV e `insumos_index` estão vazios para a combinação UF+TUSS, resolve:
+    `bras_item_n` (identidade) + `bras_item_cadastro` + `bras_item_preco` (preço da alíquota: filtro
+    ou tabela piso ANVISA por UF).
+    """
+    if (filters.get('origem') or '').upper() == 'SIMPRO':
+        return None
+    if page > 1:
+        return None
+    tuss, tiss, anvisa = filters.get('tuss'), filters.get('tiss'), filters.get('anvisa')
+    if not tuss and not tiss and not anvisa:
+        return None
+    uf = (filters.get('uf_referencia') or '').strip().upper()
+    if not uf:
+        return None
+    alq_f = filters.get('aliquota')
+    if alq_f is not None:
+        alq: Decimal | None = _br_norm_aliquota(aliq_f) or alq_f
+    else:
+        alq = _UF_PISO_ALIQUOTA_BRAS.get(uf)
+    if alq is None:
+        return None
+    nq = BrasItemNormalized.query
+    if tuss:
+        nq = nq.filter(BrasItemNormalized.produto_codigo == tuss)
+    if tiss:
+        nq = nq.filter(BrasItemNormalized.apresentacao_codigo == tiss)
+    if anvisa:
+        nq = nq.filter(BrasItemNormalized.registro_anvisa == anvisa)
+    nq = nq.filter(BrasItemNormalized.ean.isnot(None), func.trim(BrasItemNormalized.ean) != '')
+    if filters.get('fabricante'):
+        fab = filters['fabricante'].lower()
+        nq = nq.filter(func.lower(BrasItemNormalized.laboratorio_nome).like(f'%{fab}%'))
+    vtab = (filters.get('versao_tabela') or '').strip()
+    if vtab and vtab.lower() not in ('todas', 'all', '*'):
+        vc = _candidatas_edicao_bras(vtab)
+        if vc:
+            nq = nq.filter(
+                or_(
+                    *[
+                        func.coalesce(BrasItemNormalized.edicao, '') == c
+                        for c in vc
+                    ]
+                )
+            )
+    n = nq.order_by(BrasItemNormalized.id.desc()).first()
+    if not n:
+        return None
+    ean = (n.ean or '').strip()
+    ed = (n.edicao or '').strip() or (n.arquivo or '')[:50] or '—'
+    vtab_filtro = vtab if (vtab and vtab.lower() not in ('todas', 'all', '*')) else ''
+    cands: list[str] = list(
+        dict.fromkeys(
+            _candidatas_edicao_bras(ed) + (_candidatas_edicao_bras(vtab_filtro) if vtab_filtro else []),
+        )
+    ) or [ed]
+    cad = (
+        BrasItemCadastro.query.filter(
+            and_(
+                func.trim(BrasItemCadastro.ean) == ean,
+                or_(*[func.trim(BrasItemCadastro.edicao) == c for c in cands]),
+            )
+        )
+        .first()
+    )
+    if not cad:
+        return None
+    p_row = (
+        BrasItemPreco.query.filter(BrasItemPreco.cadastro_id == cad.id)
+        .filter(BrasItemPreco.aliquota == alq)
+        .first()
+    )
+    if p_row:
+        alq_mostrada = _br_norm_aliquota(p_row.aliquota) or p_row.aliquota
+        item = _serialize_bras_split_preco(n, cad, p_row, uf, alq_mostrada)
+        return {
+            'items': [item],
+            'empty_hint': None,
+            'preco_fonte': 'bras_cadastro_preco',
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': 1,
+                'pages': 1,
+            },
+        }
+    return None
 
 
 # Cache simples para contagens de catálogo (TTL de 60 segundos)
@@ -4143,77 +6477,26 @@ def _get_cached_count(cache_key: str, query_fn) -> int:
 
 def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     """
-    Busca otimizada de insumos (Brasíndice + SIMPRO).
-    
-    Otimizações aplicadas:
-    - Cache de contagens por 60s para evitar COUNT() repetidos
-    - Query única com LIMIT/OFFSET ao invés de múltiplas queries
-    - Remoção do refresh inline de views (deve ser feito em background)
-    - Busca direta nas views, fallback para InsumoIndex só se necessário
+    Busca da tela de insumos priorizando `insumos_index`, que ? muito mais barato
+    do que consultar views de cat?logo em bases grandes.
     """
-    include_bras = filters.get('origem') in (None, 'BRAS')
-    include_simpro = filters.get('origem') in (None, 'SIMPRO')
-    
-    # Gera chave de cache baseada nos filtros
     import hashlib
+
     filter_key = hashlib.md5(str(sorted(filters.items())).encode()).hexdigest()[:16]
+    query = _apply_insumo_filters(InsumoIndex.query, filters).order_by(
+        InsumoIndex.origem.asc(),
+        InsumoIndex.item_id.asc(),
+    )
+    cache_key = f'insumos_index_{filter_key}'
+    total = _get_cached_count(cache_key, query.count)
 
-    totals = {'BRAS': 0, 'SIMPRO': 0}
-    sources: list[tuple[str, str, any, int]] = []
-
-    if include_bras:
-        bras_query = _catalogo_filter_bras(CatalogoBrasindice.query, filters)
-        bras_query = bras_query.order_by(CatalogoBrasindice.item_id.asc())
-        
-        # Usa cache para contagem
-        cache_key = f'bras_{filter_key}'
-        bras_total = _get_cached_count(cache_key, bras_query.count)
-        
-        if bras_total > 0:
-            sources.append(('BRAS_VIEW', 'BRAS', bras_query, bras_total))
-        else:
-            # Fallback para InsumoIndex sem refresh inline
-            fallback_filters = dict(filters)
-            fallback_filters['origem'] = 'BRAS'
-            fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
-            fallback_query = fallback_query.order_by(InsumoIndex.item_id.asc())
-            
-            fallback_cache_key = f'bras_idx_{filter_key}'
-            fallback_total = _get_cached_count(fallback_cache_key, fallback_query.count)
-            
-            if fallback_total > 0:
-                sources.append(('BRAS_INDEX', 'BRAS', fallback_query, fallback_total))
-                bras_total = fallback_total
-        totals['BRAS'] = bras_total
-
-    if include_simpro:
-        simpro_query = _catalogo_filter_simpro(CatalogoSimpro.query, filters)
-        simpro_query = simpro_query.order_by(CatalogoSimpro.item_id.asc())
-        
-        # Usa cache para contagem
-        cache_key = f'simpro_{filter_key}'
-        simpro_total = _get_cached_count(cache_key, simpro_query.count)
-        
-        if simpro_total > 0:
-            sources.append(('SIMPRO_VIEW', 'SIMPRO', simpro_query, simpro_total))
-        else:
-            # Fallback para InsumoIndex sem refresh inline
-            fallback_filters = dict(filters)
-            fallback_filters['origem'] = 'SIMPRO'
-            fallback_query = _apply_insumo_filters(InsumoIndex.query, fallback_filters)
-            fallback_query = fallback_query.order_by(InsumoIndex.item_id.asc())
-            
-            fallback_cache_key = f'simpro_idx_{filter_key}'
-            fallback_total = _get_cached_count(fallback_cache_key, fallback_query.count)
-            
-            if fallback_total > 0:
-                sources.append(('SIMPRO_INDEX', 'SIMPRO', fallback_query, fallback_total))
-                simpro_total = fallback_total
-        totals['SIMPRO'] = simpro_total
-
-    if not sources:
+    if total <= 0:
+        sp = _catalogo_search_bras_cadastro_preco_fallback(filters, page, per_page)
+        if sp is not None:
+            return sp
         return {
             'items': [],
+            'empty_hint': _build_empty_catalog_hint(filters),
             'pagination': {
                 'page': page,
                 'per_page': per_page,
@@ -4222,34 +6505,8 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
             }
         }
 
-    total = sum(total for _, _, _, total in sources)
-    start = max(page - 1, 0) * per_page
-    remaining = per_page
-    consumed = 0
-    serialized: list[dict] = []
-
-    for source_kind, origin_key, query, origin_total in sources:
-        origin_total = origin_total or totals.get(origin_key, 0)
-        if origin_total <= 0:
-            consumed += origin_total
-            continue
-        if start >= consumed + origin_total:
-            consumed += origin_total
-            continue
-        local_offset = max(0, start - consumed)
-        fetch_count = min(remaining, origin_total - local_offset)
-        if fetch_count > 0:
-            rows = query.offset(local_offset).limit(fetch_count).all()
-            if source_kind == 'BRAS_VIEW':
-                serialized.extend(_serialize_catalogo_bras(row) for row in rows)
-            elif source_kind == 'SIMPRO_VIEW':
-                serialized.extend(_serialize_catalogo_simpro(row) for row in rows)
-            else:
-                serialized.extend(_serialize_insumo_index(row) for row in rows)
-            remaining -= fetch_count
-        consumed += origin_total
-        if remaining <= 0:
-            break
+    rows = query.offset(max(page - 1, 0) * per_page).limit(per_page).all()
+    serialized = [_serialize_insumo_index(row) for row in rows]
 
     payload = {
         'items': serialized,
@@ -4260,7 +6517,48 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
             'pages': math.ceil(total / per_page) if per_page else 0,
         }
     }
+    if (
+        not serialized
+        and page == 1
+        and (filters.get('origem') or '').upper() != 'SIMPRO'
+    ):
+        sp = _catalogo_search_bras_cadastro_preco_fallback(filters, page, per_page)
+        if sp is not None:
+            return sp
     return payload
+
+def _build_empty_catalog_hint(filters: dict) -> str | None:
+    selected_uf = (filters.get('uf_referencia') or '').strip().upper()
+    if not selected_uf:
+        return None
+
+    relaxed_filters = dict(filters)
+    relaxed_filters.pop('uf_referencia', None)
+
+    query = _apply_insumo_filters(InsumoIndex.query, relaxed_filters).limit(50)
+    rows = query.all()
+    if not rows:
+        return None
+
+    origin_labels: list[str] = []
+    uf_codes: list[str] = []
+    for row in rows:
+        origem = (getattr(row, 'origem', None) or '').strip().upper()
+        if origem and origem not in origin_labels:
+            origin_labels.append(origem)
+        for code in _decode_uf_codes(getattr(row, 'uf_referencia', None)):
+            if code not in uf_codes:
+                uf_codes.append(code)
+
+    if selected_uf in uf_codes:
+        return None
+
+    origem_text = ', '.join(origin_labels) if origin_labels else 'os itens'
+    if uf_codes:
+        uf_text = ', '.join(uf_codes)
+        return f'Nenhum item encontrado para a UF {selected_uf}. Com os demais filtros atuais, há resultados em: {uf_text} ({origem_text}).'
+
+    return f'Nenhum item encontrado para a UF {selected_uf} com os filtros atuais.'
 
 
 def _catalogo_fetch_all(filters: dict, limit: int | None = None) -> list[dict]:
@@ -4292,6 +6590,53 @@ def _catalogo_fetch_all(filters: dict, limit: int | None = None) -> list[dict]:
     return items[:limit] if limit is not None else items
 
 
+def _pick_simpro_display_price(*values: Decimal | None) -> Decimal | None:
+    fallback: Decimal | None = None
+    for value in values:
+        if value is None:
+            continue
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+        if fallback is None:
+            fallback = decimal_value
+        if decimal_value > 0:
+            return decimal_value
+    return fallback
+
+
+def _split_simpro_prices(
+    preco_pfb_pacote: Decimal | None,
+    preco_pmc_pacote: Decimal | None,
+    preco_pfb_fracao: Decimal | None,
+    preco_pmc_fracao: Decimal | None,
+) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+    preco_pfb = _pick_simpro_display_price(preco_pfb_pacote, preco_pfb_fracao)
+    preco_pmc = next((value for value in (preco_pmc_pacote, preco_pmc_fracao) if value is not None), None)
+    preco_base = _pick_simpro_display_price(preco_pfb, preco_pmc)
+    return preco_base, preco_pmc, preco_pfb
+
+
+def _compose_simpro_description(
+    descricao: str | None,
+    referencia: str | None = None,
+    classificacao: str | None = None,
+) -> str | None:
+    base = (descricao or '').strip()
+    extras: list[str] = []
+    referencia_value = (referencia or '').strip()
+    classificacao_value = (classificacao or '').strip()
+    if referencia_value and 'Ref:' not in base:
+        extras.append(f"Ref: {referencia_value}")
+    if classificacao_value and 'Classificação:' not in base:
+        extras.append(f"Classificação: {classificacao_value}")
+    if base and extras:
+        return f"{base} • {' • '.join(extras)}"
+    if base:
+        return base
+    if extras:
+        return ' • '.join(extras)
+    return None
+
+
 
 def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = None, preco_pfb: Decimal | None = None) -> dict:
     uf_codes = _decode_uf_codes(item.uf_referencia)
@@ -4299,49 +6644,100 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
     preco_pmc_value: Decimal | None = preco_pmc if preco_pmc is not None else item.preco
     preco_pfb_value: Decimal | None = preco_pfb if preco_pfb is not None else item.preco
     preco_display_value: Decimal | None = item.preco
+    codigo_simpro: str | None = None
+    codigo_usuario: str | None = None
+    codigo_fracao: str | None = None
+    embalagem: str | None = None
+    qtd_unidade: int | None = None
 
     if item.origem == 'BRAS':
         bras_row = BrasItemNormalized.query.get(item.item_id)
-        if bras_row and bras_row.arquivo and bras_row.linha_num is not None:
-            raw_row = (
-                BrasRaw.query
-                .with_entities(BrasRaw.col07, BrasRaw.col08)
-                .filter_by(arquivo=bras_row.arquivo, linha_num=bras_row.linha_num)
-                .first()
-            )
-            if raw_row is not None:
-                raw_pmc = _coerce_decimal(raw_row.col07)
-                raw_pfb = _coerce_decimal(raw_row.col08)
-                if raw_pmc is not None:
-                    try:
-                        preco_pmc_value = Decimal(raw_pmc)
-                    except (InvalidOperation, ValueError):
-                        pass
-                if raw_pfb is not None:
-                    try:
-                        preco_pfb_value = Decimal(raw_pfb)
-                    except (InvalidOperation, ValueError):
-                        pass
+        if bras_row:
+            split_preco = None
+            ean = (bras_row.ean or '').strip()
+            produto_codigo = (bras_row.produto_codigo or '').strip()
+            apresentacao_codigo = (bras_row.apresentacao_codigo or '').strip()
+            if ean and produto_codigo and apresentacao_codigo and item.aliquota is not None:
+                cad = (
+                    BrasItemCadastro.query.filter_by(
+                        edicao=(item.versao_tabela or bras_row.edicao or '').strip() or None,
+                        ean=ean,
+                        produto_codigo=produto_codigo,
+                        apresentacao_codigo=apresentacao_codigo,
+                    )
+                    .first()
+                )
+                if cad is not None:
+                    split_preco = (
+                        BrasItemPreco.query.filter(
+                            BrasItemPreco.cadastro_id == cad.id,
+                            BrasItemPreco.aliquota == item.aliquota,
+                        )
+                        .first()
+                    )
+            if split_preco is not None:
+                if split_preco.preco_pmc_unit is not None or split_preco.preco_pmc_pacote is not None:
+                    preco_pmc_value = split_preco.preco_pmc_unit or split_preco.preco_pmc_pacote
+                if split_preco.preco_pfb_unit is not None or split_preco.preco_pfb_pacote is not None:
+                    preco_pfb_value = split_preco.preco_pfb_unit or split_preco.preco_pfb_pacote
+            elif bras_row.arquivo and bras_row.linha_num is not None:
+                raw_row = (
+                    BrasRaw.query
+                    .with_entities(BrasRaw.col07, BrasRaw.col08)
+                    .filter_by(arquivo=bras_row.arquivo, linha_num=bras_row.linha_num)
+                    .first()
+                )
+                if raw_row is not None:
+                    raw_pmc = _coerce_decimal(raw_row.col07)
+                    raw_pfb = _coerce_decimal(raw_row.col08)
+                    if raw_pmc is not None:
+                        try:
+                            preco_pmc_value = Decimal(raw_pmc)
+                        except (InvalidOperation, ValueError):
+                            pass
+                    if raw_pfb is not None:
+                        try:
+                            preco_pfb_value = Decimal(raw_pfb)
+                        except (InvalidOperation, ValueError):
+                            pass
 
     elif item.origem == 'SIMPRO':
         simpro_row = SimproItemNormalized.query.get(item.item_id)
         if simpro_row:
-            preco_candidates = [simpro_row.preco2, simpro_row.preco1, simpro_row.preco3, simpro_row.preco4]
-            preco_effective = next((p for p in preco_candidates if p is not None), None)
+            preco_effective, preco_pmc_simpro, preco_pfb_simpro = _split_simpro_prices(
+                simpro_row.preco1,
+                simpro_row.preco2,
+                simpro_row.preco3,
+                simpro_row.preco4,
+            )
             if preco_effective is not None:
-                preco_pmc_value = preco_effective
-                preco_pfb_value = preco_effective
                 preco_display_value = preco_effective
+            if preco_pmc_simpro is not None:
+                preco_pmc_value = preco_pmc_simpro
+            if preco_pfb_simpro is not None:
+                preco_pfb_value = preco_pfb_simpro
+            codigo_simpro = simpro_row.codigo
+            codigo_usuario = simpro_row.codigo_interno
+            codigo_fracao = simpro_row.codigo_alt
+            embalagem = simpro_row.unidade
+            qtd_unidade = simpro_row.qtd_unidade
 
     tuss_display = _format_tuss_display(item.tuss)
     return {
         'origem': item.origem,
         'item_id': item.item_id,
+        'codigo_simpro': codigo_simpro,
+        'codigo_usuario': codigo_usuario,
+        'codigo_fracao': codigo_fracao,
+        'referencia': getattr(simpro_row, 'referencia', None) if item.origem == 'SIMPRO' and simpro_row else None,
+        'classificacao': getattr(simpro_row, 'status_final', None) if item.origem == 'SIMPRO' and simpro_row else None,
+        'embalagem': embalagem,
+        'qtd_unidade': qtd_unidade,
         'tuss': tuss_display,
         'tuss_numero': tuss_display,
         'tuss_raw': item.tuss,
         'tiss': item.tiss,
-        'descricao': item.descricao,
+        'descricao': ((simpro_row.descricao if item.origem == 'SIMPRO' and simpro_row else item.descricao) or '').strip() or None,
         'preco': _decimal_to_string(preco_display_value),
         'preco_pmc': _decimal_to_string(preco_pmc_value),
         'preco_pfb': _decimal_to_string(preco_pfb_value),
@@ -4394,11 +6790,11 @@ def _serialize_insumo_detail(
             catalog_preco_pmc = catalog_entry.preco_pmc_unit or catalog_entry.preco_pmc_pacote
             catalog_preco_pfb = catalog_entry.preco_pfb_unit or catalog_entry.preco_pfb_pacote
         elif isinstance(catalog_entry, CatalogoSimpro):
-            catalog_preco_pfb = (
-                catalog_entry.preco2
-                or catalog_entry.preco1
-                or catalog_entry.preco3
-                or catalog_entry.preco4
+            _catalog_preco_base, catalog_preco_pmc, catalog_preco_pfb = _split_simpro_prices(
+                catalog_entry.preco1,
+                catalog_entry.preco2,
+                catalog_entry.preco3,
+                catalog_entry.preco4,
             )
 
     def _first_defined(*values):
@@ -4408,8 +6804,43 @@ def _serialize_insumo_detail(
         descricao = item.produto_nome or ''
         if item.apresentacao_descricao:
             descricao = f"{descricao} • {item.apresentacao_descricao}" if descricao else item.apresentacao_descricao
+        split_preco_pmc: Decimal | None = None
+        split_preco_pfb: Decimal | None = None
+        ean = (item.ean or '').strip()
+        produto_codigo = (item.produto_codigo or '').strip()
+        apresentacao_codigo = (item.apresentacao_codigo or '').strip()
+        versao_lookup = (index_entry.versao_tabela if index_entry else None) or catalog_periodo or item.edicao or item.arquivo
+        aliquota_lookup = None
+        if index_entry is not None and index_entry.aliquota is not None:
+            aliquota_lookup = index_entry.aliquota
+        elif catalog_aliquota is not None:
+            try:
+                aliquota_lookup = Decimal(str(catalog_aliquota))
+            except (InvalidOperation, ValueError, TypeError):
+                aliquota_lookup = None
+        if ean and produto_codigo and apresentacao_codigo and versao_lookup and aliquota_lookup is not None:
+            cad = (
+                BrasItemCadastro.query.filter_by(
+                    edicao=str(versao_lookup).strip(),
+                    ean=ean,
+                    produto_codigo=produto_codigo,
+                    apresentacao_codigo=apresentacao_codigo,
+                )
+                .first()
+            )
+            if cad is not None:
+                split_preco = (
+                    BrasItemPreco.query.filter(
+                        BrasItemPreco.cadastro_id == cad.id,
+                        BrasItemPreco.aliquota == aliquota_lookup,
+                    )
+                    .first()
+                )
+                if split_preco is not None:
+                    split_preco_pmc = split_preco.preco_pmc_unit or split_preco.preco_pmc_pacote
+                    split_preco_pfb = split_preco.preco_pfb_unit or split_preco.preco_pfb_pacote
         uf_codes = _combine_uf_codes(catalog_uf, index_uf)
-        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf))
+        uf_display = ', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf, selected_uf)
         return {
             'origem': 'BRAS',
             'item_id': item.id,
@@ -4417,12 +6848,12 @@ def _serialize_insumo_detail(
             'tiss': item.apresentacao_codigo,
             'anvisa': item.registro_anvisa,
             'descricao': descricao,
-            'preco': _decimal_to_float(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
-            'preco_pmc': _decimal_to_float(_first_defined(catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
-            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, item.preco_pfb_unit, item.preco_pfb_pacote)),
+            'preco': _decimal_to_float(_first_defined(split_preco_pmc, catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pmc': _decimal_to_float(_first_defined(split_preco_pmc, catalog_preco_pmc, item.preco_pmc_unit, item.preco_pmc_pacote)),
+            'preco_pfb': _decimal_to_float(_first_defined(split_preco_pfb, catalog_preco_pfb, item.preco_pfb_unit, item.preco_pfb_pacote)),
             'aliquota': _first_defined(catalog_aliquota, _decimal_to_float(item.aliquota_ou_ipi), index_aliquota),
             'fabricante': item.laboratorio_nome,
-            'versao_tabela': _first_defined(catalog_periodo, item.edicao, item.arquivo),
+            'versao_tabela': _first_defined(index_entry.versao_tabela if index_entry else None, catalog_periodo, item.edicao, item.arquivo),
             'data_atualizacao': _first_defined(catalog_data_ref, index_data),
             'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
             'created_at': None,
@@ -4437,23 +6868,35 @@ def _serialize_insumo_detail(
         }
 
     if isinstance(item, SimproItemNormalized):
-        preco_candidates = [item.preco2, item.preco1, item.preco3, item.preco4]
-        preco_effective = next((p for p in preco_candidates if p is not None), None)
+        preco_effective, simpro_preco_pmc, simpro_preco_pfb = _split_simpro_prices(
+            item.preco1,
+            item.preco2,
+            item.preco3,
+            item.preco4,
+        )
         uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
-        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
-        tuss_digits = _format_tuss_display(item.codigo, getattr(item, 'tuss_numero', None))
+        uf_display = ', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf, selected_uf)
+        tuss_digits = _format_tuss_display(None, getattr(item, 'tuss_numero', None))
         return {
             'origem': 'SIMPRO',
             'item_id': item.id,
+            'codigo_simpro': item.codigo,
+            'codigo_usuario': item.codigo_interno,
+            'codigo_fracao': item.codigo_alt,
+            'fracionavel': (item.fracionavel or '').strip().upper() or None,
+            'referencia': item.referencia,
+            'classificacao': item.status_final,
+            'embalagem': item.unidade,
+            'qtd_unidade': item.qtd_unidade,
             'tuss': tuss_digits,
             'tuss_numero': tuss_digits,
-            'tuss_raw': item.codigo,
+            'tuss_raw': item.tuss_numero,
             'tiss': item.codigo_alt,
             'anvisa': item.anvisa,
-            'descricao': item.descricao,
-            'preco': _decimal_to_float(_first_defined(catalog_preco_pfb, preco_effective)),
-            'preco_pmc': None,
-            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, preco_effective)),
+            'descricao': (item.descricao or '').strip() or None,
+            'preco': _decimal_to_float(_first_defined(catalog_preco_pfb, simpro_preco_pfb, preco_effective)),
+            'preco_pmc': _decimal_to_float(_first_defined(catalog_preco_pmc, simpro_preco_pmc)),
+            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, simpro_preco_pfb, preco_effective)),
             'aliquota': _first_defined(catalog_aliquota, index_aliquota),
             'fabricante': item.fabricante,
             'versao_tabela': _first_defined(catalog_periodo, item.versao, item.arquivo),
@@ -4469,7 +6912,7 @@ def _serialize_insumo_detail(
 
     if isinstance(item, SimproItem):  # fallback legacy
         uf_codes = _combine_uf_codes(catalog_uf, item.uf_referencia, index_uf)
-        uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf))
+        uf_display = ', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, item.uf_referencia, index_uf, selected_uf)
         tuss_digits = _format_tuss_display(item.tuss)
         return {
             'origem': origem,
@@ -4494,7 +6937,7 @@ def _serialize_insumo_detail(
         }
 
     uf_codes = _combine_uf_codes(catalog_uf, index_uf)
-    uf_display = selected_uf or (', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf))
+    uf_display = ', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf, selected_uf)
     return {
         'origem': origem,
         'item_id': item.id,
@@ -4570,6 +7013,10 @@ def _apply_insumo_filters(query, filters: dict):
     tokens = filters.get('tokens') or []
     for token in tokens:
         pattern = f"%{token}%"
+        simpro_ref_subquery = (
+            db.session.query(SimproItemNormalized.id)
+            .filter(func.lower(func.coalesce(SimproItemNormalized.referencia, '')).like(pattern))
+        )
         query = query.filter(
             or_(
                 func.lower(InsumoIndex.descricao).like(pattern),
@@ -4577,6 +7024,10 @@ def _apply_insumo_filters(query, filters: dict):
                 func.lower(func.coalesce(InsumoIndex.tuss, '')).like(pattern),
                 func.lower(func.coalesce(InsumoIndex.tiss, '')).like(pattern),
                 func.lower(func.coalesce(InsumoIndex.anvisa, '')).like(pattern),
+                and_(
+                    InsumoIndex.origem == 'SIMPRO',
+                    InsumoIndex.item_id.in_(simpro_ref_subquery),
+                ),
             )
         )
 
@@ -4584,17 +7035,11 @@ def _apply_insumo_filters(query, filters: dict):
 
 
 def _insumo_summary(model_cls) -> dict:
-    # Cache key baseado no nome da tabela
-    cache_key = f"summary_{model_cls.__tablename__}"
-    now = time.time()
-
-    # Verifica se existe cache válido
-    if cache_key in _insumo_cache:
-        cached_data, cached_time = _insumo_cache[cache_key]
-        if now - cached_time < _insumo_cache_ttl:
-            return cached_data
-
-    # OTIMIZAÇÃO: Executa tudo em uma única query ao invés de 4 queries separadas
+    # O resumo do dashboard precisa refletir limpeza/importação imediatamente.
+    cache_key = f"insumo_summary:{getattr(model_cls, '__tablename__', model_cls.__name__)}"
+    cached = _insumo_cache.get(cache_key)
+    if cached is not None:
+        return cached
     updated_column = None
     for candidate in ('updated_at', 'imported_at'):
         updated_column = getattr(model_cls, candidate, None)
@@ -4633,24 +7078,15 @@ def _insumo_summary(model_cls) -> dict:
         'last_data_ref': last_data,
         'latest_version': latest_version,
     }
-
-    # Armazena no cache
-    _insumo_cache[cache_key] = (result, now)
-
+    _insumo_cache[cache_key] = result
     return result
 
 
 def _insumo_distinct_versions(model_cls) -> list[str]:
-    # Cache key baseado no nome da tabela
-    cache_key = f"versions_{model_cls.__tablename__}"
-    now = time.time()
-
-    # Verifica se existe cache válido
-    if cache_key in _insumo_cache:
-        cached_data, cached_time = _insumo_cache[cache_key]
-        if now - cached_time < _insumo_cache_ttl:
-            return cached_data
-
+    cache_key = f"insumo_versions:{getattr(model_cls, '__tablename__', model_cls.__name__)}"
+    cached = _insumo_cache.get(cache_key)
+    if cached is not None:
+        return cached
     version_column = None
     for candidate in ('versao_tabela', 'versao', 'edicao', 'arquivo'):
         version_column = getattr(model_cls, candidate, None)
@@ -4668,10 +7104,7 @@ def _insumo_distinct_versions(model_cls) -> list[str]:
         .all()
     )
     result = [row[0] for row in rows if row[0]]
-
-    # Armazena no cache
-    _insumo_cache[cache_key] = (result, now)
-
+    _insumo_cache[cache_key] = result
     return result
 
 
@@ -5041,7 +7474,7 @@ def _common_import_options(func):
     func = click.option('--encoding', default=None, help='Codificação do arquivo (tenta auto se omitido).')(func)
     func = click.option('--uf', 'uf_referencia', default=None, help='UF de referência da tabela importada.')(func)
     func = click.option('--aliquota', default=None, help='Alíquota associada à tabela (percentual).')(func)
-    func = click.option('--format', 'fmt', type=click.Choice(['delimited', 'fixed']), default='delimited', show_default=True)(func)
+    func = click.option('--format', 'fmt', type=click.Choice(['delimited', 'fixed', 'json']), default='delimited', show_default=True)(func)
     func = click.option('--data', 'data_str', required=False, help='Data de atualização (YYYY-MM-DD).')(func)
     func = click.option('--versao', required=True, help='Versão de referência da tabela.')(func)
     func = click.option('--file', 'file_path', type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True)(func)
@@ -5160,7 +7593,21 @@ def bras_analyze_delta(file_path: Path, delimiter: str, encoding: str) -> None:
 @click.option('--delimiter', '-d', default=',', help='Delimitador de colunas')
 @click.option('--encoding', '-e', default='latin-1', help='Encoding do arquivo')
 @click.option('--skip-header', is_flag=True, help='Pular primeira linha (cabeçalho)')
-def bras_import_delta(file_path: Path, versao: str, delimiter: str, encoding: str, skip_header: bool) -> None:
+@click.option('--catalog-file', type=click.Path(exists=True, path_type=Path), default=None, help='Arquivo catálogo Brasíndice (TXT D INCL).')
+@click.option('--catalog-encoding', default='latin-1', help='Encoding do arquivo catálogo.')
+@click.option('--catalog-delimiter', default=';', help='Delimitador do arquivo catálogo.')
+@click.option('--catalog-prev-versao', default=None, help='Versão anterior do snapshot de catálogo a comparar.')
+def bras_import_delta(
+    file_path: Path,
+    versao: str,
+    delimiter: str,
+    encoding: str,
+    skip_header: bool,
+    catalog_file: Path | None,
+    catalog_encoding: str,
+    catalog_delimiter: str,
+    catalog_prev_versao: str | None,
+) -> None:
     """Importa apenas itens novos ou alterados da Brasíndice (incremental)."""
     file_path = file_path.resolve()
     
@@ -5174,6 +7621,10 @@ def bras_import_delta(file_path: Path, versao: str, delimiter: str, encoding: st
         delimiter=_normalize_delimiter(delimiter),
         encoding=encoding,
         skip_header=skip_header,
+        catalog_file=catalog_file.resolve() if catalog_file else None,
+        catalog_encoding=catalog_encoding,
+        catalog_delimiter=_normalize_delimiter(catalog_delimiter),
+        previous_catalog_version=catalog_prev_versao,
     )
     
     click.echo("\n" + "=" * 50)
@@ -5184,6 +7635,73 @@ def bras_import_delta(file_path: Path, versao: str, delimiter: str, encoding: st
     click.echo(f"  - Importados:        {result['novos_importados']:,}")
     click.echo(f"Itens atualizados:     {result['alterados']:,}")
     click.echo(f"Total processado:      {result['total_processado']:,}")
+    if catalog_file:
+        click.echo(f"Catálogo atual:        {result['catalog_current_version']}")
+        click.echo(f"Catálogo anterior:     {result['catalog_previous_version'] or '—'}")
+        click.echo(f"Catálogo novos:        {result['catalog_new']:,}")
+        click.echo(f"Catálogo alterados:    {result['catalog_changed']:,}")
+        click.echo(f"Catálogo removidos:    {result['catalog_removed']:,}")
+
+
+@app.cli.command('bras:truncate')
+@click.option('--yes', is_flag=True, help='Obrigatório para executar a exclusão.')
+def bras_truncate_all(yes: bool) -> None:
+    """
+    Apaga **todos** os dados de Brasíndice no banco: insumos_index (origem BRAS),
+    bras_item_n, bras_raw, bras_fixed_stage e bras_catalog_snapshot.
+    Não apaga SIMPRO. Depois, rode a consolidação de catálogo se o sistema não atualizar a MV sozinho.
+    """
+    if not yes:
+        click.echo('Isso apaga toda a Brasíndice. Para confirmar:')
+        click.echo('  flask --app app bras:truncate --yes')
+        return
+    with app.app_context():
+        _delete_existing_bras_records(None, True)
+        _clear_insumo_cache()
+    click.echo('Concluído: dados da Brasíndice removidos (índice + tabelas de staging, catálogo, cadastro+preço split).')
+
+
+@app.cli.command('bras:backfill-cadastro-preco')
+@click.option('--dry-run', is_flag=True, help='Só exibe contadores, não grava.')
+def cli_bras_backfill_cadastro_preco(dry_run: bool) -> None:
+    """Cria/ajusta tabelas `bras_item_cadastro` e `bras_item_preco` a partir de `bras_item_n`."""
+    with app.app_context():
+        st = _backfill_bras_cadastro_preco_from_bras_n(dry_run=dry_run)
+    for k, v in st.items():
+        click.echo(f'  {k}: {v}')
+
+
+@app.cli.command('bras:import-precos')
+@click.argument('file_path', type=click.Path(exists=True, path_type=Path))
+@click.argument('edicao', type=str)
+@click.option('--aliquota', required=True, help='Ex.: 20.5 ou 18')
+@click.option('--delimiter', default=',')
+@click.option('--encoding', default='latin-1')
+@click.option('--no-legacy', is_flag=True, help='Não atualizar bras_item_n/insumos (só tabelas split).')
+def cli_bras_import_precos(
+    file_path: Path, edicao: str, aliquota: str, delimiter: str, encoding: str, no_legacy: bool,
+) -> None:
+    """Carga leve: só preços, para itens que já existem no cadastro (após `bras:backfill` ou carga canônica)."""
+    a_str = _coerce_decimal(aliquota)
+    if a_str is None:
+        raise click.ClickException('Alíquota inválida.')
+    alq = _br_norm_aliquota(Decimal(a_str))
+    if alq is None:
+        raise click.ClickException('Alíquota inválida.')
+    with app.app_context():
+        st = _import_bras_somente_precos(
+            file_path=file_path,
+            edicao=edicao.strip(),
+            aliquota=alq,
+            delimiter=delimiter,
+            quotechar='"',
+            encoding=encoding,
+            skip_header=False,
+            arquivo_fonte=file_path.name,
+            update_legacy=not no_legacy,
+        )
+    for k, v in st.items():
+        click.echo(f'  {k}: {v}')
 
 
 @app.cli.command('insumos:create-indexes')
@@ -5296,6 +7814,40 @@ def insumos_clear_cache() -> None:
     click.echo("Cache de contagens limpo!")
 
 
+@app.cli.command('unlock-user')
+@click.argument('email')
+def unlock_user(email: str) -> None:
+    """Desbloqueia um usuário por e-mail (zera tentativas e locked_until)."""
+    u = Usuario.query.filter_by(email=email.strip()).first()
+    if not u:
+        click.echo(f"Usuário com e-mail '{email}' não encontrado.", err=True)
+        raise SystemExit(1)
+    u.failed_login_attempts = 0
+    u.locked_until = None
+    db.session.commit()
+    click.echo(f"Usuário {u.email} desbloqueado.")
+
+
+@app.cli.command('set-password')
+@click.argument('email')
+@click.argument('nova_senha', required=False)
+def set_password(email: str, nova_senha: str | None) -> None:
+    """Define a senha de um usuário por e-mail. Uso: flask set-password email@exemplo.com NovaSenha"""
+    email = email.strip()
+    u = Usuario.query.filter_by(email=email).first()
+    if not u:
+        click.echo(f"Usuário com e-mail '{email}' não encontrado.", err=True)
+        raise SystemExit(1)
+    if not nova_senha or not nova_senha.strip():
+        click.echo("Informe a nova senha: flask set-password email@exemplo.com 'SuaSenha'", err=True)
+        raise SystemExit(1)
+    u.senha = _hash_password(nova_senha)
+    u.failed_login_attempts = 0
+    u.locked_until = None
+    db.session.commit()
+    click.echo(f"Senha de {u.email} atualizada. Faça login com a nova senha.")
+
+
 @app.cli.command('simpro:import')
 @_common_import_options
 def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, delimiter: str,
@@ -5303,7 +7855,7 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
                   encoding: str | None, uf_referencia: str | None, aliquota: str | None,
                   lines_terminated: str) -> None:
     """Importa arquivo do SIMPRO."""
-    del lines_terminated
+    del lines_terminated, delimiter, quotechar, no_header, data_str
     uf_value = (uf_referencia or '').strip().upper() or None
     aliquota_value: Decimal | None = None
     if aliquota:
@@ -5312,8 +7864,8 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
             raise click.ClickException('Valor de alíquota inválido.')
         aliquota_value = Decimal(aliquota_str)
 
-    if fmt != 'fixed':
-        raise click.ClickException('Importação SIMPRO suporta apenas arquivos de largura fixa.')
+    if fmt not in {'fixed', 'json'}:
+        raise click.ClickException('Importação SIMPRO suporta apenas JSON ou largura fixa.')
 
     file_path = file_path.resolve()
     if not file_path.exists():
@@ -5327,7 +7879,7 @@ def simpro_import(file_path: Path, versao: str, data_str: str | None, fmt: str, 
             raise click.ClickException(f'Não foi possível ler o arquivo de mapeamento: {exc}') from exc
         if not isinstance(map_config, dict):
             raise click.ClickException('Arquivo de mapeamento deve conter um objeto JSON na raiz.')
-    if not map_config:
+    if fmt == 'fixed' and not map_config:
         raise click.ClickException('Informe um mapa JSON contendo as posições do arquivo SIMPRO.')
 
     encoding_cfg = map_config.get('encoding')
@@ -5632,13 +8184,65 @@ def price_changes():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     erro = None
+    senha_alterada = request.args.get('senha_alterada') == '1'
+    disable_login_lock = os.getenv('DISABLE_LOGIN_LOCK', '0') == '1'
+    auto_login = os.getenv('DEV_AUTO_LOGIN', '0') == '1'
+    if auto_login and request.method == 'GET':
+        usuario = Usuario.query.order_by(Usuario.id.asc()).first()
+        if usuario:
+            session.clear()
+            session.permanent = True
+            session['user_id'] = usuario.id
+            session['perfil'] = usuario.perfil
+            session['nome'] = usuario.nome
+            nomes = [op.nome for op in usuario.operadoras]
+            ids = [op.id for op in usuario.operadoras]
+            session['operadora_ids'] = ids
+            session['operadora_id'] = ids[0] if ids else None
+            session['operadora_nomes'] = nomes
+            session['operadora_nome'] = ', '.join(nomes) if nomes else None
+            session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+            session['feature_consulta'] = bool(usuario.acesso_consulta) or (usuario.perfil == 'adm')
+            session['feature_contratos'] = bool(getattr(usuario, 'acesso_contratos', True)) or (usuario.perfil in {'adm', 'adm de contrato', 'operadora'})
+            session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
+            session['login_time'] = _now_utc().isoformat()
+            session['session_nonce'] = uuid4().hex
+            session['login_ip'] = _get_remote_addr()
+            session['password_changed_at'] = usuario.senha_atualizada_em.isoformat() if usuario.senha_atualizada_em else None
+            session['must_change_senha'] = False
+            session.modified = True
+            return redirect(url_for('dashboard'))
     if request.method == 'POST':
         email = (request.form.get('email') or '').strip()
         senha = request.form.get('senha') or ''
         agora = _now_utc()
+        print(f"[login] incoming email={repr(email)} senha_len={len(senha)} content_type={request.content_type}", flush=True)
         usuario = Usuario.query.filter_by(email=email).first()
         if usuario:
-            if usuario.locked_until and usuario.locked_until > agora:
+            ok = _verify_password(usuario.senha, senha)
+        else:
+            ok = False
+
+        # Dev-only: permite login mesmo se a senha não bater quando auto-login está ligado
+        if disable_login_lock and os.getenv('DEV_AUTO_LOGIN', '0') == '1':
+            if not usuario:
+                usuario = Usuario.query.order_by(Usuario.id.asc()).first()
+            ok = bool(usuario)
+            if usuario:
+                print(
+                    f"[login] email={usuario.email} ok={ok} "
+                    f"locked_until={usuario.locked_until} failed={usuario.failed_login_attempts} "
+                    f"senha_len={len(senha)} senha_repr={repr(senha)} "
+                    f"hash_prefix={(usuario.senha or '')[:12]}",
+                    flush=True,
+                )
+
+        if usuario and not disable_login_lock and usuario.locked_until and usuario.locked_until > agora:
+            if ok:
+                # Permite desbloqueio imediato com senha correta
+                usuario.failed_login_attempts = 0
+                usuario.locked_until = None
+            else:
                 minutos = max(int((usuario.locked_until - agora).total_seconds() // 60) + 1, 1)
                 erro = f'Conta temporariamente bloqueada. Tente novamente em aproximadamente {minutos} minuto(s).'
                 _register_audit(
@@ -5647,78 +8251,81 @@ def login():
                     detalhes={'locked_until': usuario.locked_until.isoformat()}
                 )
                 db.session.commit()
-                return render_template('login.html', erro=erro, hide_chrome=True)
+                return render_template('login.html', erro=erro, senha_alterada=senha_alterada, hide_chrome=True)
 
-            if _verify_password(usuario.senha, senha):
-                # migra senhas legadas sem hash
-                if not _is_password_hashed(usuario.senha):
-                    novo_hash = _hash_password(senha)
-                    usuario.senha = novo_hash
-                    usuario.senha_atualizada_em = usuario.senha_atualizada_em or agora
-                    try:
-                        _append_password_history(usuario, novo_hash)
-                    except Exception:
-                        app.logger.warning('Falha ao salvar histórico de senha para o usuário %s', usuario.email)
-
-                usuario.failed_login_attempts = 0
-                usuario.locked_until = None
-
-                session.clear()
-                session.permanent = True
-                session['user_id'] = usuario.id
-                session['perfil'] = usuario.perfil
-                session['nome'] = usuario.nome
-                nomes = [op.nome for op in usuario.operadoras]
-                ids = [op.id for op in usuario.operadoras]
-                session['operadora_ids'] = ids
-                session['operadora_id'] = ids[0] if ids else None
-                session['operadora_nomes'] = nomes
-                session['operadora_nome'] = ', '.join(nomes) if nomes else None
-                session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
-                session['feature_consulta'] = bool(usuario.acesso_consulta) or (usuario.perfil == 'adm')
-                session['feature_contratos'] = bool(getattr(usuario, 'acesso_contratos', True)) or (usuario.perfil in {'adm', 'adm de contrato', 'operadora'})
-                session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
-                session['login_time'] = agora.isoformat()
-                session['session_nonce'] = uuid4().hex
-                session['login_ip'] = _get_remote_addr()
-                session['password_changed_at'] = usuario.senha_atualizada_em.isoformat() if usuario.senha_atualizada_em else None
-
-                must_change = bool(usuario.must_reset_senha)
-                last_change = usuario.senha_atualizada_em
-                if not must_change:
-                    if last_change is None:
-                        must_change = True
-                    else:
-                        try:
-                            delta = _now_utc() - last_change
-                            if delta > timedelta(days=PASSWORD_EXPIRATION_DAYS):
-                                must_change = True
-                        except Exception:
-                            must_change = True
-                if must_change and not usuario.must_reset_senha:
-                    usuario.must_reset_senha = True
-                session['must_change_senha'] = must_change
-
-                _register_audit('login.success', usuario=usuario)
+        if usuario and ok:
+            # migra senhas legadas sem hash
+            if not _is_password_hashed(usuario.senha):
+                novo_hash = _hash_password(senha)
+                usuario.senha = novo_hash
+                usuario.senha_atualizada_em = usuario.senha_atualizada_em or agora
                 try:
-                    db.session.commit()
-                except Exception as exc:
-                    db.session.rollback()
-                    app.logger.error('Falha ao confirmar login: %s', exc)
-                    erro = 'Não foi possível concluir o login. Tente novamente em instantes.'
-                    session.clear()
-                    return render_template('login.html', erro=erro, hide_chrome=True)
+                    _append_password_history(usuario, novo_hash)
+                except Exception:
+                    app.logger.warning('Falha ao salvar histórico de senha para o usuário %s', usuario.email)
 
-                if must_change:
-                    return redirect(url_for('alterar_senha'))
-                return redirect(url_for('dashboard'))
+            usuario.failed_login_attempts = 0
+            usuario.locked_until = None
 
-            usuario.failed_login_attempts = (usuario.failed_login_attempts or 0) + 1
+            session.clear()
+            session.permanent = True
+            session['user_id'] = usuario.id
+            session['perfil'] = usuario.perfil
+            session['nome'] = usuario.nome
+            nomes = [op.nome for op in usuario.operadoras]
+            ids = [op.id for op in usuario.operadoras]
+            session['operadora_ids'] = ids
+            session['operadora_id'] = ids[0] if ids else None
+            session['operadora_nomes'] = nomes
+            session['operadora_nome'] = ', '.join(nomes) if nomes else None
+            session['feature_insumos'] = bool(usuario.acesso_insumos) or (usuario.perfil == 'adm')
+            session['feature_consulta'] = bool(usuario.acesso_consulta) or (usuario.perfil == 'adm')
+            session['feature_contratos'] = bool(getattr(usuario, 'acesso_contratos', True)) or (usuario.perfil in {'adm', 'adm de contrato', 'operadora'})
+            session['feature_tuss_rol'] = bool(usuario.acesso_tuss_rol) or (usuario.perfil == 'adm')
+            session['login_time'] = agora.isoformat()
+            session['session_nonce'] = uuid4().hex
+            session['login_ip'] = _get_remote_addr()
+            session['password_changed_at'] = usuario.senha_atualizada_em.isoformat() if usuario.senha_atualizada_em else None
+
+            must_change = bool(usuario.must_reset_senha)
+            last_change = usuario.senha_atualizada_em
+            if not must_change:
+                if last_change is None:
+                    must_change = True
+                else:
+                    try:
+                        delta = _now_utc() - last_change
+                        if delta > timedelta(days=PASSWORD_EXPIRATION_DAYS):
+                            must_change = True
+                    except Exception:
+                        must_change = True
+            if must_change and not usuario.must_reset_senha:
+                usuario.must_reset_senha = True
+            session['must_change_senha'] = must_change
+
+            _register_audit('login.success', usuario=usuario)
+            try:
+                db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                app.logger.error('Falha ao confirmar login: %s', exc)
+                erro = 'Não foi possível concluir o login. Tente novamente em instantes.'
+                session.clear()
+                return render_template('login.html', erro=erro, senha_alterada=senha_alterada, hide_chrome=True)
+
+            if must_change:
+                return redirect(url_for('alterar_senha'))
+            return redirect(url_for('dashboard'))
+
+        if usuario:
+            app.logger.warning('Login failure: email=%s', usuario.email)
             bloqueado = False
-            if usuario.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
-                usuario.locked_until = agora + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
-                usuario.failed_login_attempts = 0
-                bloqueado = True
+            if not disable_login_lock:
+                usuario.failed_login_attempts = (usuario.failed_login_attempts or 0) + 1
+                if usuario.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
+                    usuario.locked_until = agora + timedelta(minutes=ACCOUNT_LOCK_MINUTES)
+                    usuario.failed_login_attempts = 0
+                    bloqueado = True
             _register_audit(
                 'login.failure',
                 usuario=usuario,
@@ -5730,13 +8337,14 @@ def login():
             )
             try:
                 db.session.commit()
-            except Exception:
+            except Exception as exc:
                 db.session.rollback()
+                app.logger.error('Falha ao registrar login invalido: %s', exc)
             if bloqueado:
                 erro = f'Conta bloqueada por {ACCOUNT_LOCK_MINUTES} minutos após múltiplas tentativas.'
             else:
                 erro = 'Credenciais inválidas.'
-            return render_template('login.html', erro=erro, hide_chrome=True)
+            return render_template('login.html', erro=erro, senha_alterada=senha_alterada, hide_chrome=True)
 
         _register_audit(
             'login.failure',
@@ -5748,10 +8356,10 @@ def login():
         except Exception:
             db.session.rollback()
         erro = 'Credenciais inválidas.'
-        return render_template('login.html', erro=erro, hide_chrome=True)
+        return render_template('login.html', erro=erro, senha_alterada=senha_alterada, hide_chrome=True)
 
     # GET: layout limpo
-    return render_template('login.html', hide_chrome=True)
+    return render_template('login.html', senha_alterada=senha_alterada, hide_chrome=True)
 
 
 
@@ -6103,6 +8711,17 @@ def health_check():
     return render_template('health.html', health=health_data)
 
 
+@app.route('/debug/db')
+def debug_db():
+    if os.getenv('DEV_AUTO_LOGIN', '0') != '1':
+        abort(404)
+    return jsonify({
+        'database_url': app.config.get('SQLALCHEMY_DATABASE_URI'),
+        'disable_login_lock': os.getenv('DISABLE_LOGIN_LOCK', '0'),
+        'dev_auto_login': os.getenv('DEV_AUTO_LOGIN', '0'),
+    })
+
+
 @app.route('/minha-senha', methods=['GET', 'POST'])
 @login_required
 def alterar_senha():
@@ -6138,15 +8757,12 @@ def alterar_senha():
                 usuario.senha_atualizada_em = agora
                 usuario.failed_login_attempts = 0
                 usuario.locked_until = None
-                usuario.last_logout_at = agora
                 _append_password_history(usuario, senha_hash)
                 _register_audit('password.change', usuario=usuario)
                 db.session.commit()
-                session['must_change_senha'] = False
-                session['login_time'] = agora.isoformat()
-                session['password_changed_at'] = agora.isoformat()
-                flash('Senha atualizada com sucesso.', 'success')
-                return redirect(url_for('dashboard'))
+                session.clear()
+                session.modified = True
+                return redirect(url_for('login', senha_alterada=1))
             except Exception as exc:
                 db.session.rollback()
                 app.logger.error('Erro ao atualizar senha: %s', exc)
@@ -8703,6 +11319,161 @@ def contratos_resumo_excluir(cid: int):
     return redirect(url_for('contratos_resumo', operadora_id=operadora_id))
 
 
+@app.route('/reembolsos', methods=['GET', 'POST'])
+@login_required
+def reembolsos_index():
+    error = None
+    if request.method == 'POST':
+        upload = request.files.get('arquivo')
+        tipo_documento = (request.form.get('tipo_documento') or 'AUTO').strip().upper()
+        if not upload or not upload.filename:
+            error = 'Selecione um arquivo para upload.'
+        elif not _reembolso_allowed_extension(upload.filename):
+            error = 'Formato nÃ£o suportado. Envie PDF, PNG ou JPG.'
+        else:
+            max_bytes = REEMBOLSO_MAX_FILE_MB * 1024 * 1024
+            try:
+                upload.stream.seek(0, io.SEEK_END)
+                file_size = upload.stream.tell()
+                upload.stream.seek(0)
+            except Exception:
+                file_size = None
+            if file_size is not None and file_size > max_bytes:
+                error = f'Arquivo excede {REEMBOLSO_MAX_FILE_MB} MB.'
+
+        if not error:
+            ext = Path(upload.filename).suffix.lower()
+            stored_filename = f"{uuid4().hex}{ext}"
+            subdir = REEMBOLSO_STORAGE_DIR / datetime.utcnow().strftime('%Y') / datetime.utcnow().strftime('%m')
+            subdir.mkdir(parents=True, exist_ok=True)
+            storage_path = subdir / stored_filename
+            try:
+                upload.save(storage_path)
+            except Exception as exc:  # noqa: BLE001
+                error = f'Falha ao salvar o arquivo: {exc}'
+
+        if not error:
+            texto, is_pdf_native, ocr_status, ocr_message = _reembolso_extract_text(storage_path)
+            inferred_tipo = _reembolso_infer_tipo(texto)
+            final_tipo = inferred_tipo if tipo_documento == 'AUTO' else tipo_documento
+            dados_extraidos = _reembolso_extract_fields(texto)
+            tuss_codes = _reembolso_extract_tuss_codes(texto)
+            if tuss_codes:
+                operadora_id = session.get('operadora_id')
+                if not operadora_id and hasattr(g, 'current_user') and g.current_user and getattr(g.current_user, 'operadoras', None):
+                    operadora_id = g.current_user.operadoras[0].id
+                tuss_matches = _reembolso_lookup_tuss_values(tuss_codes, operadora_id)
+                dados_extraidos['tuss_codigos'] = tuss_codes
+                dados_extraidos['tuss_matches'] = tuss_matches
+            doc = ReembolsoDocumento(
+                usuario_id=(g.current_user.id if hasattr(g, 'current_user') and g.current_user else None),
+                tipo_documento=final_tipo,
+                original_filename=upload.filename,
+                stored_filename=stored_filename,
+                storage_path=str(storage_path),
+                mime_type=upload.mimetype,
+                is_pdf_native=is_pdf_native,
+                texto_extraido=texto,
+                dados_extraidos=dados_extraidos,
+                status='PENDENTE',
+                ocr_status=ocr_status,
+                ocr_message=ocr_message,
+            )
+            try:
+                db.session.add(doc)
+                db.session.commit()
+            except Exception as exc:  # noqa: BLE001
+                db.session.rollback()
+                error = f'Falha ao registrar o reembolso: {exc}'
+
+        if error:
+            flash(error, 'danger')
+        else:
+            flash('Documento enviado. Revise e valide os campos.', 'success')
+            return redirect(url_for('reembolsos_review', doc_id=doc.id))
+
+    query = ReembolsoDocumento.query
+    if hasattr(g, 'current_user') and g.current_user and g.current_user.perfil != 'adm':
+        query = query.filter(ReembolsoDocumento.usuario_id == g.current_user.id)
+    documentos = (
+        query.order_by(ReembolsoDocumento.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    return render_template(
+        'reembolsos_index.html',
+        documentos=documentos,
+        fields_by_type=REEMBOLSO_FIELDS_BY_TYPE,
+    )
+
+
+def _reembolsos_can_access(doc: ReembolsoDocumento) -> bool:
+    if not hasattr(g, 'current_user') or not g.current_user:
+        return False
+    if g.current_user.perfil == 'adm':
+        return True
+    return doc.usuario_id == g.current_user.id
+
+
+@app.route('/reembolsos/<int:doc_id>')
+@login_required
+def reembolsos_review(doc_id: int):
+    documento = ReembolsoDocumento.query.get_or_404(doc_id)
+    if not _reembolsos_can_access(documento):
+        abort(403)
+    values = documento.dados_validado or documento.dados_extraidos or {}
+    fields = _reembolso_fields_for_type(documento.tipo_documento)
+    return render_template(
+        'reembolsos_review.html',
+        documento=documento,
+        fields=fields,
+        values=values,
+    )
+
+
+@app.route('/reembolsos/<int:doc_id>/validar', methods=['POST'])
+@login_required
+def reembolsos_validar(doc_id: int):
+    documento = ReembolsoDocumento.query.get_or_404(doc_id)
+    if not _reembolsos_can_access(documento):
+        abort(403)
+
+    tipo_documento = (request.form.get('tipo_documento') or documento.tipo_documento).strip().upper()
+    status = (request.form.get('status') or 'VALIDADO').strip().upper()
+    if status not in {'PENDENTE', 'VALIDADO', 'REJEITADO'}:
+        status = 'VALIDADO'
+    if tipo_documento not in REEMBOLSO_FIELDS_BY_TYPE:
+        tipo_documento = documento.tipo_documento or 'DESCONHECIDO'
+
+    values: dict[str, str | None] = {}
+    for key, _label in _reembolso_fields_for_type(tipo_documento):
+        value = (request.form.get(key) or '').strip()
+        values[key] = value or None
+
+    documento.tipo_documento = tipo_documento
+    documento.dados_validado = values
+    documento.status = status
+    try:
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        flash(f'Falha ao salvar: {exc}', 'danger')
+        return redirect(url_for('reembolsos_review', doc_id=doc_id))
+
+    flash('Reembolso atualizado com sucesso.', 'success')
+    return redirect(url_for('reembolsos_index'))
+
+
+@app.route('/reembolsos/<int:doc_id>/arquivo')
+@login_required
+def reembolsos_arquivo(doc_id: int):
+    documento = ReembolsoDocumento.query.get_or_404(doc_id)
+    if not _reembolsos_can_access(documento):
+        abort(403)
+    return send_file(documento.storage_path, as_attachment=False, download_name=documento.original_filename)
+
+
 @app.route('/admin/tetos')
 @admin_required
 def admin_tetos():
@@ -9524,6 +12295,50 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                 except Exception:
                     db.session.rollback()
                 try:
+                    db.session.execute(text("ALTER TABLE mv_catalogo_vigente_simpro ADD COLUMN codigo_interno VARCHAR(20) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE mv_catalogo_vigente_simpro ADD COLUMN tuss_numero VARCHAR(16) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE mv_catalogo_vigente_simpro ADD COLUMN referencia VARCHAR(120) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE mv_catalogo_vigente_simpro ADD COLUMN status_final VARCHAR(8) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE mv_catalogo_vigente_simpro ADD COLUMN fracionavel VARCHAR(1) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE simpro_item_norm ADD COLUMN referencia VARCHAR(120) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("ALTER TABLE simpro_item_norm ADD COLUMN fracionavel VARCHAR(1) NULL"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text("CREATE INDEX idx_simpro_tuss_numero ON mv_catalogo_vigente_simpro (tuss_numero)"))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    _backfill_catalogo_simpro_identifiers()
+                except Exception:
+                    db.session.rollback()
+                try:
                     db.session.execute(text(
                         "ALTER TABLE usuarios ADD CONSTRAINT fk_usuarios_operadora FOREIGN KEY (id_operadora) REFERENCES operadoras(id)"
                     ))
@@ -9750,7 +12565,6 @@ def usuario_novo():
         u.senha_atualizada_em = agora
         u.failed_login_attempts = 0
         u.locked_until = None
-        u.last_logout_at = agora
         u.operadoras = operadoras_sel
         db.session.add(u)
         try:
@@ -9852,7 +12666,6 @@ def usuario_editar(uid):
             u.senha_atualizada_em = agora
             u.failed_login_attempts = 0
             u.locked_until = None
-            u.last_logout_at = agora
             u.must_reset_senha = not (session.get('user_id') == u.id)
             _append_password_history(u, senha_hash)
             password_changed = True
@@ -10323,7 +13136,7 @@ def _collect_catalogo_filters_simpro(item_id: int, item) -> list[list]:
         elif name == 'anvisa':
             exprs.append(CatalogoSimpro.anvisa == values[0])
         elif name == 'tuss':
-            exprs.append(CatalogoSimpro.codigo == values[0])
+            exprs.append(CatalogoSimpro.tuss_numero == values[0])
         elif name == 'tiss':
             exprs.append(CatalogoSimpro.codigo_alt == values[0])
         if exprs:
@@ -10347,7 +13160,7 @@ def _collect_catalogo_filters_simpro(item_id: int, item) -> list[list]:
     if anvisa:
         _add('anvisa', anvisa)
 
-    tuss = getattr(item, 'tuss', None)
+    tuss = getattr(item, 'tuss_numero', None) or getattr(item, 'tuss', None)
     if tuss:
         _add('tuss', tuss)
 
@@ -11656,41 +14469,24 @@ def insumos_suggest():
     try:
         suggestions = []
 
-        # Busca em CatalogoBrasindice
-        if field == 'descricao':
-            rows = CatalogoBrasindice.query.filter(
-                func.lower(CatalogoBrasindice.produto_nome).ilike(f'%{query}%')
-            ).with_entities(CatalogoBrasindice.produto_nome).distinct().limit(limit).all()
-            suggestions.extend([r[0] for r in rows if r[0]])
-
-        elif field == 'fabricante':
-            rows = CatalogoBrasindice.query.filter(
-                CatalogoBrasindice.fabricante != None,
-                func.lower(CatalogoBrasindice.fabricante).ilike(f'%{query}%')
-            ).with_entities(CatalogoBrasindice.fabricante).distinct().limit(limit).all()
-            suggestions.extend([r[0] for r in rows if r[0]])
-
-        elif field == 'tuss':
-            rows = InsumoIndex.query.filter(
-                InsumoIndex.origem == 'BRAS',
-                InsumoIndex.tuss != None,
-                InsumoIndex.tuss.ilike(f'{query}%')
-            ).with_entities(InsumoIndex.tuss).distinct().limit(limit).all()
-            suggestions.extend([r[0] for r in rows if r[0]])
-
-        elif field == 'tiss':
-            rows = InsumoIndex.query.filter(
-                InsumoIndex.tiss != None,
-                InsumoIndex.tiss.ilike(f'{query}%')
-            ).with_entities(InsumoIndex.tiss).distinct().limit(limit).all()
-            suggestions.extend([r[0] for r in rows if r[0]])
-
-        elif field == 'anvisa':
-            rows = InsumoIndex.query.filter(
-                InsumoIndex.anvisa != None,
-                InsumoIndex.anvisa.ilike(f'{query}%')
-            ).with_entities(InsumoIndex.anvisa).distinct().limit(limit).all()
-            suggestions.extend([r[0] for r in rows if r[0]])
+        field_map = {
+            'descricao': InsumoIndex.descricao,
+            'fabricante': InsumoIndex.fabricante,
+            'tuss': InsumoIndex.tuss,
+            'tiss': InsumoIndex.tiss,
+            'anvisa': InsumoIndex.anvisa,
+        }
+        column = field_map.get(field, InsumoIndex.descricao)
+        pattern = f'{query}%' if field in {'tuss', 'tiss', 'anvisa'} else f'%{query}%'
+        rows = (
+            InsumoIndex.query
+            .filter(column.isnot(None), func.lower(column).ilike(pattern))
+            .with_entities(column)
+            .distinct()
+            .limit(limit)
+            .all()
+        )
+        suggestions.extend([r[0] for r in rows if r[0]])
 
         # Limita o resultado final
         suggestions = list(dict.fromkeys(suggestions))[:limit]  # Remove duplicatas mantendo ordem
@@ -11750,12 +14546,18 @@ def insumo_detail(origem: str, item_id: int):
     else:
         for row in historico_rows:
             aliquota_value = _aliquota_bp_to_decimal(row.aliquota_bp)
+            preco_hist, preco_pmc_hist, preco_pfb_hist = _split_simpro_prices(
+                row.preco1,
+                row.preco2,
+                row.preco3,
+                row.preco4,
+            )
             historico.append({
                 'versao': row.periodo,
                 'uf': row.uf,
-                'preco': _stringify_for_output(row.preco1 or row.preco2 or row.preco3 or row.preco4),
-                'preco_pmc': None,
-                'preco_pfb': _stringify_for_output(row.preco1 or row.preco2 or row.preco3 or row.preco4),
+                'preco': _stringify_for_output(preco_hist),
+                'preco_pmc': _stringify_for_output(preco_pmc_hist),
+                'preco_pfb': _stringify_for_output(preco_pfb_hist),
                 'aliquota': _stringify_for_output(aliquota_value),
                 'data_atualizacao': row.data_ref.strftime('%d/%m/%Y') if isinstance(row.data_ref, date) else None,
             })
@@ -11966,6 +14768,16 @@ def _run_import_job(job_id: str) -> None:
         skip_header = bool(params.get('skip_header'))
         encoding = params.get('encoding') or None
         truncate = bool(params.get('truncate'))
+        keep_only_latest_raw = params.get('keep_only_latest_version')
+        if origem == 'BRAS':
+            if isinstance(keep_only_latest_raw, str):
+                keep_only_latest_version = keep_only_latest_raw.strip().lower() in {'on', '1', 'true', 'yes'}
+            elif keep_only_latest_raw is None:
+                keep_only_latest_version = True
+            else:
+                keep_only_latest_version = bool(keep_only_latest_raw)
+        else:
+            keep_only_latest_version = False
         map_config = params.get('map_config') or {}
         sequencia_input = params.get('sequencia_input')
         aliquota_raw = params.get('aliquota')
@@ -11989,8 +14801,129 @@ def _run_import_job(job_id: str) -> None:
             metrics['context']['arquivo_label'] = arquivo_label_override
         overall_start = time.perf_counter()
 
+        is_bras_delta = origem == 'BRAS' and (params or {}).get('import_kind') == 'bras_delta'
+        is_bras_import_precos = origem == 'BRAS' and (params or {}).get('import_kind') == 'bras_import_precos'
         try:
-            if origem == 'BRAS':
+            if is_bras_delta:
+                if truncate:
+                    try:
+                        deleted_n = BrasItemNormalized.query.delete()
+                        deleted_raw = BrasRaw.query.delete()
+                        db.session.commit()
+                        app.logger.info(
+                            'Truncate Brasíndice (job delta): %d normalizados, %d raw removidos',
+                            deleted_n,
+                            deleted_raw,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        db.session.rollback()
+                        app.logger.warning('Erro ao truncar antes do delta: %s', exc)
+                stage_start = time.perf_counter()
+                cpath = params.get('catalog_data_path')
+                catalog_p: Path | None = None
+                if cpath and Path(cpath).exists():
+                    catalog_p = Path(cpath)
+                d_del = _normalize_delimiter(str(delimiter) if delimiter is not None else ',')
+                qchar = (quotechar if quotechar not in (None, '') else '"')
+                if isinstance(qchar, str) and not qchar.strip():
+                    qchar = '"'
+                res_d = _import_bras_delta(
+                    file_path=file_path,
+                    versao=versao,
+                    delimiter=d_del,
+                    quotechar=qchar,
+                    encoding=encoding,
+                    skip_header=skip_header,
+                    data_ref=data_ref,
+                    uf_default=uf_default,
+                    uf_values=uf_values if uf_values else None,
+                    aliquota_default=aliquota_decimal,
+                    catalog_file=catalog_p,
+                    catalog_encoding=(params.get('catalog_encoding') or 'latin-1'),
+                    catalog_delimiter=_normalize_delimiter(str(params.get('catalog_delimiter') or ';')),
+                    previous_catalog_version=params.get('previous_catalog_version') or None,
+                )
+                metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
+                metrics['delta_brasindice'] = {
+                    'versao': res_d.get('versao'),
+                    'novos': res_d.get('novos'),
+                    'novos_importados': res_d.get('novos_importados'),
+                    'alterados': res_d.get('alterados'),
+                    'total_processado': res_d.get('total_processado'),
+                    'catalog_current_version': res_d.get('catalog_current_version'),
+                    'catalog_previous_version': res_d.get('catalog_previous_version'),
+                    'catalog_new': res_d.get('catalog_new'),
+                    'catalog_changed': res_d.get('catalog_changed'),
+                    'catalog_removed': res_d.get('catalog_removed'),
+                }
+                cat_extra = ''
+                if res_d.get('catalog_current_version') is not None:
+                    cat_extra = (
+                        f" Catálogo {res_d['catalog_current_version']}: +{res_d.get('catalog_new', 0)}/~"
+                        f"{res_d.get('catalog_changed', 0)}/-{res_d.get('catalog_removed', 0)}."
+                    )
+                job.status = ImportJobStatus.SUCCESS.value
+                job.message = _job_message_trim(
+                    f"Delta Brasíndice concluído: {res_d['novos']} novos, {res_d['alterados']} preços alterados, "
+                    f"{res_d.get('novos_importados', 0)} materializados.{cat_extra}"
+                )
+                job.total_linhas = res_d.get('total_processado')
+                job.linhas_materializadas = res_d.get('novos_importados', 0)
+                job.finished_at = datetime.utcnow()
+                job.versao = versao
+                job.uf_list = ', '.join(uf_values)
+                if aliquota_decimal is not None:
+                    job.aliquota = aliquota_decimal
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+                _clear_insumo_cache()
+            elif is_bras_import_precos:
+                if aliquota_decimal is None:
+                    raise ValueError('Alíquota é obrigatória para importação de somente preços.')
+                ed = (versao or '').strip()
+                if not ed:
+                    raise ValueError('Informe a versão/edição (campo versão) para o arquivo de preços.')
+                d_del = _normalize_delimiter(str(delimiter) if delimiter is not None else ',')
+                qchar = quotechar if quotechar not in (None, '') else '"'
+                if isinstance(qchar, str) and not qchar.strip():
+                    qchar = '"'
+                stage_start = time.perf_counter()
+                st_p = _import_bras_somente_precos(
+                    file_path=file_path,
+                    edicao=ed,
+                    aliquota=aliquota_decimal,
+                    delimiter=d_del,
+                    quotechar=str(qchar),
+                    encoding=encoding,
+                    skip_header=skip_header,
+                    arquivo_fonte=Path(job.original_filename or 'import-precos').name,
+                    update_legacy=not bool(params.get('no_legacy')),
+                )
+                metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
+                metrics['bras_somente_precos'] = st_p
+                job.status = ImportJobStatus.SUCCESS.value
+                abm = st_p.get('autobackfill_cadastro') or {}
+                ab_text = ''
+                if abm:
+                    ab_text = (
+                        f" Cadastro vazio: backfill executado (+{abm.get('cadastros_unicos', 0)}; "
+                        f"linhas n sem alíquota, só identidade: {abm.get('n_sem_aliquota_so_cadastro', 0)})."
+                    )
+                v_idx = st_p.get('insumos_index_vinculados', 0)
+                idx_m = f' índice vinculado: {v_idx}.' if v_idx else ''
+                job.message = _job_message_trim(
+                    f"Preços atualizados: {st_p.get('atualizados_preco', 0)} linhas; sem cadastro: {st_p.get('sem_cadastro', 0)}; "
+                    f"erros: {st_p.get('erros', 0)}; legacy: {st_p.get('legacy_atualizados', 0)}.{ab_text}{idx_m}"
+                )
+                job.total_linhas = st_p.get('linhas_lidas')
+                job.linhas_materializadas = st_p.get('atualizados_preco')
+                job.finished_at = datetime.utcnow()
+                job.versao = ed
+                job.aliquota = aliquota_decimal
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+                _clear_insumo_cache()
+            elif origem == 'BRAS':
                 stage_start = time.perf_counter()
                 result = _import_bras(
                     file_path=file_path,
@@ -12008,6 +14941,7 @@ def _run_import_job(job_id: str) -> None:
                     uf_values=uf_values,
                     aliquota_default=aliquota_decimal,
                     arquivo_label_override=arquivo_label_override,
+                    keep_only_latest_version=keep_only_latest_version,
                 )
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
             else:
@@ -12037,50 +14971,58 @@ def _run_import_job(job_id: str) -> None:
 
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
 
-            job.status = ImportJobStatus.SUCCESS.value
-            job.message = _job_message_trim(
-                f"Importação concluída (arquivo {result['arquivo']} | {result['linhas_raw']} linhas brutas, "
-                f"{result['linhas_materializadas']} materializadas)."
-            )
-            job.total_linhas = result.get('linhas_raw')
-            job.linhas_materializadas = result.get('linhas_materializadas')
-            job.finished_at = datetime.utcnow()
-            job.versao = versao
-            job.uf_list = ', '.join(uf_values)
-            if aliquota_decimal is not None:
-                job.aliquota = aliquota_decimal
-            metrics['rows'] = {
-                'linhas_raw': result.get('linhas_raw'),
-                'linhas_materializadas': result.get('linhas_materializadas'),
-            }
-            if result.get('load_strategy'):
-                metrics['load_strategy'] = result.get('load_strategy')
-            _set_job_metrics(job, metrics)
-            db.session.commit()
-
-            # Limpa o cache de insumos após importação bem-sucedida
-            _clear_insumo_cache()
-
-            try:
-                post_start = time.perf_counter()
-                # Consolida catálogo após importação
-                _post_catalog_ingest(
-                    origem=origem,
-                    arquivo_label=result.get('arquivo'),
-                    versao=versao,
-                    sequencia_input=sequencia_input,
-                    aliquota_value=aliquota_decimal,
-                    uf_values=uf_values,
+            if not is_bras_delta and not is_bras_import_precos:
+                job.status = ImportJobStatus.SUCCESS.value
+                job.message = _job_message_trim(
+                    f"Importação concluída (arquivo {result['arquivo']} | {result['linhas_raw']} linhas brutas, "
+                    f"{result['linhas_materializadas']} materializadas)."
                 )
-                metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
-            except Exception as exc:  # noqa: BLE001
-                app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
-                db.session.rollback()  # Rollback antes de reutilizar a sessão
-                job = ImportJob.query.get(job_id)
-                if job:
-                    job.message = _job_message_trim((job.message or '') + ' Consolidação posterior falhou.')
-                    _set_job_metrics(job, metrics)
-                    db.session.commit()
+                purge_summary = result.get('purge_summary') or {}
+                if origem == 'BRAS' and purge_summary:
+                    removed_total = sum(int(v or 0) for v in purge_summary.values())
+                    job.message = _job_message_trim(
+                        f"{job.message} Versões antigas removidas: {removed_total} registros."
+                    )
+                    metrics['purge_summary'] = purge_summary
+                job.total_linhas = result.get('linhas_raw')
+                job.linhas_materializadas = result.get('linhas_materializadas')
+                job.finished_at = datetime.utcnow()
+                job.versao = versao
+                job.uf_list = ', '.join(uf_values)
+                if aliquota_decimal is not None:
+                    job.aliquota = aliquota_decimal
+                metrics['rows'] = {
+                    'linhas_raw': result.get('linhas_raw'),
+                    'linhas_materializadas': result.get('linhas_materializadas'),
+                }
+                if result.get('load_strategy'):
+                    metrics['load_strategy'] = result.get('load_strategy')
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+
+                # Limpa o cache de insumos após importação bem-sucedida
+                _clear_insumo_cache()
+
+                try:
+                    post_start = time.perf_counter()
+                    # Consolida catálogo após importação
+                    _post_catalog_ingest(
+                        origem=origem,
+                        arquivo_label=result.get('arquivo'),
+                        versao=versao,
+                        sequencia_input=sequencia_input,
+                        aliquota_value=aliquota_decimal,
+                        uf_values=uf_values,
+                    )
+                    metrics['timings']['post_catalog'] = round(time.perf_counter() - post_start, 4)
+                except Exception as exc:  # noqa: BLE001
+                    app.logger.warning('Falha ao consolidar catálogo pós-import (job %s): %s', job_id, exc)
+                    db.session.rollback()  # Rollback antes de reutilizar a sessão
+                    job = ImportJob.query.get(job_id)
+                    if job:
+                        job.message = _job_message_trim((job.message or '') + ' Consolidação posterior falhou.')
+                        _set_job_metrics(job, metrics)
+                        db.session.commit()
         except Exception as exc:  # noqa: BLE001
             metrics['timings']['total'] = round(time.perf_counter() - overall_start, 4)
             metrics['error'] = str(exc)
@@ -12432,6 +15374,10 @@ def insumos_import():
     data_ref = (request.form.get('data_atualizacao') or '').strip() or None
     no_header = request.form.get('no_header') == 'on'
     truncate = request.form.get('truncate') == 'on'
+    keep_only_latest_raw = (request.form.get('keep_only_latest_version') or '').strip().lower()
+    keep_only_latest_version = True if origem == 'BRAS' and keep_only_latest_raw == '' else (
+        keep_only_latest_raw in {'on', '1', 'true', 'yes'}
+    )
     encoding = (request.form.get('encoding') or '').strip() or None
     arquivo_label_override_raw = (request.form.get('arquivo_label') or '').strip()
     raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
@@ -12511,9 +15457,9 @@ def insumos_import():
             if quotechar is not None and not str(quotechar).strip():
                 quotechar = None
     else:
-        if fmt != 'fixed':
-            return _fail('Importação SIMPRO suporta apenas arquivos de largura fixa.')
-        if not map_config:
+        if fmt not in {'fixed', 'json'}:
+            return _fail('Importação SIMPRO suporta apenas JSON ou largura fixa.')
+        if fmt == 'fixed' and not map_config:
             # Tenta carregar mapa padrão do SIMPRO
             default_map_paths = [
                 Path(__file__).parent / 'testes' / 'mapa.json',
@@ -12562,6 +15508,7 @@ def insumos_import():
         'versao': versao,
         'data_ref': data_ref,
         'truncate': truncate,
+        'keep_only_latest_version': keep_only_latest_version,
         'uf_values': uf_values,
         'uf_default': uf_value,
         'aliquota': str(aliquota_value) if aliquota_value is not None else None,
@@ -12652,14 +15599,52 @@ def insumos_bras_analyze_delta():
     if not upload or not upload.filename:
         return jsonify({'status': 'error', 'message': 'Selecione um arquivo para analisar.'}), 400
     
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
     delimiter = request.form.get('delimiter') or ','
     encoding = (request.form.get('encoding') or 'latin-1').strip()
+    catalog_upload = request.files.get('catalogo')
+    versao = (request.form.get('versao') or '').strip()
+    catalog_encoding = (request.form.get('catalog_encoding') or 'latin-1').strip()
+    catalog_delimiter = request.form.get('catalog_delimiter') or ';'
+    catalog_prev_versao = (request.form.get('catalog_prev_versao') or '').strip() or None
     
     # Salvar arquivo temporariamente
     import tempfile
     with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
         upload.save(tmp.name)
         tmp_path = Path(tmp.name)
+    catalog_tmp_path: Path | None = None
+    if catalog_upload and catalog_upload.filename:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp_catalog:
+            catalog_upload.save(tmp_catalog.name)
+            catalog_tmp_path = Path(tmp_catalog.name)
     
     try:
         result = _analyze_bras_delta(
@@ -12667,6 +15652,20 @@ def insumos_bras_analyze_delta():
             delimiter=_normalize_delimiter(delimiter),
             encoding=encoding,
         )
+        catalog_result = None
+        if catalog_tmp_path:
+            if not versao:
+                return jsonify({'status': 'error', 'message': 'Informe a versão para analisar o catálogo Brasíndice.'}), 400
+            _sync_bras_catalog_snapshot(
+                file_path=catalog_tmp_path,
+                versao=versao,
+                delimiter=_normalize_delimiter(catalog_delimiter),
+                encoding=catalog_encoding,
+            )
+            catalog_result = _analyze_bras_catalog_delta(
+                current_version=versao,
+                previous_version=catalog_prev_versao,
+            )
         return jsonify({
             'status': 'ok',
             'total_arquivo': result['total_arquivo'],
@@ -12677,12 +15676,26 @@ def insumos_bras_analyze_delta():
             'removidos': result['removidos'],
             'detalhes_novos': result['detalhes_novos'][:20],
             'detalhes_alterados': result['detalhes_alterados'][:20],
+            'catalog': ({
+                'current_version': catalog_result['current_version'],
+                'previous_version': catalog_result['previous_version'],
+                'current_total': catalog_result['current_total'],
+                'previous_total': catalog_result['previous_total'],
+                'new_count': catalog_result['new_count'],
+                'changed_count': catalog_result['changed_count'],
+                'removed_count': catalog_result['removed_count'],
+                'sample_new': catalog_result['sample_new'],
+                'sample_changed': catalog_result['sample_changed'],
+                'sample_removed': catalog_result['sample_removed'],
+            } if catalog_result else None),
         })
     except Exception as exc:
         app.logger.exception('Erro ao analisar delta Brasíndice')
         return jsonify({'status': 'error', 'message': str(exc)}), 500
     finally:
         tmp_path.unlink(missing_ok=True)
+        if catalog_tmp_path is not None:
+            catalog_tmp_path.unlink(missing_ok=True)
 
 
 @app.route('/insumos/bras/import-delta', methods=['POST'])
@@ -12693,7 +15706,7 @@ def insumos_bras_import_delta():
     upload = request.files.get('arquivo')
     if not upload or not upload.filename:
         return jsonify({'status': 'error', 'message': 'Selecione um arquivo para importar.'}), 400
-    
+    catalog_upload = request.files.get('catalogo')
     versao = (request.form.get('versao') or '').strip()
     if not versao:
         return jsonify({'status': 'error', 'message': 'Informe a versão da tabela.'}), 400
@@ -12703,6 +15716,9 @@ def insumos_bras_import_delta():
     skip_header = request.form.get('skip_header') == 'on'
     data_ref = (request.form.get('data_atualizacao') or '').strip() or None
     truncate = request.form.get('truncate') == 'on'
+    catalog_encoding = (request.form.get('catalog_encoding') or 'latin-1').strip()
+    catalog_delimiter = request.form.get('catalog_delimiter') or ';'
+    catalog_prev_versao = (request.form.get('catalog_prev_versao') or '').strip() or None
     
     # Alíquota e UFs (opcional)
     aliquota_input = (request.form.get('aliquota') or '').strip()
@@ -12719,54 +15735,254 @@ def insumos_bras_import_delta():
         if candidate and candidate in BR_UFS:
             uf_values.append(candidate)
     uf_default = uf_values[0] if uf_values else None
-    
-    # Salvar arquivo temporariamente
-    import tempfile
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp:
-        upload.save(tmp.name)
-        tmp_path = Path(tmp.name)
-    
-    # Se truncate, limpar dados antes
-    if truncate:
-        try:
-            deleted_n = BrasItemNormalized.query.delete()
-            deleted_raw = BrasRaw.query.delete()
-            db.session.commit()
-            app.logger.info('Truncate Brasíndice: %d normalizados, %d raw removidos', deleted_n, deleted_raw)
-        except Exception as exc:
-            db.session.rollback()
-            app.logger.warning('Erro ao truncar Brasíndice: %s', exc)
-    
+
+    # Mesmo mecanismo das importações clássicas: job + thread (aparece em "Importações em andamento")
+    job_id = uuid4().hex
+    job_dir = INSUMO_IMPORT_ASYNC_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    main_name = secure_filename(upload.filename) or f'bras_delta_{job_id}.txt'
+    data_path = job_dir / main_name
     try:
-        result = _import_bras_delta(
-            file_path=tmp_path,
-            versao=versao,
-            delimiter=_normalize_delimiter(delimiter),
-            encoding=encoding,
-            skip_header=skip_header,
-            data_ref=data_ref,
-            uf_default=uf_default,
-            uf_values=uf_values if uf_values else None,
-            aliquota_default=aliquota_value,
+        upload.save(str(data_path))
+    except Exception as exc:  # noqa: BLE001
+        shutil.rmtree(job_dir, ignore_errors=True)
+        app.logger.exception('Erro ao salvar arquivo para delta Brasíndice')
+        return jsonify({'status': 'error', 'message': f'Falha ao salvar o arquivo: {exc}'}), 500
+
+    catalog_data_path: str | None = None
+    if catalog_upload and catalog_upload.filename:
+        cat_stem = secure_filename(catalog_upload.filename) or f'catalogo_{job_id}.txt'
+        cpath = job_dir / f'catalogo_{cat_stem}'
+        try:
+            catalog_upload.save(str(cpath))
+            catalog_data_path = str(cpath)
+        except Exception as exc:  # noqa: BLE001
+            shutil.rmtree(job_dir, ignore_errors=True)
+            return jsonify({'status': 'error', 'message': f'Falha ao salvar o catálogo: {exc}'}), 500
+
+    label_on = secure_filename(upload.filename) or 'Brasíndice'
+    if catalog_upload and catalog_upload.filename:
+        label_on = f"{label_on} + {secure_filename(catalog_upload.filename) or 'catálogo'}"
+
+    params_payload = {
+        'import_kind': 'bras_delta',
+        'versao': versao,
+        'delimiter': _normalize_delimiter(delimiter),
+        'quotechar': '"',
+        'encoding': encoding,
+        'skip_header': skip_header,
+        'data_ref': data_ref,
+        'truncate': truncate,
+        'uf_values': uf_values,
+        'uf_default': uf_default,
+        'aliquota': str(aliquota_value) if aliquota_value is not None else None,
+        'catalog_encoding': catalog_encoding,
+        'catalog_delimiter': _normalize_delimiter(catalog_delimiter),
+        'previous_catalog_version': catalog_prev_versao,
+        'catalog_data_path': catalog_data_path,
+    }
+    job = ImportJob(
+        id=job_id,
+        origem='BRAS',
+        original_filename=label_on,
+        data_path=str(data_path),
+        status=ImportJobStatus.PENDING.value,
+        message='Aguardando processamento do delta...',
+        versao=versao,
+        aliquota=aliquota_value,
+        uf_list=', '.join(uf_values),
+        params=params_payload,
+    )
+    try:
+        db.session.add(job)
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({'status': 'error', 'message': f'Falha ao registrar o job: {exc}'}), 500
+
+    inline_env = (os.getenv('INSUMO_IMPORT_RUN_INLINE') or '').strip().lower()
+    if inline_env in {'1', 'true', 'yes', 'on'}:
+        _run_import_job(job_id)
+        job = ImportJob.query.get(job_id)
+        if not job or job.status != ImportJobStatus.SUCCESS.value:
+            err = (job.message if job else None) or 'Falha na importação delta.'
+            return jsonify({'status': 'error', 'message': err, 'inline': True}), 500
+        m = (job.params or {}).get('_metrics') or {}
+        d = m.get('delta_brasindice') or {}
+        return jsonify(
+            {
+                'status': 'ok',
+                'message': job.message,
+                'inline': True,
+                'versao': d.get('versao') or versao,
+                'novos': d.get('novos', 0),
+                'novos_importados': d.get('novos_importados', 0),
+                'alterados': d.get('alterados', 0),
+                'total_processado': d.get('total_processado', 0),
+                'catalog_current_version': d.get('catalog_current_version'),
+                'catalog_previous_version': d.get('catalog_previous_version'),
+                'catalog_new': d.get('catalog_new', 0),
+                'catalog_changed': d.get('catalog_changed', 0),
+                'catalog_removed': d.get('catalog_removed', 0),
+            }
         )
-        
-        uf_info = f" UFs: {', '.join(uf_values)}" if uf_values else ""
-        aliq_info = f" Alíq: {aliquota_value}%" if aliquota_value else ""
-        
-        return jsonify({
+
+    _spawn_async_import(job_id)
+    prefix = job_id[:8]
+    return jsonify(
+        {
             'status': 'ok',
-            'message': f"Importação incremental concluída: {result['novos']} novos, {result['alterados']} atualizados.{aliq_info}{uf_info}",
-            'versao': result['versao'],
-            'novos': result['novos'],
-            'novos_importados': result['novos_importados'],
-            'alterados': result['alterados'],
-            'total_processado': result['total_processado'],
-        })
-    except Exception as exc:
-        app.logger.exception('Erro ao importar delta Brasíndice')
-        return jsonify({'status': 'error', 'message': str(exc)}), 500
-    finally:
-        tmp_path.unlink(missing_ok=True)
+            'message': f'Delta enfileirado (protocolo {prefix}). Acompanhe o status em "Importações em andamento".',
+            'job_id': job_id,
+            'prefix': prefix,
+            'inline': False,
+        }
+    )
+
+
+@app.route('/insumos/bras/edicoes-cadastro', methods=['GET'])
+@admin_required
+@feature_required('insumos')
+def insumos_bras_edicoes_cadastro():
+    """Lista `edicao` distintas em `bras_item_cadastro` (e fallback em `bras_item_n`) para o usuário alinhar o campo com a col. 14 do TXT."""
+    lim = request.args.get('limit', '40')
+    try:
+        n = int(lim)
+    except ValueError:
+        n = 40
+    n = min(100, max(1, n))
+    items: list[str] = []
+    try:
+        r1 = db.session.execute(
+            text(
+                'SELECT DISTINCT TRIM(edicao) AS e FROM bras_item_cadastro '
+                "WHERE edicao IS NOT NULL AND TRIM(edicao) <> '' ORDER BY e DESC LIMIT :lim"
+            ),
+            {'lim': n},
+        )
+        items = [row[0] for row in r1 if row[0]]
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning('edicoes-cadastro (split): %s', exc)
+    if len(items) < 5:
+        try:
+            r2 = db.session.execute(
+                text(
+                    'SELECT DISTINCT TRIM(edicao) AS e FROM bras_item_n '
+                    "WHERE edicao IS NOT NULL AND TRIM(edicao) <> '' ORDER BY e DESC LIMIT :lim"
+                ),
+                {'lim': n},
+            )
+            extra = [row[0] for row in r2 if row[0]]
+            seen = set(items)
+            for e in extra:
+                if e not in seen:
+                    seen.add(e)
+                    items.append(e)
+        except Exception as exc:  # noqa: BLE001
+            app.logger.debug('edicoes-cadastro fallback n: %s', exc)
+    return jsonify({'items': items[:n]})
+
+
+@app.route('/insumos/bras/import-precos', methods=['POST'])
+@admin_required
+@feature_required('insumos')
+def insumos_bras_import_precos():
+    """Atualiza somente preços (layout TXT D) para itens já existentes no cadastro split; opcionalmente replica em legacy."""
+    upload = request.files.get('arquivo')
+    if not upload or not upload.filename:
+        return jsonify({'status': 'error', 'message': 'Selecione um arquivo para importar.'}), 400
+    versao = (request.form.get('versao') or '').strip()
+    if not versao:
+        return jsonify({'status': 'error', 'message': 'Informe a versão/edição da tabela (deve bater com o cadastro).'}), 400
+    aliquota_input = (request.form.get('aliquota') or '').strip()
+    if not aliquota_input:
+        return jsonify({'status': 'error', 'message': 'Informe a alíquota (%) deste arquivo.'}), 400
+    al_str = _coerce_decimal(aliquota_input)
+    if al_str is None:
+        return jsonify({'status': 'error', 'message': 'Alíquota inválida.'}), 400
+    alq = _br_norm_aliquota(Decimal(str(al_str)))
+    if alq is None:
+        return jsonify({'status': 'error', 'message': 'Alíquota inválida.'}), 400
+    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
+    uf_values = _normalize_uf_codes(raw_ufs)
+    if not uf_values:
+        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
+    delimiter = request.form.get('delimiter') or ','
+    encoding = (request.form.get('encoding') or 'latin-1').strip()
+    skip_header = request.form.get('skip_header') == 'on'
+    no_legacy = request.form.get('no_legacy') == 'on'
+    job_id = uuid4().hex
+    job_dir = INSUMO_IMPORT_ASYNC_DIR / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    main_name = secure_filename(upload.filename) or f'bras_precos_{job_id}.txt'
+    data_path = job_dir / main_name
+    try:
+        upload.save(str(data_path))
+    except Exception as exc:  # noqa: BLE001
+        shutil.rmtree(job_dir, ignore_errors=True)
+        app.logger.exception('Erro ao salvar arquivo import-precos Brasíndice')
+        return jsonify({'status': 'error', 'message': f'Falha ao salvar o arquivo: {exc}'}), 500
+    label_on = secure_filename(upload.filename) or 'Brasíndice preços'
+    params_payload = {
+        'import_kind': 'bras_import_precos',
+        'versao': versao,
+        'delimiter': _normalize_delimiter(delimiter),
+        'quotechar': '"',
+        'encoding': encoding,
+        'skip_header': skip_header,
+        'aliquota': str(alq),
+        'uf_values': uf_values,
+        'uf_default': uf_values[0] if uf_values else None,
+        'no_legacy': no_legacy,
+    }
+    job = ImportJob(
+        id=job_id,
+        origem='BRAS',
+        original_filename=label_on,
+        data_path=str(data_path),
+        status=ImportJobStatus.PENDING.value,
+        message='Aguardando importação de preços (split)...',
+        versao=versao,
+        aliquota=alq,
+        uf_list=', '.join(uf_values),
+        params=params_payload,
+    )
+    try:
+        db.session.add(job)
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        shutil.rmtree(job_dir, ignore_errors=True)
+        return jsonify({'status': 'error', 'message': f'Falha ao registrar o job: {exc}'}), 500
+    inline_env = (os.getenv('INSUMO_IMPORT_RUN_INLINE') or '').strip().lower()
+    if inline_env in {'1', 'true', 'yes', 'on'}:
+        _run_import_job(job_id)
+        job = ImportJob.query.get(job_id)
+        if not job or job.status != ImportJobStatus.SUCCESS.value:
+            err = (job.message if job else None) or 'Falha na importação de preços.'
+            return jsonify({'status': 'error', 'message': err, 'inline': True}), 500
+        m = (job.params or {}).get('_metrics') or {}
+        stp = m.get('bras_somente_precos') or {}
+        return jsonify(
+            {
+                'status': 'ok',
+                'message': job.message,
+                'inline': True,
+                'bras_somente_precos': stp,
+            }
+        )
+    _spawn_async_import(job_id)
+    prefix = job_id[:8]
+    return jsonify(
+        {
+            'status': 'ok',
+            'message': f'Importação de preços enfileirada (protocolo {prefix}). Acompanhe em "Importações em andamento".',
+            'job_id': job_id,
+            'prefix': prefix,
+            'inline': False,
+        }
+    )
 
 
 @app.route('/insumos/import/jobs')

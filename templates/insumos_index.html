@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+﻿{% extends 'base.html' %}
 
 {% block title %}Simpro & Brasíndice{% endblock %}
 {% block page_title %}Simpro & Brasíndice{% endblock %}
@@ -383,7 +383,7 @@
     -webkit-overflow-scrolling: touch;
   }
 
-  /* ===== BOTÕES ===== */
+  /* ===== BOTÃ•ES ===== */
   .btn-outline-secondary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -742,7 +742,7 @@
 const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
 (function(){
-  // ===== INICIALIZAÇÃO DE ELEMENTOS DO DOM =====
+  // ===== INICIALIZAÃ‡ÃƒO DE ELEMENTOS DO DOM =====
   // Elementos da página
   const form = document.getElementById('insumoFilters');
   const tbody = document.getElementById('resultadoBody');
@@ -753,9 +753,9 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   if(initialLoading) {
     initialLoading.classList.remove('visible');
     initialLoading.classList.add('d-none');
-    console.log('✅ SPINNER INICIALMENTE OCULTO');
+    console.log('âœ… SPINNER INICIALMENTE OCULTO');
   } else {
-    console.error('❌ SPINNER NÃO ENCONTRADO!');
+    console.error('âŒ SPINNER NÃƒO ENCONTRADO!');
   }
 
   // Define mensagem inicial no resumo
@@ -801,7 +801,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   function toggleLoading(state) {
     const el = document.getElementById('resultadoLoading');
     if(!el) {
-      console.error('⚠️ Elemento resultadoLoading não encontrado no DOM!');
+      console.error('âš ï¸ Elemento resultadoLoading nÃ£o encontrado no DOM!');
       return;
     }
 
@@ -810,7 +810,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         // Mostra spinner adicionando classe visible
         el.classList.add('visible');
         el.classList.remove('d-none');
-        console.log('✅ SPINNER MOSTRADO - Elemento visível');
+        console.log('âœ… SPINNER MOSTRADO - Elemento visÃ­vel');
 
         // Limpa fallback anterior se existir
         if(spinnerFallbackTimeout) {
@@ -819,17 +819,17 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
         // Define fallback: se após 20s o spinner ainda estiver visível, ocultá-lo forçadamente
         spinnerFallbackTimeout = setTimeout(() => {
-          console.warn('⚠️ FALLBACK: Spinner visível por mais de 20s, ocultando forçadamente');
+          console.warn('âš ï¸ FALLBACK: Spinner visÃ­vel por mais de 20s, ocultando forÃ§adamente');
           el.classList.remove('visible');
           el.classList.add('d-none');
           isLoading = false;
-          resumo.textContent = '⚠️ A requisição demorou muito. Tente novamente.';
+          resumo.textContent = 'âš ï¸ A requisiÃ§Ã£o demorou muito. Tente novamente.';
         }, 20000);
       } else {
         // Oculta spinner removendo classe visible
         el.classList.remove('visible');
         el.classList.add('d-none');
-        console.log('✅ SPINNER OCULTADO');
+        console.log('âœ… SPINNER OCULTADO');
 
         // Limpa fallback
         if(spinnerFallbackTimeout) {
@@ -838,7 +838,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         }
       }
     } catch(e) {
-      console.error('❌ Erro ao alterar visibilidade do spinner:', e);
+      console.error('âŒ Erro ao alterar visibilidade do spinner:', e);
     }
   }
 
@@ -918,6 +918,40 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   }
 
   /**
+   * Formata data ISO para DD/MM/AAAA
+   * @param {any} value - Data em formato ISO
+   * @returns {string} Data formatada
+   */
+  function formatDateBr(value) {
+    if(!value) return '—';
+    const raw = String(value).trim();
+    if(!raw) return '—';
+    const datePart = raw.includes('T') ? raw.split('T')[0] : raw;
+    const parts = datePart.split('-');
+    if(parts.length === 3) {
+      const [year, month, day] = parts;
+      if(year && month && day) return `${day}/${month}/${year}`;
+    }
+    return raw;
+  }
+
+  /**
+   * Exibe indicador de fracionamento do item
+   * @param {any} value - Campo fracionavel vindo da API
+   * @returns {string} Sim / Não / —
+   */
+  function formatFracionavel(value) {
+    if(value === null || value === undefined || value === '') {
+      return '—';
+    }
+    if(typeof value === 'boolean') return value ? 'Sim' : 'Não';
+    const normalized = String(value).trim().toUpperCase();
+    if(['S', 'SIM', 'Y', 'YES', '1', 'TRUE'].includes(normalized)) return 'Sim';
+    if(['N', 'NAO', 'NÃO', 'NO', '0', 'FALSE'].includes(normalized)) return 'Não';
+    return normalized;
+  }
+
+  /**
    * Extrai número TUSS válido do item
    * @param {Object} item - Objeto do insumo
    * @returns {string} Código TUSS
@@ -931,6 +965,25 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     return digits || raw || '—';
   }
 
+  function formatSimproCodes(item) {
+    if(!item || item.origem !== 'SIMPRO') return '';
+    const parts = [];
+    if(item.codigo_simpro) parts.push(`SIMPRO: ${item.codigo_simpro}`);
+    if(item.codigo_usuario && item.codigo_usuario !== item.codigo_simpro) parts.push(`Usuário: ${item.codigo_usuario}`);
+    if(item.codigo_fracao) parts.push(`Fração: ${item.codigo_fracao}`);
+    return parts.join(' · ');
+  }
+
+  function formatSimproPackaging(item) {
+    if(!item || item.origem !== 'SIMPRO') return '';
+    const parts = [];
+    if(item.embalagem) parts.push(`Embalagem: ${item.embalagem}`);
+    if(item.qtd_unidade !== null && item.qtd_unidade !== undefined && item.qtd_unidade !== '') {
+      parts.push(`Qtd.: ${item.qtd_unidade}`);
+    }
+    return parts.join(' · ');
+  }
+
   /**
    * Renderiza link para consulta ANVISA
    * @param {string} anvisa - Código ANVISA
@@ -940,8 +993,13 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     if(!anvisa) return '—';
     const code = String(anvisa).trim();
     if(!code) return '—';
-    const url = `https://consultas.anvisa.gov.br/#/medicamentos/q/?numeroRegistro=${encodeURIComponent(code)}`;
-    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-primary">${escapeHtml(code)}</a>`;
+    const digits = code.replace(/\D+/g, '');
+    let queryCode = digits || code;
+    if(digits.length >= 9) {
+      queryCode = digits.slice(0, 9);
+    }
+    const url = `https://consultas.anvisa.gov.br/#/medicamentos/q/?numeroRegistro=${encodeURIComponent(queryCode)}`;
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="text-primary" title="Consulta ANVISA pelo registro ${escapeHtml(queryCode)}">${escapeHtml(code)}</a>`;
   }
 
   /**
@@ -993,16 +1051,21 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const ufForDetail = ufCodes.length ? ufCodes[0] : (item.uf_referencia || '');
       const aliquota = formatAliquota(item.aliquota);
       const tussDisplay = escapeHtml(formatTussValue(item));
+      const simproCodes = escapeHtml(formatSimproCodes(item));
+      const simproPackaging = escapeHtml(formatSimproPackaging(item));
       const anvisaHtml = renderAnvisaLink(item.anvisa);
       const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
       const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
+      const codigoMeta = item.origem === 'SIMPRO'
+        ? `<div class="text-muted small">${simproCodes || 'SIMPRO: —'}</div>${simproPackaging ? `<div class="text-muted small">${simproPackaging}</div>` : ''}`
+        : `<div class="text-muted small">TISS: ${escapeHtml(item.tiss || '—')}</div>`;
 
       return `
         <tr>
           <td class="fw-600 small">${origem}</td>
           <td class="small">
             <div class="fw-600">${tussDisplay}</div>
-            <div class="text-muted small">TISS: ${escapeHtml(item.tiss || '—')}</div>
+            ${codigoMeta}
           </td>
           <td class="small">
             <div class="fw-600">${escapeHtml(item.descricao || '')}</div>
@@ -1037,14 +1100,14 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
   async function carregar() {
     // Evita requisições simultâneas (deduplicação)
     if(isLoading) {
-      console.log('⚠️ Requisição já em andamento, ignorando nova tentativa');
+      console.log('âš ï¸ RequisiÃ§Ã£o jÃ¡ em andamento, ignorando nova tentativa');
       return;
     }
 
     // Validação: UF é obrigatória
     const ufSel = document.getElementById('fUf').value.trim();
     if(!ufSel) {
-      resumo.textContent = '⚠ Selecione uma UF para buscar';
+      resumo.textContent = 'âš  Selecione uma UF para buscar';
       tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">Selecione uma UF</td></tr>';
       btnPrev.disabled = true;
       btnNext.disabled = true;
@@ -1075,13 +1138,13 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       }, 15000);
 
       // Requisição à API
-      console.log('🔄 Iniciando requisição para:', `{{ url_for('insumos_search') }}?${params.toString()}`);
+      console.log('ðŸ”„ Iniciando requisiÃ§Ã£o para:', `{{ url_for('insumos_search') }}?${params.toString()}`);
       const response = await fetch(`{{ url_for('insumos_search') }}?${params.toString()}`, {
         signal: controller.signal
       });
 
       clearTimeout(timeoutId);
-      console.log('✅ Resposta recebida, status:', response.status);
+      console.log('âœ… Resposta recebida, status:', response.status);
 
       if(!response.ok) {
         if(response.status === 302 || response.status === 301) {
@@ -1093,7 +1156,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       // Verifica se é realmente JSON
       const contentType = response.headers.get('content-type');
       if(!contentType || !contentType.includes('application/json')) {
-        console.warn('⚠️ Resposta não é JSON. Content-Type:', contentType);
+        console.warn('âš ï¸ Resposta nÃ£o Ã© JSON. Content-Type:', contentType);
         throw new Error('Resposta inválida da servidor. Tente fazer login novamente.');
       }
 
@@ -1108,13 +1171,14 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
       const items = payload.items || [];
       const pagination = payload.pagination || {};
+      const emptyHint = payload.empty_hint || '';
       const total = Number(pagination.total || 0);
 
       // Atualiza variáveis de paginação
       page = Number(pagination.page || 1);
       totalPages = Number(pagination.pages || 0);
 
-      console.log('📊 Dados recebidos:', {items: items.length, total, pages: totalPages});
+      console.log('ðŸ“Š Dados recebidos:', {items: items.length, total, pages: totalPages});
 
       // Renderiza linhas na tabela
       renderRows(items);
@@ -1125,14 +1189,17 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         const end = start + items.length - 1;
         resumo.textContent = `Mostrando ${start}–${end} de ${total.toLocaleString('pt-BR')} itens`;
       } else {
-        resumo.textContent = 'Nenhum item encontrado';
+        resumo.textContent = emptyHint || 'Nenhum item encontrado';
+        if(emptyHint) {
+          tbody.innerHTML = `<tr><td colspan="10" class="text-center text-warning py-4">${escapeHtml(emptyHint)}</td></tr>`;
+        }
       }
 
       // Atualiza estado dos botões de paginação
       btnPrev.disabled = page <= 1;
       btnNext.disabled = !totalPages || page >= totalPages;
 
-      console.log('✅ Renderização concluída com sucesso');
+      console.log('âœ… RenderizaÃ§Ã£o concluÃ­da com sucesso');
     } catch(err) {
       // Limpa timeout em caso de erro
       if(timeoutId) clearTimeout(timeoutId);
@@ -1143,8 +1210,8 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         mensagemErro = 'Requisição expirou (timeout de 15s). A API está lenta.';
       }
 
-      console.error('❌ Erro ao carregar itens:', err);
-      resumo.textContent = '❌ ' + mensagemErro;
+      console.error('âŒ Erro ao carregar itens:', err);
+      resumo.textContent = 'âŒ ' + mensagemErro;
       tbody.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">Erro ao carregar: ${mensagemErro}</td></tr>`;
     } finally {
       // Remove spinner SEMPRE e reseta flag de loading
@@ -1156,11 +1223,11 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const btnBuscar = document.getElementById('btnBuscar');
       if(btnBuscar) btnBuscar.disabled = false;
 
-      console.log('✅ Carregamento finalizado, spinner ocultado, botões habilitados');
+      console.log('âœ… Carregamento finalizado, spinner ocultado, botÃµes habilitados');
     }
   }
 
-  // ===== EVENT LISTENERS - FORMULÁRIO E PAGINAÇÃO =====
+  // ===== EVENT LISTENERS - FORMULÃRIO E PAGINAÃ‡ÃƒO =====
 
   /** Submissão do formulário de filtros */
   form.addEventListener('submit', (evt) => {
@@ -1184,10 +1251,10 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     // Ignora a primeira mudança que é o carregamento inicial do valor padrão
     if(!userInteractedWithPerPage) {
       userInteractedWithPerPage = true;
-      console.log('ℹ️ Evento de mudança inicial do per_page ignorado');
+      console.log('â„¹ï¸ Evento de mudanÃ§a inicial do per_page ignorado');
       return;
     }
-    console.log('ℹ️ Mudança de per_page detectada, recarregando página 1');
+    console.log('â„¹ï¸ MudanÃ§a de per_page detectada, recarregando pÃ¡gina 1');
     page = 1;  // Volta à primeira página
     carregar();
   });
@@ -1247,7 +1314,6 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     const entries = [
       ['Origem', data.origem],
       ['TUSS', formatTussValue(data)],
-      ['TISS', data.tiss || '—'],
       ['ANVISA', renderAnvisaLink(data.anvisa)],
       ['Descrição', data.descricao || ''],
       ['Fabricante', data.fabricante || '—'],
@@ -1258,6 +1324,22 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       ['Versão', data.versao_tabela || '—'],
       ['Atualizado', data.updated_at ? data.updated_at.split('T')[0] : '—']
     ];
+
+    if(data.origem === 'SIMPRO') {
+      entries.splice(2, 0,
+        ['Código SIMPRO', data.codigo_simpro || '—'],
+        ['Código Usuário', data.codigo_usuario || '—'],
+        ['Referência', data.referencia || '?'],
+        ['Classificação do material', data.classificacao || '—'],
+        ['Código Fração', data.codigo_fracao || '—'],
+        ['Fracionável', formatFracionavel(data.fracionavel)],
+        ['Embalagem', data.embalagem || '—'],
+        ['Quantidade na Embalagem', data.qtd_unidade ?? '—'],
+        ['Validade ANVISA', formatDateBr(data.validade_anvisa)]
+      );
+    } else {
+      entries.splice(2, 0, ['TISS', data.tiss || '—']);
+    }
 
     const entriesMarkup = entries.map(([label, value]) => {
       const isAnvisa = label === 'ANVISA';
@@ -1273,7 +1355,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     modalBody.innerHTML = `<div>${entriesMarkup}</div>`;
   }
 
-  // ===== INICIALIZAÇÃO DO AUTOCOMPLETE =====
+  // ===== INICIALIZAÃ‡ÃƒO DO AUTOCOMPLETE =====
   // Inicializa autocomplete após DOM estar pronto
   document.addEventListener('DOMContentLoaded', function() {
     if (typeof InsumoAutocomplete !== 'undefined') {
@@ -1291,7 +1373,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       autocomplete.init('fTiss', 'tiss');
       autocomplete.init('fAnvisa', 'anvisa');
 
-      console.log('✅ Autocomplete inicializado para todos os campos');
+      console.log('âœ… Autocomplete inicializado para todos os campos');
 
       // Expõe globalmente para debug
       window.insumosAutocomplete = autocomplete;
@@ -1310,3 +1392,4 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 <script src="{{ url_for('static', filename='js/autocomplete.js') }}"></script>
 
 {% endblock %}
+
