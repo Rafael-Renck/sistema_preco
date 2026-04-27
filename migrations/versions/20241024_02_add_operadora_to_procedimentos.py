@@ -18,8 +18,17 @@ Mudanças:
 IMPORTANTE: Esta migration pressupõe que existe uma operadora com id=1 (MPF)
 """
 
+from typing import Sequence, Union
+
 from alembic import op
 import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = "20241024_02_add_operadora_to_procedimentos"
+down_revision: Union[str, None] = "20241024_01_add_operadora_to_teto"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
