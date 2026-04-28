@@ -10,6 +10,9 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# evita bootstrap pesado da app (db.create_all/seed) durante migração
+os.environ.setdefault("SKIP_ENSURE_DB", "1")
+
 # now we can import the flask app and db
 from app import app, db  # noqa: E402
 

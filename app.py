@@ -13165,7 +13165,8 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
     raise last_err
 
 
-ensure_db()
+if os.getenv('SKIP_ENSURE_DB', '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+    ensure_db()
 
 
 # --- 6. Usuários (UI) ---
