@@ -147,6 +147,8 @@ _cbhpm_api_detail_cache = TTLCache(maxsize=2000, ttl=_cbhpm_api_cache_ttl)
 BRAS_MATERIALIZE_BATCH = _bras_clamped_batch('BRAS_MATERIALIZE_BATCH_SIZE', 2000)
 BRAS_INDEX_SYNC_BATCH = _bras_clamped_batch('BRAS_INDEX_SYNC_BATCH_SIZE', 2000)
 BRAS_RAW_CSV_BATCH = _bras_clamped_batch('BRAS_RAW_CSV_BATCH', 2000)
+# SIMPRO: INSERT único gigante pode estourar pacote/servidor; lotes por simpro_item_preco.id.
+SIMPRO_INDEX_SYNC_BATCH = _bras_clamped_batch('SIMPRO_INDEX_SYNC_BATCH_SIZE', 4000)
 
 def _load_public_api_tokens() -> set[str]:
     tokens: set[str] = set()
@@ -4918,6 +4920,7 @@ def _sync_simpro_insumo_index(
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None = None,
 ) -> None:
+    """Replica linhas de ``simpro_item_preco`` em ``insumos_index`` em lotes (evita INSERT único enorme)."""
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
     uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
     if not uf_codes and aliquota_default is not None:
@@ -4926,14 +4929,10 @@ def _sync_simpro_insumo_index(
             uf_default = uf_codes[0]
     uf_storage = _encode_uf_codes(uf_codes)
 
-    where_clause = ''
     params_base: dict[str, object] = {
         'uf_default': uf_default,
         'uf_storage': uf_storage,
     }
-    if arquivo_label:
-        params_base['arquivo'] = arquivo_label
-        where_clause = 'WHERE p.arquivo_fonte = :arquivo'
 
     preco_expr = (
         "COALESCE("
@@ -4945,7 +4944,7 @@ def _sync_simpro_insumo_index(
     descricao_expr = "TRIM(COALESCE(c.descricao, ''))"
     uf_from_preco_aliquota = _sql_insumo_uf_referencia_from_aliquota_column('p.aliquota')
 
-    upsert_template = text(
+    upsert_sql = (
         """
         INSERT INTO insumos_index (
             origem, item_id, tuss, tiss, descricao, preco, aliquota,
@@ -4987,11 +4986,49 @@ def _sync_simpro_insumo_index(
             data_atualizacao = VALUES(data_atualizacao),
             uf_referencia = VALUES(uf_referencia),
             updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql).replace('{descricao_expr}', descricao_expr).replace('{uf_from_preco_aliquota}', uf_from_preco_aliquota)
+        """
+        .replace('{preco_sql}', preco_sql)
+        .replace('{aliquota_sql}', aliquota_sql)
+        .replace('{descricao_expr}', descricao_expr)
+        .replace('{uf_from_preco_aliquota}', uf_from_preco_aliquota)
     )
 
-    db.session.execute(upsert_template, params_base)
-    db.session.commit()
+    arquivo_strip = (arquivo_label or '').strip() or None
+    last_id = 0
+    batch_num = 0
+
+    while True:
+        id_parts = ['SELECT p.id FROM simpro_item_preco p WHERE ']
+        id_params: dict[str, object] = {'last_id': last_id, 'bs': SIMPRO_INDEX_SYNC_BATCH}
+        if arquivo_strip:
+            id_parts.append('p.arquivo_fonte = :arquivo AND ')
+            id_params['arquivo'] = arquivo_strip
+        id_parts.append('p.id > :last_id ORDER BY p.id ASC LIMIT :bs')
+        id_rows = db.session.execute(text(''.join(id_parts)), id_params).fetchall()
+        if not id_rows:
+            break
+
+        ids = [int(r[0]) for r in id_rows]
+        last_id = ids[-1]
+        batch_num += 1
+
+        ids_sql = ','.join(str(i) for i in ids)
+        where_clause = f'WHERE p.id IN ({ids_sql})'
+        upsert_template = text(upsert_sql.replace('{where_clause}', where_clause))
+
+        db.session.execute(upsert_template, params_base)
+        db.session.commit()
+
+        app.logger.info(
+            'SIMPRO insumos_index lote %s (%s linhas preço, último id=%s)',
+            batch_num,
+            len(ids),
+            last_id,
+        )
+        _bras_throttle_between_batches()
+
+    if batch_num == 0:
+        app.logger.info('SIMPRO insumos_index: nenhuma linha em simpro_item_preco para sincronizar.')
 
 
 def _backfill_catalogo_simpro_identifiers() -> None:
