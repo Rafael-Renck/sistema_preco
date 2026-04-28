@@ -1,0 +1,97 @@
+﻿{% extends 'base.html' %}
+
+{% block title %}Reembolsos{% endblock %}
+{% block page_title %}Reembolsos{% endblock %}
+
+{% block content %}
+<div class="container-fluid" style="animation: fadeIn 0.4s ease;">
+  <div class="row g-4">
+    <div class="col-12 col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-header">Enviar documento</div>
+        <div class="card-body">
+          <form method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+              <label class="form-label">Tipo de documento</label>
+              <select class="form-select" name="tipo_documento">
+                <option value="AUTO">Detectar automaticamente</option>
+                <option value="NOTA_FISCAL">Nota fiscal</option>
+                <option value="RECIBO">Recibo</option>
+                <option value="COMPROVANTE">Comprovante de pagamento</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Arquivo (PDF, PNG, JPG)</label>
+              <input class="form-control" type="file" name="arquivo" required>
+              <small class="text-muted d-block mt-2">
+                OCR local. PDFs nativos sao lidos direto; scans passam por OCR quando disponivel.
+              </small>
+            </div>
+            <button class="btn btn-primary" type="submit">
+              <i class="bi bi-upload me-2"></i>Enviar
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-header d-flex align-items-center justify-content-between">
+          <span>Documentos recentes</span>
+          <span class="text-muted small">Mostrando ultimos 50</span>
+        </div>
+        <div class="card-body p-0">
+          <div class="tbl-wrap">
+            <table class="table-clean">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Arquivo</th>
+                  <th>Tipo</th>
+                  <th>Status</th>
+                  <th>OCR</th>
+                  <th>Acoes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% if documentos %}
+                  {% for doc in documentos %}
+                  <tr>
+                    <td class="nowrap">{{ doc.id }}</td>
+                    <td>{{ doc.original_filename }}</td>
+                    <td>{{ doc.tipo_documento }}</td>
+                    <td>
+                      <span class="badge bg-{{ 'success' if doc.status == 'VALIDADO' else ('danger' if doc.status == 'REJEITADO' else 'warning') }}">
+                        {{ doc.status }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="badge bg-{{ 'success' if doc.ocr_status in ['OCR_OK', 'PDF_NATIVE'] else ('warning' if doc.ocr_status == 'OCR_NAO_DISPONIVEL' else 'danger') }}">
+                        {{ doc.ocr_status or 'N/A' }}
+                      </span>
+                    </td>
+                    <td class="nowrap">
+                      <a class="btn btn-sm btn-outline-primary" href="{{ url_for('reembolsos_review', doc_id=doc.id) }}">
+                        Validar
+                      </a>
+                      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('reembolsos_arquivo', doc_id=doc.id) }}" target="_blank">
+                        Arquivo
+                      </a>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                {% else %}
+                  <tr>
+                    <td colspan="6" class="text-center text-muted">Nenhum documento enviado.</td>
+                  </tr>
+                {% endif %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

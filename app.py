@@ -27,7 +27,7 @@ from flask_sqlalchemy import SQLAlchemy
 import pymysql
 from dotenv import load_dotenv
 from functools import wraps
-from sqlalchemy import text, or_, and_, func
+from sqlalchemy import text, or_, and_, func, false
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
@@ -912,6 +912,10 @@ class ImportJobStatus(Enum):
     FAILED = 'FAILED'
 
 
+class ImportPauseRequested(RuntimeError):
+    """Sinaliza que a importação foi pausada sob solicitação do usuário."""
+
+
 class ImportJob(db.Model):
     __tablename__ = 'insumo_import_jobs'
 
@@ -951,6 +955,43 @@ def _job_message_trim(message: str | None, *, limit: int = 500) -> str | None:
     if len(msg) <= limit:
         return msg
     return msg[: limit - 3] + '...'
+
+
+_IMPORT_JOB_CONTEXT = threading.local()
+_IMPORT_PAUSE_REQUESTS_LOCK = threading.Lock()
+_IMPORT_PAUSE_REQUESTS: set[str] = set()
+
+
+def _set_current_import_job(job_id: str | None) -> None:
+    _IMPORT_JOB_CONTEXT.job_id = job_id
+
+
+def _get_current_import_job() -> str | None:
+    return getattr(_IMPORT_JOB_CONTEXT, 'job_id', None)
+
+
+def _request_import_pause(job_id: str) -> None:
+    with _IMPORT_PAUSE_REQUESTS_LOCK:
+        _IMPORT_PAUSE_REQUESTS.add(job_id)
+
+
+def _clear_import_pause_request(job_id: str) -> None:
+    with _IMPORT_PAUSE_REQUESTS_LOCK:
+        _IMPORT_PAUSE_REQUESTS.discard(job_id)
+
+
+def _is_import_pause_requested(job_id: str | None = None) -> bool:
+    target = job_id or _get_current_import_job()
+    if not target:
+        return False
+    with _IMPORT_PAUSE_REQUESTS_LOCK:
+        return target in _IMPORT_PAUSE_REQUESTS
+
+
+def _raise_if_import_paused(job_id: str | None = None) -> None:
+    target = job_id or _get_current_import_job()
+    if target and _is_import_pause_requested(target):
+        raise ImportPauseRequested('Importação pausada pelo usuário.')
 
 class BrasRaw(db.Model):
     __tablename__ = 'bras_raw'
@@ -1151,6 +1192,90 @@ class SimproItem(db.Model):
         server_default=text('CURRENT_TIMESTAMP'),
         server_onupdate=text('CURRENT_TIMESTAMP'),
     )
+
+
+class SimproItemCadastro(db.Model):
+    """Cadastro SIMPRO por identidade (versão + item-chave)."""
+
+    __tablename__ = 'simpro_item_cadastro'
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    versao = db.Column(db.String(100), nullable=False, index=True)
+    item_key = db.Column(db.String(64), nullable=False, index=True)
+    tuss_numero = db.Column(db.String(16), nullable=True, index=True)
+    codigo = db.Column(db.String(20), nullable=True, index=True)
+    codigo_interno = db.Column(db.String(20), nullable=True)
+    codigo_alt = db.Column(db.String(20), nullable=True)
+    descricao = db.Column(db.String(255), nullable=True, index=True)
+    fabricante = db.Column(db.String(80), nullable=True)
+    referencia = db.Column(db.String(120), nullable=True)
+    anvisa = db.Column(db.String(20), nullable=True, index=True)
+    ean = db.Column(db.String(32), nullable=True, index=True)
+    unidade = db.Column(db.String(16), nullable=True)
+    qtd_unidade = db.Column(db.Integer, nullable=True)
+    fracionavel = db.Column(db.String(1), nullable=True)
+    status_final = db.Column(db.String(8), nullable=True)
+    data_ref = db.Column(db.Date, nullable=True)
+    linha_num = db.Column(db.Integer, nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True, server_default=text('CURRENT_TIMESTAMP'))
+
+    __table_args__ = (
+        db.UniqueConstraint('versao', 'item_key', name='uq_simpro_cadastro_versao_item'),
+        db.Index('idx_simpro_cad_versao_item', 'versao', 'item_key'),
+    )
+
+
+class SimproItemPreco(db.Model):
+    """Preços SIMPRO por alíquota para cada cadastro."""
+
+    __tablename__ = 'simpro_item_preco'
+
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    cadastro_id = db.Column(db.BigInteger, db.ForeignKey('simpro_item_cadastro.id'), nullable=False, index=True)
+    aliquota = db.Column(db.Numeric(6, 2), nullable=False, index=True)
+    preco1 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco2 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco3 = db.Column(db.Numeric(15, 4), nullable=True)
+    preco4 = db.Column(db.Numeric(15, 4), nullable=True)
+    arquivo_fonte = db.Column(db.String(255), nullable=True)
+    imported_at = db.Column(db.DateTime, nullable=True, server_default=text('CURRENT_TIMESTAMP'))
+
+    __table_args__ = (
+        db.UniqueConstraint('cadastro_id', 'aliquota', name='uq_simpro_preco_cadastro_aliquota'),
+        db.Index('idx_simpro_preco_cad', 'cadastro_id', 'aliquota'),
+    )
+
+
+def _cleanup_simpro_cadastro_orphans(cadastro_ids: Sequence[int] | None = None) -> int:
+    query = SimproItemCadastro.query
+    if cadastro_ids is not None:
+        ids = [int(cid) for cid in cadastro_ids if cid is not None]
+        if not ids:
+            return 0
+        query = query.filter(SimproItemCadastro.id.in_(ids))
+    rows = query.with_entities(SimproItemCadastro.id).all()
+    if not rows:
+        return 0
+    target_ids = [int(row.id) for row in rows if row.id is not None]
+    if not target_ids:
+        return 0
+
+    referenced = {
+        int(row.cadastro_id)
+        for row in db.session.query(SimproItemPreco.cadastro_id)
+        .filter(SimproItemPreco.cadastro_id.in_(target_ids))
+        .all()
+        if row.cadastro_id is not None
+    }
+    orphan_ids = [cid for cid in target_ids if cid not in referenced]
+    if not orphan_ids:
+        return 0
+    deleted = (
+        SimproItemCadastro.query
+        .filter(SimproItemCadastro.id.in_(orphan_ids))
+        .delete(synchronize_session=False)
+    ) or 0
+    return int(deleted)
 
 
 class SimproFixedStage(db.Model):
@@ -1547,6 +1672,10 @@ def _ensure_anvisa_from_line(record: dict[str, object | None], line: str) -> Non
         return
 
     current_digits = ''.join(ch for ch in current_text if ch.isdigit()) if current_text else ''
+    if 11 <= len(current_digits) <= 13:
+        # Já temos um registro plausível (11-13 dígitos); evita sobrescrever
+        # com concatenações longas encontradas no meio da linha fixa.
+        return
 
     preferred: str | None = None
     inline_match = _ANVISA_INLINE_RE.search(line)
@@ -1612,6 +1741,12 @@ def _build_simpro_payload(record: dict[str, object | None], field_map: dict[str,
         value = record[source]
         if target == 'tuss_numero':
             value = _format_tuss_display(None, value)
+        elif target == 'unidade' and isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                value = cleaned.split()[0]
+            else:
+                value = None
         elif isinstance(value, str):
             value = value.strip() or None
         payload[target] = value
@@ -2230,18 +2365,29 @@ def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str,
     import time
     
     total_deleted = 0
-    
+    last_id = 0
+
     while True:
-        # Primeiro, busca os IDs a deletar
+        # Primeiro, busca os IDs a deletar usando cursor por ID para evitar repetir lote.
         ids_result = db.session.execute(
-            text(f"SELECT id FROM {item_table} WHERE arquivo = :arquivo LIMIT :batch_size"),
-            {'arquivo': arquivo_label, 'batch_size': batch_size}
+            text(
+                f"""
+                SELECT id
+                FROM {item_table}
+                WHERE arquivo = :arquivo
+                  AND id > :last_id
+                ORDER BY id ASC
+                LIMIT :batch_size
+                """
+            ),
+            {'arquivo': arquivo_label, 'last_id': last_id, 'batch_size': batch_size}
         ).fetchall()
         
         if not ids_result:
             break
         
         ids = [row[0] for row in ids_result]
+        last_id = ids[-1]
         
         # Deleta do insumos_index usando os IDs
         if ids:
@@ -2265,7 +2411,7 @@ def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str,
         # Pequena pausa entre batches
         time.sleep(0.05)
         
-        # Se buscou menos que o batch, pode ter mais - continua
+        # Se buscou menos que o batch, chegou ao fim da paginação.
         if len(ids) < batch_size:
             break
     
@@ -2390,6 +2536,8 @@ def _delete_existing_simpro_records(
     # Modo 2: Limpar TUDO (truncate sem filtro)
     if truncate:
         _delete_with_retry("DELETE FROM insumos_index WHERE origem = 'SIMPRO'", {})
+        db.session.execute(text('TRUNCATE TABLE simpro_item_preco'))
+        db.session.execute(text('TRUNCATE TABLE simpro_item_cadastro'))
         db.session.execute(text('TRUNCATE TABLE simpro_item_norm'))
         db.session.execute(text('TRUNCATE TABLE simpro_fixed_stage'))
         db.session.commit()
@@ -2400,10 +2548,31 @@ def _delete_existing_simpro_records(
         return
 
     params = {'arquivo': arquivo_label}
-    # Deletar insumos_index primeiro (usando a função de batch por IDs)
-    _delete_insumos_by_arquivo('SIMPRO', 'simpro_item_norm', arquivo_label)
+
+    # Novo split SIMPRO: limpar preços por arquivo + índice vinculado aos cadastros tocados.
+    cadastro_ids = [
+        int(row.cadastro_id)
+        for row in db.session.query(SimproItemPreco.cadastro_id)
+        .filter(SimproItemPreco.arquivo_fonte == arquivo_label)
+        .all()
+        if row.cadastro_id is not None
+    ]
+    if cadastro_ids:
+        (
+            InsumoIndex.query
+            .filter(
+                InsumoIndex.origem == 'SIMPRO',
+                InsumoIndex.item_id.in_(cadastro_ids),
+            )
+            .delete(synchronize_session=False)
+        )
+    _delete_with_retry('DELETE FROM simpro_item_preco WHERE arquivo_fonte = :arquivo', params)
+    _cleanup_simpro_cadastro_orphans(cadastro_ids)
+
+    # Legacy pipeline SIMPRO (mantido para retrocompatibilidade durante transição).
     _delete_with_retry('DELETE FROM simpro_item_norm WHERE arquivo = :arquivo', params)
     _delete_with_retry('DELETE FROM simpro_fixed_stage WHERE arquivo = :arquivo', params)
+    db.session.commit()
 
 
 def _bras_load_data_delimited(
@@ -2473,6 +2642,7 @@ def _bras_csv_fallback(
                 linha_num = 0
                 
                 for idx, raw in enumerate(reader, start=1):
+                    _raise_if_import_paused()
                     if skip_header and idx == 1:
                         continue
                     linha_num += 1
@@ -2523,6 +2693,7 @@ def _stage_simpro_fixed(
             with file_path.open('r', encoding=enc, newline='') as handle:
                 logical_idx = 0
                 for raw_idx, raw_line in enumerate(handle, start=1):
+                    _raise_if_import_paused()
                     if skip_header and raw_idx == 1:
                         continue
                     line = raw_line.rstrip('\r\n')
@@ -2626,105 +2797,118 @@ def _materialize_simpro_items(
     postprocess_cfg = map_config.get('postprocess') if isinstance(map_config.get('postprocess'), dict) else None
     field_map = _resolve_simpro_field_map(map_config)
 
-    rows = (
-        SimproFixedStage.query
-        .filter_by(arquivo=arquivo_label)
-        .order_by(SimproFixedStage.linha_num.asc())
-        .all()
-    )
-
-    parsed_rows: list[dict] = []
-    for stage in rows:
-        line = stage.linha or ''
-        record: dict[str, object | None] = {
-            'id': stage.id,
-            'arquivo': stage.arquivo,
-            'linha_num': stage.linha_num,
-            'versao': versao,
-            'uf_referencia': uf_default,
-            'imported_at': stage.imported_at,
-        }
-        for cfg in columns_cfg:
-            if not isinstance(cfg, dict):
-                continue
-            name = (cfg.get('name') or '').strip()
-            if not name:
-                continue
-            start = max(int(cfg.get('start', 1)) - 1, 0)
-            length = max(int(cfg.get('length', 0)), 0)
-            if length <= 0:
-                record[name] = None
-                continue
-            raw_value = line[start:start + length]
-            if cfg.get('strip') and isinstance(cfg['strip'], (list, tuple)):
-                for ch in cfg['strip']:
-                    raw_value = raw_value.replace(str(ch), '')
-            if cfg.get('rtrim'):
-                raw_value = raw_value.rstrip()
-            value = raw_value.strip()
-            if not value:
-                record[name] = None
-                continue
-
-            value_type = (cfg.get('type') or '').strip().lower()
-            if value_type == 'decimal':
-                coerced = _coerce_decimal(_sanitize_numeric(value))
-                if coerced is None:
-                    record[name] = None
-                else:
-                    divisor_raw = cfg.get('divide_by', decimal_divisor)
-                    try:
-                        divisor = Decimal(str(divisor_raw or '1'))
-                    except (InvalidOperation, ValueError):
-                        divisor = Decimal('1')
-                    if not divisor:
-                        divisor = Decimal('1')
-                    scaled = Decimal(coerced) / divisor
-                    if scaled >= Decimal('10000000'):
-                        adjusted = scaled / Decimal('1000000')
-                        if adjusted >= Decimal('0.01'):
-                            scaled = adjusted
-                    record[name] = _auto_scale_decimal(scaled)
-            elif value_type == 'date':
-                record[name] = _parse_fixed_date(value, cfg.get('date_fmt'))
-            elif value_type == 'int':
-                digits = ''.join(ch for ch in value if ch.isdigit() or ch == '-')
-                try:
-                    record[name] = int(digits) if digits else None
-                except ValueError:
-                    record[name] = None
-            else:
-                record[name] = value
-
-        _apply_simpro_postprocess(record, postprocess_cfg)
-        _enrich_tuss_from_ean(record)
-        _ensure_tuss_from_line(record, line)
-        _ensure_tuss_field(record)
-        _normalize_anvisa_field(record)
-        _ensure_anvisa_from_line(record, line)
-
-        payload = {
-            'id': stage.id,
-            'arquivo': stage.arquivo,
-            'linha_num': stage.linha_num,
-            'versao': versao,
-            'uf_referencia': uf_default,
-            'imported_at': stage.imported_at,
-        }
-        payload.update(_build_simpro_payload(record, field_map))
-        parsed_rows.append(payload)
-
-    if not parsed_rows:
-        return 0
-
-    # Processar em batches para evitar lock timeout
-    batch_size = 500
+    read_batch_size = 2000
+    write_batch_size = 500
+    last_stage_id = 0
     total_inserted = 0
-    for i in range(0, len(parsed_rows), batch_size):
-        batch = parsed_rows[i:i + batch_size]
-        db.session.bulk_insert_mappings(SimproItemNormalized, batch)
-        db.session.commit()
-        total_inserted += len(batch)
+    while True:
+        stage_rows = (
+            SimproFixedStage.query
+            .filter(
+                SimproFixedStage.arquivo == arquivo_label,
+                SimproFixedStage.id > last_stage_id,
+            )
+            .order_by(SimproFixedStage.id.asc())
+            .limit(read_batch_size)
+            .all()
+        )
+        if not stage_rows:
+            break
+
+        parsed_batch: list[dict] = []
+        for stage in stage_rows:
+            _raise_if_import_paused()
+            line = stage.linha or ''
+            record: dict[str, object | None] = {
+                'id': stage.id,
+                'arquivo': stage.arquivo,
+                'linha_num': stage.linha_num,
+                'versao': versao,
+                'uf_referencia': uf_default,
+                'imported_at': stage.imported_at,
+            }
+            for cfg in columns_cfg:
+                if not isinstance(cfg, dict):
+                    continue
+                name = (cfg.get('name') or '').strip()
+                if not name:
+                    continue
+                start = max(int(cfg.get('start', 1)) - 1, 0)
+                length = max(int(cfg.get('length', 0)), 0)
+                if length <= 0:
+                    record[name] = None
+                    continue
+                raw_value = line[start:start + length]
+                if cfg.get('strip') and isinstance(cfg['strip'], (list, tuple)):
+                    for ch in cfg['strip']:
+                        raw_value = raw_value.replace(str(ch), '')
+                if cfg.get('rtrim'):
+                    raw_value = raw_value.rstrip()
+                value = raw_value.strip()
+                if not value:
+                    record[name] = None
+                    continue
+
+                value_type = (cfg.get('type') or '').strip().lower()
+                if value_type == 'decimal':
+                    coerced = _coerce_decimal(_sanitize_numeric(value))
+                    if coerced is None:
+                        record[name] = None
+                    else:
+                        divisor_raw = cfg.get('divide_by', decimal_divisor)
+                        try:
+                            divisor = Decimal(str(divisor_raw or '1'))
+                        except (InvalidOperation, ValueError):
+                            divisor = Decimal('1')
+                        if not divisor:
+                            divisor = Decimal('1')
+                        scaled = Decimal(coerced) / divisor
+                        if scaled >= Decimal('10000000'):
+                            adjusted = scaled / Decimal('1000000')
+                            if adjusted >= Decimal('0.01'):
+                                scaled = adjusted
+                        record[name] = _auto_scale_decimal(scaled)
+                elif value_type == 'date':
+                    record[name] = _parse_fixed_date(value, cfg.get('date_fmt'))
+                elif value_type == 'int':
+                    digits = ''.join(ch for ch in value if ch.isdigit() or ch == '-')
+                    try:
+                        record[name] = int(digits) if digits else None
+                    except ValueError:
+                        record[name] = None
+                else:
+                    record[name] = value
+
+            _apply_simpro_postprocess(record, postprocess_cfg)
+            _enrich_tuss_from_ean(record)
+            _ensure_tuss_from_line(record, line)
+            _ensure_tuss_field(record)
+            _normalize_anvisa_field(record)
+            _ensure_anvisa_from_line(record, line)
+
+            payload = {
+                'id': stage.id,
+                'arquivo': stage.arquivo,
+                'linha_num': stage.linha_num,
+                'versao': versao,
+                'uf_referencia': uf_default,
+                'imported_at': stage.imported_at,
+            }
+            payload.update(_build_simpro_payload(record, field_map))
+            parsed_batch.append(payload)
+
+            if len(parsed_batch) >= write_batch_size:
+                db.session.bulk_insert_mappings(SimproItemNormalized, parsed_batch)
+                db.session.commit()
+                total_inserted += len(parsed_batch)
+                parsed_batch = []
+
+        if parsed_batch:
+            db.session.bulk_insert_mappings(SimproItemNormalized, parsed_batch)
+            db.session.commit()
+            total_inserted += len(parsed_batch)
+
+        last_stage_id = int(stage_rows[-1].id)
     
     return total_inserted
 
@@ -2771,6 +2955,7 @@ def _materialize_simpro_json_items(
     rows: list[dict[str, object | None]] = []
 
     for idx, source in enumerate(records, start=1):
+        _raise_if_import_paused()
         codigo_simpro = (source.get('codigoSimpro') or source.get('codigoUsuario') or '').strip()
         descricao = (source.get('descricao') or '').strip()
         if not codigo_simpro or not descricao:
@@ -2824,6 +3009,7 @@ def _materialize_simpro_json_items(
     batch_size = 500
     total_inserted = 0
     for i in range(0, len(rows), batch_size):
+        _raise_if_import_paused()
         batch = rows[i:i + batch_size]
         db.session.bulk_insert_mappings(SimproItemNormalized, batch)
         db.session.commit()
@@ -2899,6 +3085,7 @@ def _stage_bras_fixed(
             
             with file_path.open('r', encoding=enc, newline='') as handle:
                 for idx, raw_line in enumerate(handle, start=1):
+                    _raise_if_import_paused()
                     line = raw_line.rstrip('\r\n')
                     rows_stage.append({'arquivo': arquivo_label, 'linha_num': idx, 'linha': line})
                     mapping = {'arquivo': arquivo_label, 'linha_num': idx}
@@ -3009,6 +3196,7 @@ def _materialize_bras_items(
     last_id: int = 0
     batch_idx = 0
     while True:
+        _raise_if_import_paused()
         if arquivo_label is not None:
             id_list_sql = text(
                 f"""
@@ -3548,6 +3736,254 @@ def _br_norm_aliquota(value: Decimal | None) -> Decimal | None:
     return value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
+def _simpro_item_identity_key(tuss_numero: str | None, codigo: str | None) -> str | None:
+    code = str(codigo or '').strip()
+    if code:
+        return f'SIMPRO:{code}'
+    tuss = ''.join(ch for ch in str(tuss_numero or '').strip() if ch.isdigit())
+    if tuss:
+        return f'TUSS:{tuss}'
+    return None
+
+
+def _sync_simpro_split_from_norm_fast(
+    *,
+    arquivo_label: str,
+    versao: str,
+    aliquota_override: Decimal | None,
+) -> dict:
+    stat = {
+        'linhas_simpro_n': 0,
+        'cadastros_criados': 0,
+        'cadastros_atualizados': 0,
+        'precos_criados': 0,
+        'precos_atualizados': 0,
+        'puladas_sem_identidade': 0,
+        'puladas_sem_aliquota': 0,
+    }
+
+    aliquota = _br_norm_aliquota(aliquota_override) if aliquota_override is not None else None
+    if aliquota is None:
+        count_rows = (
+            db.session.query(func.count(SimproItemNormalized.id))
+            .filter(SimproItemNormalized.arquivo == arquivo_label)
+            .scalar()
+        ) or 0
+        stat['linhas_simpro_n'] = int(count_rows)
+        stat['puladas_sem_aliquota'] = int(count_rows)
+        return stat
+
+    version_label = (versao or '').strip()
+    now_ts = _now_utc()
+    next_cadastro_id = int(db.session.query(func.max(SimproItemCadastro.id)).scalar() or 0) + 1
+    next_preco_id = int(db.session.query(func.max(SimproItemPreco.id)).scalar() or 0) + 1
+
+    prepared_by_key: dict[str, dict[str, object | None]] = {}
+    last_norm_id = 0
+    read_batch_size = 2000
+    while True:
+        norm_rows = (
+            db.session.query(
+                SimproItemNormalized.id,
+                SimproItemNormalized.codigo_interno,
+                SimproItemNormalized.codigo,
+                SimproItemNormalized.codigo_alt,
+                SimproItemNormalized.descricao,
+                SimproItemNormalized.data_ref,
+                SimproItemNormalized.preco1,
+                SimproItemNormalized.preco2,
+                SimproItemNormalized.preco3,
+                SimproItemNormalized.preco4,
+                SimproItemNormalized.unidade,
+                SimproItemNormalized.qtd_unidade,
+                SimproItemNormalized.fabricante,
+                SimproItemNormalized.referencia,
+                SimproItemNormalized.anvisa,
+                SimproItemNormalized.ean,
+                SimproItemNormalized.fracionavel,
+                SimproItemNormalized.status_final,
+                SimproItemNormalized.linha_num,
+                SimproItemNormalized.tuss_numero,
+            )
+            .filter(
+                SimproItemNormalized.arquivo == arquivo_label,
+                SimproItemNormalized.id > last_norm_id,
+            )
+            .order_by(SimproItemNormalized.id.asc())
+            .limit(read_batch_size)
+            .all()
+        )
+        if not norm_rows:
+            break
+        stat['linhas_simpro_n'] += len(norm_rows)
+        for row in norm_rows:
+            item_key = _simpro_item_identity_key(row.tuss_numero, row.codigo)
+            if not item_key:
+                stat['puladas_sem_identidade'] += 1
+                continue
+            # Mantém a última ocorrência da chave no arquivo para evitar duplicatas
+            # no mesmo lote e refletir o valor mais recente da importação.
+            prepared_by_key[item_key] = {
+                'codigo_interno': row.codigo_interno,
+                'codigo': row.codigo,
+                'codigo_alt': row.codigo_alt,
+                'descricao': row.descricao,
+                'data_ref': row.data_ref,
+                'preco1': row.preco1,
+                'preco2': row.preco2,
+                'preco3': row.preco3,
+                'preco4': row.preco4,
+                'unidade': row.unidade,
+                'qtd_unidade': row.qtd_unidade,
+                'fabricante': row.fabricante,
+                'referencia': row.referencia,
+                'anvisa': row.anvisa,
+                'ean': row.ean,
+                'fracionavel': row.fracionavel,
+                'status_final': row.status_final,
+                'linha_num': row.linha_num,
+                'tuss_numero': row.tuss_numero,
+            }
+        last_norm_id = int(norm_rows[-1].id)
+    if not prepared_by_key:
+        return stat
+    identity_keys = set(prepared_by_key.keys())
+
+    existing_cadastros = (
+        SimproItemCadastro.query
+        .filter(
+            SimproItemCadastro.versao == version_label,
+            SimproItemCadastro.item_key.in_(list(identity_keys)),
+        )
+        .all()
+    )
+    cadastro_map = {(row.versao, row.item_key): row for row in existing_cadastros}
+
+    new_cadastros: list[dict[str, object | None]] = []
+    for item_key, row in prepared_by_key.items():
+        map_key = (version_label, item_key)
+        cad = cadastro_map.get(map_key)
+        if cad is None:
+            new_cadastros.append({
+                'id': next_cadastro_id,
+                'versao': version_label,
+                'item_key': item_key,
+                'tuss_numero': row.get('tuss_numero'),
+                'codigo': row.get('codigo'),
+                'codigo_interno': row.get('codigo_interno'),
+                'codigo_alt': row.get('codigo_alt'),
+                'descricao': row.get('descricao'),
+                'fabricante': row.get('fabricante'),
+                'referencia': row.get('referencia'),
+                'anvisa': row.get('anvisa'),
+                'ean': row.get('ean'),
+                'unidade': row.get('unidade'),
+                'qtd_unidade': row.get('qtd_unidade'),
+                'fracionavel': row.get('fracionavel'),
+                'status_final': row.get('status_final'),
+                'data_ref': row.get('data_ref'),
+                'linha_num': row.get('linha_num'),
+                'imported_at': now_ts,
+            })
+            next_cadastro_id += 1
+            stat['cadastros_criados'] += 1
+            continue
+
+        incoming_tuss = row.get('tuss_numero')
+        current_tuss = getattr(cad, 'tuss_numero', None)
+        if incoming_tuss in (None, '') and current_tuss not in (None, ''):
+            effective_tuss = current_tuss
+        else:
+            effective_tuss = incoming_tuss
+
+        changed = False
+        for field_name, field_value in (
+            ('tuss_numero', effective_tuss),
+            ('codigo', row.get('codigo')),
+            ('codigo_interno', row.get('codigo_interno')),
+            ('codigo_alt', row.get('codigo_alt')),
+            ('descricao', row.get('descricao')),
+            ('fabricante', row.get('fabricante')),
+            ('referencia', row.get('referencia')),
+            ('anvisa', row.get('anvisa')),
+            ('ean', row.get('ean')),
+            ('unidade', row.get('unidade')),
+            ('qtd_unidade', row.get('qtd_unidade')),
+            ('fracionavel', row.get('fracionavel')),
+            ('status_final', row.get('status_final')),
+            ('data_ref', row.get('data_ref')),
+            ('linha_num', row.get('linha_num')),
+        ):
+            if getattr(cad, field_name) != field_value:
+                setattr(cad, field_name, field_value)
+                changed = True
+        if changed:
+            cad.imported_at = now_ts
+            stat['cadastros_atualizados'] += 1
+
+    if new_cadastros:
+        db.session.bulk_insert_mappings(SimproItemCadastro, new_cadastros)
+
+    cadastro_rows = (
+        SimproItemCadastro.query
+        .with_entities(SimproItemCadastro.id, SimproItemCadastro.item_key)
+        .filter(
+            SimproItemCadastro.versao == version_label,
+            SimproItemCadastro.item_key.in_(list(identity_keys)),
+        )
+        .all()
+    )
+    cadastro_id_by_key = {row.item_key: int(row.id) for row in cadastro_rows if row.item_key and row.id is not None}
+    if not cadastro_id_by_key:
+        db.session.commit()
+        return stat
+
+    existing_precos = (
+        SimproItemPreco.query
+        .filter(
+            SimproItemPreco.cadastro_id.in_(list(cadastro_id_by_key.values())),
+            SimproItemPreco.aliquota == aliquota,
+        )
+        .all()
+    )
+    preco_by_cadastro = {int(row.cadastro_id): row for row in existing_precos if row.cadastro_id is not None}
+
+    new_precos: list[dict[str, object | None]] = []
+    for item_key, row in prepared_by_key.items():
+        cadastro_id = cadastro_id_by_key.get(item_key)
+        if cadastro_id is None:
+            continue
+        p_row = preco_by_cadastro.get(cadastro_id)
+        if p_row is None:
+            new_precos.append({
+                'id': next_preco_id,
+                'cadastro_id': cadastro_id,
+                'aliquota': aliquota,
+                'preco1': row.get('preco1'),
+                'preco2': row.get('preco2'),
+                'preco3': row.get('preco3'),
+                'preco4': row.get('preco4'),
+                'arquivo_fonte': arquivo_label,
+                'imported_at': now_ts,
+            })
+            next_preco_id += 1
+            stat['precos_criados'] += 1
+            continue
+        p_row.preco1 = row.get('preco1')
+        p_row.preco2 = row.get('preco2')
+        p_row.preco3 = row.get('preco3')
+        p_row.preco4 = row.get('preco4')
+        p_row.arquivo_fonte = arquivo_label
+        p_row.imported_at = now_ts
+        stat['precos_atualizados'] += 1
+
+    if new_precos:
+        db.session.bulk_insert_mappings(SimproItemPreco, new_precos)
+
+    db.session.commit()
+    return stat
+
+
 def _br_aliquota_certeiro(a: Decimal | None, b: Decimal | None) -> bool:
     if a is None or b is None:
         return False
@@ -3876,6 +4312,7 @@ def _import_bras_somente_precos(
     with file_path.open('r', encoding=enc, errors='replace', newline='') as f:
         reader = csv.reader(f, delimiter=delimiter, quotechar=quotechar or '"')
         for linha_num, row in enumerate(reader, start=1):
+            _raise_if_import_paused()
             if skip_header and linha_num == 1:
                 continue
             if len(row) < 17:
@@ -3932,6 +4369,7 @@ def _import_bras_somente_precos(
         now_ts = _now_utc()
         new_precos: list[BrasItemPreco] = []
         for ean, payload in price_by_ean.items():
+            _raise_if_import_paused()
             cad = cadastro_by_ean.get(ean)
             if cad is None:
                 stat['sem_cadastro'] += 1
@@ -4446,22 +4884,29 @@ def _sync_simpro_insumo_index(
 ) -> None:
     target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
     uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
+    if not uf_codes and aliquota_default is not None:
+        uf_codes = _ufs_pertencentes_a_aliquota_piso(aliquota_default)
+        if uf_codes and not uf_default:
+            uf_default = uf_codes[0]
     uf_storage = _encode_uf_codes(uf_codes)
 
     where_clause = ''
     params_base: dict[str, object] = {
-        'aliquota_default': aliquota_default,
         'uf_default': uf_default,
         'uf_storage': uf_storage,
     }
     if arquivo_label:
         params_base['arquivo'] = arquivo_label
-        where_clause = 'WHERE arquivo = :arquivo'
+        where_clause = 'WHERE p.arquivo_fonte = :arquivo'
 
-    preco_expr = "COALESCE(n.preco2, n.preco1, n.preco3, n.preco4)"
+    preco_expr = (
+        "COALESCE("
+        "NULLIF(p.preco2, 0), NULLIF(p.preco1, 0), NULLIF(p.preco3, 0), NULLIF(p.preco4, 0), "
+        "p.preco2, p.preco1, p.preco3, p.preco4)"
+    )
     preco_sql = _sql_clamp_decimal(preco_expr)
-    aliquota_sql = _sql_clamp_decimal(":aliquota_default", integer_digits=4, scale=4)
-    descricao_expr = "TRIM(COALESCE(n.descricao, ''))"
+    aliquota_sql = _sql_clamp_decimal("p.aliquota", integer_digits=4, scale=4)
+    descricao_expr = "TRIM(COALESCE(c.descricao, ''))"
 
     upsert_template = text(
         """
@@ -4472,23 +4917,24 @@ def _sync_simpro_insumo_index(
         )
         SELECT
             'SIMPRO' AS origem,
-            n.id AS item_id,
+            c.id AS item_id,
             COALESCE(
-                NULLIF(n.tuss_numero, ''),
-                NULLIF(REGEXP_REPLACE(COALESCE(n.codigo, ''), '[^0-9]', ''), ''),
-                n.codigo
+                NULLIF(c.tuss_numero, ''),
+                NULLIF(c.codigo, ''),
+                c.item_key
             ) AS tuss,
-            n.codigo_alt AS tiss,
+            c.codigo_alt AS tiss,
             {descricao_expr} AS descricao,
             {preco_sql} AS preco,
             {aliquota_sql} AS aliquota,
-            n.fabricante AS fabricante,
-            n.anvisa AS anvisa,
-            COALESCE(n.versao, n.arquivo) AS versao_tabela,
-            n.data_ref AS data_atualizacao,
-            COALESCE(:uf_storage, n.uf_referencia, :uf_default) AS uf_referencia,
+            c.fabricante AS fabricante,
+            c.anvisa AS anvisa,
+            c.versao AS versao_tabela,
+            c.data_ref AS data_atualizacao,
+            COALESCE(:uf_storage, :uf_default) AS uf_referencia,
             NOW() AS updated_at
-        FROM simpro_item_norm n
+        FROM simpro_item_preco p
+        INNER JOIN simpro_item_cadastro c ON c.id = p.cadastro_id
         {where_clause}
         ON DUPLICATE KEY UPDATE
             tuss = VALUES(tuss),
@@ -4894,6 +5340,7 @@ def _import_bras_delta(
             next(reader, None)
         
         for linha_num, row in enumerate(reader, start=1):
+            _raise_if_import_paused()
             if len(row) < 17:
                 continue
             
@@ -4939,6 +5386,7 @@ def _import_bras_delta(
     # Aplicar atualizações em batch
     updated_ids: set[int] = set()
     for upd in atualizacoes:
+        _raise_if_import_paused()
         BrasItemNormalized.query.filter_by(id=upd['id']).update({
             'preco_pmc_pacote': upd['pmc_pacote'],
             'preco_pfb_pacote': upd['pfb_pacote'],
@@ -4987,6 +5435,7 @@ def _import_bras_delta(
                 writer = csv.writer(tmp, delimiter=delimiter, quotechar=quotechar, lineterminator='\n')
                 linhas_escritas = 0
                 for linha_num, row in enumerate(reader, start=1):
+                    _raise_if_import_paused()
                     if linha_num in linhas_set:
                         writer.writerow(row)
                         linhas_escritas += 1
@@ -5048,10 +5497,14 @@ def _import_simpro(
     aliquota_default: Decimal | None,
     arquivo_label_override: str | None = None,
 ) -> dict:
-    arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
-    arquivo_label = arquivo_label_base
-    if uf_default:
-        arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
+    arquivo_label = _build_simpro_arquivo_label(
+        arquivo_label_override=arquivo_label_override,
+        map_config=map_config,
+        versao=versao,
+        fallback_name=file_path.name,
+        uf_default=uf_default,
+        aliquota_default=aliquota_default,
+    )
 
     # Se truncate E alíquota informada, limpa apenas dados daquela alíquota
     _delete_existing_simpro_records(
@@ -5088,6 +5541,11 @@ def _import_simpro(
     else:
         raise click.ClickException('Importação SIMPRO suporta apenas formatos JSON e largura fixa.')
 
+    split_sync = _sync_simpro_split_from_norm_fast(
+        arquivo_label=arquivo_label,
+        versao=versao,
+        aliquota_override=aliquota_default,
+    )
     _sync_simpro_insumo_index(
         arquivo_label,
         uf_default=uf_default,
@@ -5101,7 +5559,42 @@ def _import_simpro(
         'linhas_raw': inserted,
         'linhas_materializadas': materialized,
         'load_strategy': stage_strategy,
+        'split_sync': split_sync,
     }
+
+
+def _simpro_aliquota_label_fragment(aliquota: Decimal | None) -> str | None:
+    if aliquota is None:
+        return None
+    try:
+        decimal_value = Decimal(str(aliquota))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+    normalized = format(decimal_value, 'f')
+    if '.' in normalized:
+        normalized = normalized.rstrip('0').rstrip('.')
+    if not normalized:
+        normalized = '0'
+    safe = normalized.replace('-', 'N').replace('.', '_')
+    return f'ALQ{safe}'
+
+
+def _build_simpro_arquivo_label(
+    *,
+    arquivo_label_override: str | None,
+    map_config: dict,
+    versao: str,
+    fallback_name: str,
+    uf_default: str | None,
+    aliquota_default: Decimal | None,
+) -> str:
+    arquivo_label = arquivo_label_override or map_config.get('arquivo') or versao or fallback_name
+    if uf_default:
+        arquivo_label = f"{arquivo_label}_{uf_default.upper()}"
+    aliquota_fragment = _simpro_aliquota_label_fragment(aliquota_default)
+    if aliquota_fragment:
+        arquivo_label = f"{arquivo_label}_{aliquota_fragment}"
+    return arquivo_label
 
 
 DECIMAL_SANITIZE_RE = re.compile(r'[^0-9,\.-]')
@@ -6475,6 +6968,65 @@ def _get_cached_count(cache_key: str, query_fn) -> int:
     return count
 
 
+def _decimal_lookup_key(value: Decimal | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        return format(Decimal(str(value)).normalize(), 'f')
+    except (InvalidOperation, ValueError):
+        return str(value)
+
+
+def _prefetch_insumo_related(rows: list['InsumoIndex']) -> dict[str, dict]:
+    simpro_ids = [int(row.item_id) for row in rows if row.origem == 'SIMPRO' and row.item_id is not None]
+    if not simpro_ids:
+        return {
+            'simpro_cadastro_by_id': {},
+            'simpro_preco_by_key': {},
+        }
+
+    simpro_cadastros = (
+        SimproItemCadastro.query
+        .filter(SimproItemCadastro.id.in_(simpro_ids))
+        .all()
+    )
+    cadastro_by_id = {int(row.id): row for row in simpro_cadastros if row.id is not None}
+    if not cadastro_by_id:
+        return {
+            'simpro_cadastro_by_id': {},
+            'simpro_preco_by_key': {},
+        }
+
+    aliquotas = list({
+        row.aliquota
+        for row in rows
+        if row.origem == 'SIMPRO' and row.aliquota is not None
+    })
+    if not aliquotas:
+        return {
+            'simpro_cadastro_by_id': cadastro_by_id,
+            'simpro_preco_by_key': {},
+        }
+
+    precos = (
+        SimproItemPreco.query
+        .filter(
+            SimproItemPreco.cadastro_id.in_(list(cadastro_by_id.keys())),
+            SimproItemPreco.aliquota.in_(aliquotas),
+        )
+        .all()
+    )
+    preco_by_key = {
+        (int(row.cadastro_id), _decimal_lookup_key(row.aliquota)): row
+        for row in precos
+        if row.cadastro_id is not None
+    }
+    return {
+        'simpro_cadastro_by_id': cadastro_by_id,
+        'simpro_preco_by_key': preco_by_key,
+    }
+
+
 def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     """
     Busca da tela de insumos priorizando `insumos_index`, que ? muito mais barato
@@ -6483,12 +7035,13 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     import hashlib
 
     filter_key = hashlib.md5(str(sorted(filters.items())).encode()).hexdigest()[:16]
-    query = _apply_insumo_filters(InsumoIndex.query, filters).order_by(
+    base_query = _apply_insumo_filters(InsumoIndex.query, filters)
+    query = base_query.order_by(
         InsumoIndex.origem.asc(),
         InsumoIndex.item_id.asc(),
     )
     cache_key = f'insumos_index_{filter_key}'
-    total = _get_cached_count(cache_key, query.count)
+    total = _get_cached_count(cache_key, lambda: base_query.order_by(None).count())
 
     if total <= 0:
         sp = _catalogo_search_bras_cadastro_preco_fallback(filters, page, per_page)
@@ -6506,7 +7059,11 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
         }
 
     rows = query.offset(max(page - 1, 0) * per_page).limit(per_page).all()
-    serialized = [_serialize_insumo_index(row) for row in rows]
+    related_context = _prefetch_insumo_related(rows)
+    serialized = [
+        _serialize_insumo_index(row, include_related=False, related_context=related_context)
+        for row in rows
+    ]
 
     payload = {
         'items': serialized,
@@ -6638,7 +7195,14 @@ def _compose_simpro_description(
 
 
 
-def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = None, preco_pfb: Decimal | None = None) -> dict:
+def _serialize_insumo_index(
+    item: 'InsumoIndex',
+    *,
+    preco_pmc: Decimal | None = None,
+    preco_pfb: Decimal | None = None,
+    include_related: bool = True,
+    related_context: dict[str, dict] | None = None,
+) -> dict:
     uf_codes = _decode_uf_codes(item.uf_referencia)
     uf_display = ', '.join(uf_codes) if uf_codes else item.uf_referencia
     preco_pmc_value: Decimal | None = preco_pmc if preco_pmc is not None else item.preco
@@ -6649,8 +7213,12 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
     codigo_fracao: str | None = None
     embalagem: str | None = None
     qtd_unidade: int | None = None
+    simpro_ref: str | None = None
+    simpro_status: str | None = None
+    simpro_descricao: str | None = None
+    simpro_split: SimproItemCadastro | None = None
 
-    if item.origem == 'BRAS':
+    if include_related and item.origem == 'BRAS':
         bras_row = BrasItemNormalized.query.get(item.item_id)
         if bras_row:
             split_preco = None
@@ -6702,13 +7270,31 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
                             pass
 
     elif item.origem == 'SIMPRO':
-        simpro_row = SimproItemNormalized.query.get(item.item_id)
-        if simpro_row:
+        simpro_split = None
+        split_preco = None
+        if related_context:
+            simpro_split = (related_context.get('simpro_cadastro_by_id') or {}).get(item.item_id)
+            if simpro_split is not None and item.aliquota is not None:
+                split_preco = (related_context.get('simpro_preco_by_key') or {}).get(
+                    (int(simpro_split.id), _decimal_lookup_key(item.aliquota))
+                )
+        if simpro_split is None and include_related:
+            simpro_split = SimproItemCadastro.query.get(item.item_id)
+        if simpro_split is not None:
+            if split_preco is None and include_related and item.aliquota is not None:
+                split_preco = (
+                    SimproItemPreco.query
+                    .filter(
+                        SimproItemPreco.cadastro_id == simpro_split.id,
+                        SimproItemPreco.aliquota == item.aliquota,
+                    )
+                    .first()
+                )
             preco_effective, preco_pmc_simpro, preco_pfb_simpro = _split_simpro_prices(
-                simpro_row.preco1,
-                simpro_row.preco2,
-                simpro_row.preco3,
-                simpro_row.preco4,
+                split_preco.preco1 if split_preco is not None else None,
+                split_preco.preco2 if split_preco is not None else None,
+                split_preco.preco3 if split_preco is not None else None,
+                split_preco.preco4 if split_preco is not None else None,
             )
             if preco_effective is not None:
                 preco_display_value = preco_effective
@@ -6716,11 +7302,37 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
                 preco_pmc_value = preco_pmc_simpro
             if preco_pfb_simpro is not None:
                 preco_pfb_value = preco_pfb_simpro
-            codigo_simpro = simpro_row.codigo
-            codigo_usuario = simpro_row.codigo_interno
-            codigo_fracao = simpro_row.codigo_alt
-            embalagem = simpro_row.unidade
-            qtd_unidade = simpro_row.qtd_unidade
+            codigo_simpro = simpro_split.codigo
+            codigo_usuario = simpro_split.codigo_interno
+            codigo_fracao = simpro_split.codigo_alt
+            embalagem = simpro_split.unidade
+            qtd_unidade = simpro_split.qtd_unidade
+            simpro_ref = simpro_split.referencia
+            simpro_status = simpro_split.status_final
+            simpro_descricao = simpro_split.descricao
+        elif include_related:
+            simpro_row = SimproItemNormalized.query.get(item.item_id)
+            if simpro_row is not None:
+                preco_effective, preco_pmc_simpro, preco_pfb_simpro = _split_simpro_prices(
+                    simpro_row.preco1,
+                    simpro_row.preco2,
+                    simpro_row.preco3,
+                    simpro_row.preco4,
+                )
+                if preco_effective is not None:
+                    preco_display_value = preco_effective
+                if preco_pmc_simpro is not None:
+                    preco_pmc_value = preco_pmc_simpro
+                if preco_pfb_simpro is not None:
+                    preco_pfb_value = preco_pfb_simpro
+                codigo_simpro = simpro_row.codigo
+                codigo_usuario = simpro_row.codigo_interno
+                codigo_fracao = simpro_row.codigo_alt
+                embalagem = simpro_row.unidade
+                qtd_unidade = simpro_row.qtd_unidade
+                simpro_ref = simpro_row.referencia
+                simpro_status = simpro_row.status_final
+                simpro_descricao = simpro_row.descricao
 
     tuss_display = _format_tuss_display(item.tuss)
     return {
@@ -6729,20 +7341,20 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
         'codigo_simpro': codigo_simpro,
         'codigo_usuario': codigo_usuario,
         'codigo_fracao': codigo_fracao,
-        'referencia': getattr(simpro_row, 'referencia', None) if item.origem == 'SIMPRO' and simpro_row else None,
-        'classificacao': getattr(simpro_row, 'status_final', None) if item.origem == 'SIMPRO' and simpro_row else None,
+        'referencia': simpro_ref if item.origem == 'SIMPRO' else None,
+        'classificacao': simpro_status if item.origem == 'SIMPRO' else None,
         'embalagem': embalagem,
         'qtd_unidade': qtd_unidade,
         'tuss': tuss_display,
         'tuss_numero': tuss_display,
         'tuss_raw': item.tuss,
         'tiss': item.tiss,
-        'descricao': ((simpro_row.descricao if item.origem == 'SIMPRO' and simpro_row else item.descricao) or '').strip() or None,
+        'descricao': ((simpro_descricao if item.origem == 'SIMPRO' else item.descricao) or '').strip() or None,
         'preco': _decimal_to_string(preco_display_value),
         'preco_pmc': _decimal_to_string(preco_pmc_value),
         'preco_pfb': _decimal_to_string(preco_pfb_value),
         'aliquota': _decimal_to_string(item.aliquota),
-        'fabricante': item.fabricante,
+        'fabricante': (simpro_split.fabricante if item.origem == 'SIMPRO' and simpro_split is not None and simpro_split.fabricante else item.fabricante),
         'anvisa': item.anvisa,
         'versao_tabela': item.versao_tabela,
         'data_atualizacao': item.data_atualizacao.isoformat() if isinstance(item.data_atualizacao, date) else None,
@@ -6754,7 +7366,7 @@ def _serialize_insumo_index(item: 'InsumoIndex', *, preco_pmc: Decimal | None = 
 
 def _serialize_insumo_detail(
     origem: str,
-    item: BrasItemNormalized | SimproItemNormalized | SimproItem,
+    item: BrasItemNormalized | SimproItemNormalized | SimproItemCadastro | SimproItem,
     index_entry: InsumoIndex | None = None,
     *,
     catalog_entry: CatalogoBrasindice | CatalogoSimpro | None = None,
@@ -6865,6 +7477,59 @@ def _serialize_insumo_detail(
             'preco_pfb_pacote': _decimal_to_float(item.preco_pfb_pacote),
             'preco_pfb_unit': _decimal_to_float(item.preco_pfb_unit),
             'quantidade_embalagem': item.quantidade_embalagem,
+        }
+
+    if isinstance(item, SimproItemCadastro):
+        split_preco = None
+        if index_entry is not None and index_entry.aliquota is not None:
+            split_preco = (
+                SimproItemPreco.query
+                .filter(
+                    SimproItemPreco.cadastro_id == item.id,
+                    SimproItemPreco.aliquota == index_entry.aliquota,
+                )
+                .first()
+            )
+        preco_effective, simpro_preco_pmc, simpro_preco_pfb = _split_simpro_prices(
+            split_preco.preco1 if split_preco is not None else None,
+            split_preco.preco2 if split_preco is not None else None,
+            split_preco.preco3 if split_preco is not None else None,
+            split_preco.preco4 if split_preco is not None else None,
+        )
+        uf_codes = _combine_uf_codes(catalog_uf, index_uf)
+        uf_display = ', '.join(uf_codes) if uf_codes else _first_defined(catalog_uf, index_uf, selected_uf)
+        tuss_digits = _format_tuss_display(None, getattr(item, 'tuss_numero', None))
+        return {
+            'origem': 'SIMPRO',
+            'item_id': item.id,
+            'codigo_simpro': item.codigo,
+            'codigo_usuario': item.codigo_interno,
+            'codigo_fracao': item.codigo_alt,
+            'fracionavel': (item.fracionavel or '').strip().upper() or None,
+            'referencia': item.referencia,
+            'classificacao': item.status_final,
+            'embalagem': item.unidade,
+            'qtd_unidade': item.qtd_unidade,
+            'tuss': tuss_digits,
+            'tuss_numero': tuss_digits,
+            'tuss_raw': item.tuss_numero,
+            'tiss': item.codigo_alt,
+            'anvisa': item.anvisa,
+            'descricao': (item.descricao or '').strip() or None,
+            'preco': _decimal_to_float(_first_defined(catalog_preco_pfb, simpro_preco_pfb, preco_effective)),
+            'preco_pmc': _decimal_to_float(_first_defined(catalog_preco_pmc, simpro_preco_pmc)),
+            'preco_pfb': _decimal_to_float(_first_defined(catalog_preco_pfb, simpro_preco_pfb, preco_effective)),
+            'aliquota': _first_defined(catalog_aliquota, index_aliquota),
+            'fabricante': item.fabricante,
+            'versao_tabela': _first_defined(catalog_periodo, item.versao),
+            'data_atualizacao': _first_defined(catalog_data_ref, item.data_ref.isoformat() if isinstance(item.data_ref, date) else None, index_data),
+            'updated_at': _first_defined(catalog_updated, item.imported_at.isoformat() if isinstance(item.imported_at, datetime) else None, index_created),
+            'created_at': None,
+            'uf_referencia': uf_display,
+            'uf_referencia_codes': uf_codes,
+            'situacao': None,
+            'validade_anvisa': None,
+            'ean': item.ean,
         }
 
     if isinstance(item, SimproItemNormalized):
@@ -7010,13 +7675,27 @@ def _apply_insumo_filters(query, filters: dict):
     if filters.get('aliquota') is not None:
         query = query.filter(InsumoIndex.aliquota == filters['aliquota'])
 
-    tokens = filters.get('tokens') or []
+    tokens = [token for token in (filters.get('tokens') or []) if token]
+    allow_simpro_ref_lookup = (filters.get('origem') or '').upper() in ('', 'SIMPRO')
     for token in tokens:
         pattern = f"%{token}%"
-        simpro_ref_subquery = (
-            db.session.query(SimproItemNormalized.id)
-            .filter(func.lower(func.coalesce(SimproItemNormalized.referencia, '')).like(pattern))
-        )
+        simpro_ref_predicate = false()
+        if allow_simpro_ref_lookup:
+            simpro_ref_subquery_norm = (
+                db.session.query(SimproItemNormalized.id)
+                .filter(func.lower(func.coalesce(SimproItemNormalized.referencia, '')).like(pattern))
+            )
+            simpro_ref_subquery_split = (
+                db.session.query(SimproItemCadastro.id)
+                .filter(func.lower(func.coalesce(SimproItemCadastro.referencia, '')).like(pattern))
+            )
+            simpro_ref_predicate = and_(
+                InsumoIndex.origem == 'SIMPRO',
+                or_(
+                    InsumoIndex.item_id.in_(simpro_ref_subquery_norm),
+                    InsumoIndex.item_id.in_(simpro_ref_subquery_split),
+                ),
+            )
         query = query.filter(
             or_(
                 func.lower(InsumoIndex.descricao).like(pattern),
@@ -7024,10 +7703,7 @@ def _apply_insumo_filters(query, filters: dict):
                 func.lower(func.coalesce(InsumoIndex.tuss, '')).like(pattern),
                 func.lower(func.coalesce(InsumoIndex.tiss, '')).like(pattern),
                 func.lower(func.coalesce(InsumoIndex.anvisa, '')).like(pattern),
-                and_(
-                    InsumoIndex.origem == 'SIMPRO',
-                    InsumoIndex.item_id.in_(simpro_ref_subquery),
-                ),
+                simpro_ref_predicate,
             )
         )
 
@@ -13306,7 +13982,12 @@ def _suggest_similar_items(
     ean = getattr(item_model, 'ean', None)
     ean = (ean or '').strip()
     if ean:
-        model_cls = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
+        if origem == 'BRAS':
+            model_cls = BrasItemNormalized
+        elif isinstance(item_model, SimproItemCadastro):
+            model_cls = SimproItemCadastro
+        else:
+            model_cls = SimproItemNormalized
         ean_ids = [
             row_id for (row_id,) in (
                 db.session.query(model_cls.id)
@@ -14511,9 +15192,15 @@ def insumo_detail(origem: str, item_id: int):
     if origem not in {'BRAS', 'SIMPRO'}:
         abort(404)
 
-    model = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
-    item = model.query.get(item_id)
-    if not item:
+    if origem == 'BRAS':
+        item = BrasItemNormalized.query.get(item_id)
+    else:
+        item = (
+            SimproItemCadastro.query.get(item_id)
+            or SimproItemNormalized.query.get(item_id)
+            or SimproItem.query.get(item_id)
+        )
+    if item is None:
         abort(404)
 
     uf_param = (request.args.get('uf') or request.args.get('uf_referencia') or '').strip().upper()
@@ -14611,8 +15298,14 @@ def insumo_contexto_create(origem: str, item_id: int):
     if origem not in {'BRAS', 'SIMPRO'}:
         abort(404)
 
-    model = BrasItemNormalized if origem == 'BRAS' else SimproItemNormalized
-    item = model.query.get(item_id)
+    if origem == 'BRAS':
+        item = BrasItemNormalized.query.get(item_id)
+    else:
+        item = (
+            SimproItemCadastro.query.get(item_id)
+            or SimproItemNormalized.query.get(item_id)
+            or SimproItem.query.get(item_id)
+        )
     if item is None:
         abort(404)
 
@@ -14736,12 +15429,15 @@ def _serialize_import_job(job: ImportJob) -> dict:
 
 
 def _run_import_job(job_id: str) -> None:
+    file_path: Path | None = None
     with app.app_context():
         job: ImportJob | None = ImportJob.query.get(job_id)
         if job is None:
             app.logger.warning('Import job %s não encontrado.', job_id)
             return
 
+        _set_current_import_job(job_id)
+        _raise_if_import_paused(job_id)
         job.status = ImportJobStatus.RUNNING.value
         job.started_at = datetime.utcnow()
         job.message = _job_message_trim('Processando arquivo de importação...')
@@ -15023,6 +15719,19 @@ def _run_import_job(job_id: str) -> None:
                         job.message = _job_message_trim((job.message or '') + ' Consolidação posterior falhou.')
                         _set_job_metrics(job, metrics)
                         db.session.commit()
+        except ImportPauseRequested as exc:
+            metrics['timings']['total'] = round(time.perf_counter() - overall_start, 4)
+            metrics['error'] = str(exc)
+            metrics['paused'] = True
+            db.session.rollback()
+            job = ImportJob.query.get(job_id)
+            if job:
+                job.status = ImportJobStatus.FAILED.value
+                job.message = _job_message_trim(str(exc))
+                job.finished_at = datetime.utcnow()
+                _set_job_metrics(job, metrics)
+                db.session.commit()
+            app.logger.info('Import job %s pausado por solicitação do usuário.', job_id)
         except Exception as exc:  # noqa: BLE001
             metrics['timings']['total'] = round(time.perf_counter() - overall_start, 4)
             metrics['error'] = str(exc)
@@ -15050,13 +15759,17 @@ def _run_import_job(job_id: str) -> None:
             )
         finally:
             try:
-                file_path.unlink(missing_ok=True)
+                if file_path is not None:
+                    file_path.unlink(missing_ok=True)
             except Exception as exc:  # noqa: BLE001
                 app.logger.warning('Não foi possível remover arquivo temporário %s (%s)', file_path, exc)
             try:
-                shutil.rmtree(file_path.parent, ignore_errors=True)
+                if file_path is not None:
+                    shutil.rmtree(file_path.parent, ignore_errors=True)
             except Exception as exc:  # noqa: BLE001
                 app.logger.debug('Falha ao limpar diretório temporário %s (%s)', file_path.parent, exc)
+            _clear_import_pause_request(job_id)
+            _set_current_import_job(None)
             db.session.remove()
 
 
@@ -15580,10 +16293,22 @@ def insumos_import():
         }), 500
 
     _spawn_async_import(job_id)
-    info_message = (
-        f'Importação {origem} agendada em segundo plano (protocolo {prefix}). '
-        'Acompanhe o status em "Importações em andamento".'
-    )
+    if origem == 'SIMPRO':
+        split_meta: list[str] = []
+        if versao:
+            split_meta.append(f'versão {versao}')
+        if aliquota_value is not None:
+            split_meta.append(f'alíquota {str(aliquota_value)}%')
+        split_txt = f" ({', '.join(split_meta)})" if split_meta else ''
+        info_message = (
+            f'Importação {origem} (split por alíquota){split_txt} agendada em segundo plano '
+            f'(protocolo {prefix}). Acompanhe o status em "Importações em andamento".'
+        )
+    else:
+        info_message = (
+            f'Importação {origem} agendada em segundo plano (protocolo {prefix}). '
+            'Acompanhe o status em "Importações em andamento".'
+        )
     if not is_ajax:
         _safe_flash(info_message, 'info')
         return _go_back()
@@ -16005,3 +16730,28 @@ def insumos_import_jobs_list():
 def insumos_import_job_detail(job_id: str):
     job = ImportJob.query.get_or_404(job_id)
     return jsonify(_serialize_import_job(job))
+
+
+@app.route('/insumos/import/jobs/<job_id>/pause', methods=['POST'])
+@admin_required
+@feature_required('insumos')
+def insumos_import_job_pause(job_id: str):
+    job = ImportJob.query.get_or_404(job_id)
+    if job.status == ImportJobStatus.SUCCESS.value:
+        return jsonify({'status': 'error', 'message': 'Importação já concluída.'}), 409
+    if job.status == ImportJobStatus.FAILED.value:
+        paused = 'pausad' in (job.message or '').lower()
+        msg = 'Importação já está pausada.' if paused else 'Importação já foi finalizada com falha.'
+        return jsonify({'status': 'error', 'message': msg}), 409
+
+    if job.status == ImportJobStatus.PENDING.value:
+        job.status = ImportJobStatus.FAILED.value
+        job.message = _job_message_trim('Importação pausada antes do início.')
+        job.finished_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({'status': 'ok', 'message': 'Importação pausada antes do início.', 'job': _serialize_import_job(job)})
+
+    _request_import_pause(job_id)
+    job.message = _job_message_trim('Pausa solicitada. Encerrando processamento...')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'message': 'Pausa solicitada. O job será interrompido no próximo checkpoint.', 'job': _serialize_import_job(job)})

@@ -17,6 +17,7 @@ env/
 # Dados do Docker
 # Ignora a pasta de dados do banco de dados se ela for criada localmente
 db_data/
+data/
 
 # Arquivos específicos de IDEs
 .vscode/

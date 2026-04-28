@@ -1,0 +1,131 @@
+﻿{% extends 'base.html' %}
+
+{% block title %}Reembolso #{{ documento.id }}{% endblock %}
+{% block page_title %}Validacao de reembolso{% endblock %}
+
+{% block content %}
+<div class="container-fluid" style="animation: fadeIn 0.4s ease;">
+  <div class="row g-4">
+    <div class="col-12 col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-header">Documento</div>
+        <div class="card-body">
+          <div class="mb-2"><strong>ID:</strong> {{ documento.id }}</div>
+          <div class="mb-2"><strong>Arquivo:</strong> {{ documento.original_filename }}</div>
+          <div class="mb-2"><strong>Tipo:</strong> {{ documento.tipo_documento }}</div>
+          <div class="mb-2"><strong>Status:</strong> {{ documento.status }}</div>
+          <div class="mb-3"><strong>OCR:</strong> {{ documento.ocr_status or 'N/A' }}</div>
+          {% if documento.ocr_message %}
+            <div class="alert alert-warning py-2">{{ documento.ocr_message }}</div>
+          {% endif %}
+          <a class="btn btn-outline-secondary" target="_blank" href="{{ url_for('reembolsos_arquivo', doc_id=documento.id) }}">
+            Ver arquivo
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-header">Validar campos</div>
+        <div class="card-body">
+          <form method="post" action="{{ url_for('reembolsos_validar', doc_id=documento.id) }}">
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label">Tipo de documento</label>
+                <select class="form-select" name="tipo_documento">
+                  <option value="NOTA_FISCAL" {% if documento.tipo_documento == 'NOTA_FISCAL' %}selected{% endif %}>Nota fiscal</option>
+                  <option value="RECIBO" {% if documento.tipo_documento == 'RECIBO' %}selected{% endif %}>Recibo</option>
+                  <option value="COMPROVANTE" {% if documento.tipo_documento == 'COMPROVANTE' %}selected{% endif %}>Comprovante</option>
+                  <option value="DESCONHECIDO" {% if documento.tipo_documento == 'DESCONHECIDO' %}selected{% endif %}>Desconhecido</option>
+                </select>
+              </div>
+
+              {% for key, label in fields %}
+              <div class="col-12 col-md-6">
+                <label class="form-label">{{ label }}</label>
+                <input class="form-control" type="text" name="{{ key }}" value="{{ values.get(key, '') }}">
+              </div>
+              {% endfor %}
+
+              <div class="col-12">
+                <label class="form-label">Status</label>
+                <select class="form-select" name="status">
+                  <option value="PENDENTE" {% if documento.status == 'PENDENTE' %}selected{% endif %}>Pendente</option>
+                  <option value="VALIDADO" {% if documento.status == 'VALIDADO' %}selected{% endif %}>Validado</option>
+                  <option value="REJEITADO" {% if documento.status == 'REJEITADO' %}selected{% endif %}>Rejeitado</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="mt-4 d-flex gap-2">
+              <button class="btn btn-success" type="submit">
+                Salvar
+              </button>
+              <a class="btn btn-outline-secondary" href="{{ url_for('reembolsos_index') }}">
+                Voltar
+              </a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    {% if values.get('tuss_codigos') %}
+    <div class="col-12">
+      <div class="card shadow-sm">
+        <div class="card-header">TUSS encontrados</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <strong>Códigos:</strong>
+            {{ values.get('tuss_codigos') | join(', ') }}
+          </div>
+          {% set matches = values.get('tuss_matches') or {} %}
+          {% if matches %}
+            <div class="table-responsive">
+              <table class="table table-sm align-middle">
+                <thead>
+                  <tr>
+                    <th>Código</th>
+                    <th>Descrição</th>
+                    <th>Valor</th>
+                    <th>Tabela</th>
+                    <th>Prestador</th>
+                    <th>UF</th>
+                    <th>Vigência</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for codigo, items in matches.items() %}
+                    {% if items %}
+                      {% for item in items %}
+                      <tr>
+                        <td>{{ item.codigo }}</td>
+                        <td>{{ item.descricao }}</td>
+                        <td>{{ item.valor }}</td>
+                        <td>{{ item.tabela }}{% if item.tipo_tabela %} ({{ item.tipo_tabela }}){% endif %}</td>
+                        <td>{{ item.prestador or '-' }}</td>
+                        <td>{{ item.uf or '-' }}</td>
+                        <td>{{ item.vigencia or '-' }}</td>
+                      </tr>
+                      {% endfor %}
+                    {% else %}
+                      <tr>
+                        <td>{{ codigo }}</td>
+                        <td colspan="6" class="text-muted">Sem correspondência encontrada</td>
+                      </tr>
+                    {% endif %}
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="text-muted">Nenhuma correspondência nas tabelas da operadora.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

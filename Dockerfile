@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgobject-2.0-0 libgdk-pixbuf-2.0-0 \
     libffi-dev libpangocairo-1.0-0 libpangoft2-1.0-0 \
     libcairo2 libxml2 libxslt1.1 shared-mime-info \
+    tesseract-ocr tesseract-ocr-por poppler-utils \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # System deps (optional: useful for mysqlclient; we use PyMySQL so it's pure-python)

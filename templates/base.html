@@ -481,6 +481,12 @@
                 <span class="nav-text">Contratos</span>
               </a>
             </div>
+            <div class="nav-item">
+              <a class="nav-link {% if request.endpoint and request.endpoint.startswith('reembolsos') %}active{% endif %}" href="{{ url_for('reembolsos_index') }}">
+                <i class="bi bi-receipt nav-icon"></i>
+                <span class="nav-text">Reembolsos</span>
+              </a>
+            </div>
             {% endif %}
           </div>
 

@@ -442,3 +442,169 @@ def test_simpro_json_pipeline(app_ctx, tmp_path):
     assert item.preco4 == Decimal('93.6210')
     assert item.qtd_unidade == 120
     assert item.uf_referencia == 'SP'
+
+
+def test_build_simpro_arquivo_label_adds_aliquota_fragment(app_ctx):
+    label = app_ctx._build_simpro_arquivo_label(
+        arquivo_label_override='MSG_21_2025_18',
+        map_config={},
+        versao='2025-21',
+        fallback_name='simpro.txt',
+        uf_default='AP',
+        aliquota_default=Decimal('18.00'),
+    )
+    assert label == 'MSG_21_2025_18_AP_ALQ18'
+
+
+def test_build_simpro_arquivo_label_without_aliquota_keeps_legacy_format(app_ctx):
+    label = app_ctx._build_simpro_arquivo_label(
+        arquivo_label_override='MSG_21_2025_18',
+        map_config={},
+        versao='2025-21',
+        fallback_name='simpro.txt',
+        uf_default='AP',
+        aliquota_default=None,
+    )
+    assert label == 'MSG_21_2025_18_AP'
+
+
+def test_simpro_item_identity_key_prefers_codigo(app_ctx):
+    key = app_ctx._simpro_item_identity_key(' 90.41-3652 ', '0000306808')
+    assert key == 'SIMPRO:0000306808'
+
+
+def test_simpro_item_identity_key_fallback_to_codigo(app_ctx):
+    key = app_ctx._simpro_item_identity_key(None, '0000306808')
+    assert key == 'SIMPRO:0000306808'
+
+
+def test_simpro_item_identity_key_fallback_to_tuss(app_ctx):
+    key = app_ctx._simpro_item_identity_key(' 90.41-3652 ', None)
+    assert key == 'TUSS:90413652'
+
+
+def test_sync_simpro_split_from_norm_creates_cadastro_and_preco(app_ctx):
+    session = app_ctx.db.session
+    row = app_ctx.SimproItemNormalized(
+        id=1,
+        arquivo='MSG_21_2025_18_AP_ALQ18',
+        linha_num=1,
+        codigo='0000306808',
+        codigo_interno='0000306808',
+        codigo_alt='0000306808',
+        descricao='ACETATO ABIRATERONA 250MG 120CPDS',
+        fabricante='SUN FARMACEUTICA',
+        referencia='ABI250',
+        anvisa='1468200680013',
+        ean='7898272945166',
+        unidade='CX',
+        qtd_unidade=120,
+        fracionavel='S',
+        status_final='A',
+        versao='2025-21',
+        tuss_numero='90413652',
+        preco1=Decimal('10270.83'),
+        preco2=Decimal('11234.56'),
+        preco3=Decimal('85.5900'),
+        preco4=Decimal('93.6210'),
+    )
+    session.add(row)
+    session.commit()
+
+    stats = app_ctx._sync_simpro_split_from_norm_fast(
+        arquivo_label='MSG_21_2025_18_AP_ALQ18',
+        versao='2025-21',
+        aliquota_override=Decimal('18.00'),
+    )
+    assert stats['cadastros_criados'] == 1
+    assert stats['precos_criados'] == 1
+
+    cadastro = session.query(app_ctx.SimproItemCadastro).one()
+    preco = session.query(app_ctx.SimproItemPreco).one()
+    assert cadastro.item_key == 'SIMPRO:0000306808'
+    assert preco.cadastro_id == cadastro.id
+    assert preco.aliquota == Decimal('18.00')
+
+
+def test_sync_simpro_split_deduplicates_repeated_item_key_in_same_file(app_ctx):
+    session = app_ctx.db.session
+    row1 = app_ctx.SimproItemNormalized(
+        id=10,
+        arquivo='MSG_17_2026_AP_ALQ18',
+        linha_num=1,
+        codigo='102854548',
+        descricao='ITEM A',
+        fabricante='FAB A',
+        versao='2026-17',
+        tuss_numero='102854548',
+        preco1=Decimal('10.00'),
+        preco2=Decimal('12.00'),
+    )
+    row2 = app_ctx.SimproItemNormalized(
+        id=11,
+        arquivo='MSG_17_2026_AP_ALQ18',
+        linha_num=2,
+        codigo='102854548',
+        descricao='ITEM A NOVO',
+        fabricante='FAB A',
+        versao='2026-17',
+        tuss_numero='102854548',
+        preco1=Decimal('11.00'),
+        preco2=Decimal('13.00'),
+    )
+    session.add_all([row1, row2])
+    session.commit()
+
+    stats = app_ctx._sync_simpro_split_from_norm_fast(
+        arquivo_label='MSG_17_2026_AP_ALQ18',
+        versao='2026-17',
+        aliquota_override=Decimal('18.00'),
+    )
+    assert stats['cadastros_criados'] == 1
+    assert stats['precos_criados'] == 1
+
+    cadastro = session.query(app_ctx.SimproItemCadastro).one()
+    preco = session.query(app_ctx.SimproItemPreco).one()
+    assert cadastro.item_key == 'SIMPRO:102854548'
+    assert cadastro.descricao == 'ITEM A NOVO'
+    assert preco.preco2 == Decimal('13.00')
+
+
+def test_sync_simpro_split_preserves_existing_tuss_when_new_row_has_no_tuss(app_ctx):
+    session = app_ctx.db.session
+    existing = app_ctx.SimproItemCadastro(
+        id=1,
+        versao='2026-17',
+        item_key='SIMPRO:0000166579',
+        tuss_numero='78302862',
+        codigo='0000166579',
+        descricao='CATETER 20G',
+        imported_at=app_ctx._now_utc(),
+    )
+    session.add(existing)
+    session.commit()
+
+    row = app_ctx.SimproItemNormalized(
+        id=20,
+        arquivo='MSG_17_2026_AM_ALQ20',
+        linha_num=1,
+        codigo='0000166579',
+        descricao='CATETER 20GAX1,1MM INF.CI-20GX1.1',
+        fabricante='MED GOLDMAN',
+        versao='2026-17',
+        tuss_numero=None,
+        preco1=Decimal('0.00'),
+        preco2=Decimal('12.00'),
+    )
+    session.add(row)
+    session.commit()
+
+    stats = app_ctx._sync_simpro_split_from_norm_fast(
+        arquivo_label='MSG_17_2026_AM_ALQ20',
+        versao='2026-17',
+        aliquota_override=Decimal('20.00'),
+    )
+    assert stats['cadastros_atualizados'] == 1
+
+    cadastro = session.query(app_ctx.SimproItemCadastro).one()
+    assert cadastro.tuss_numero == '78302862'

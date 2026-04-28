@@ -21,7 +21,29 @@
         <h1 class="auth-title">Bem-vindo ao Murta PriceHealth</h1>
       </div>
 
-      <!-- Mensagem de Erro -->
+      <!-- Mensagem: senha foi alterada (vem pela URL, não depende de sessão) -->
+      {% if senha_alterada %}
+        <div class="auth-alert auth-alert-success" role="alert">
+          <i class="bi bi-check-circle"></i>
+          <div>Senha atualizada com sucesso. Faça login com sua nova senha.</div>
+        </div>
+      {% endif %}
+      <!-- Mensagens flash (sucesso, aviso, etc.) -->
+      {% with messages = get_flashed_messages(with_categories=True) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="auth-alert auth-alert-{{ category }}" role="alert">
+              {% if category == 'success' %}
+                <i class="bi bi-check-circle"></i>
+              {% else %}
+                <i class="bi bi-exclamation-circle"></i>
+              {% endif %}
+              <div>{{ message }}</div>
+            </div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+      <!-- Mensagem de Erro (credenciais inválidas, etc.) -->
       {% if erro %}
         <div class="auth-alert" role="alert">
           <i class="bi bi-exclamation-circle"></i>

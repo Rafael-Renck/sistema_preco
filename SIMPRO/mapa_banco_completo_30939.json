@@ -1,0 +1,40 @@
+{
+  "encoding": "latin-1",
+  "lines_terminated": "\n",
+  "skip_header": false,
+  "decimal_divisor": 10000,
+  "columns": [
+    { "name": "codigo_interno", "start": 1, "length": 10 },
+    { "name": "codigo_alternativo", "start": 16, "length": 10 },
+    { "name": "descricao_completa", "start": 30, "length": 100 },
+    { "name": "data_vigencia", "start": 131, "length": 8, "type": "date", "date_fmt": "DDMMYYYY" },
+    { "name": "tipo_registro", "start": 139, "length": 1 },
+    { "name": "preco_pf", "start": 140, "length": 12, "type": "decimal" },
+    { "name": "preco_pmc", "start": 152, "length": 12, "type": "decimal" },
+    { "name": "preco_ph", "start": 164, "length": 12, "type": "decimal" },
+    { "name": "preco_outro", "start": 176, "length": 12, "type": "decimal" },
+    { "name": "unidade_comercial", "start": 200, "length": 8, "strip": ["0"] },
+    { "name": "qtd_unidade", "start": 209, "length": 6, "type": "int" },
+    { "name": "fabricante", "start": 230, "length": 20 },
+    { "name": "registro_anvisa", "start": 272, "length": 13 },
+    { "name": "validade_anvisa", "start": 290, "length": 8, "type": "date", "date_fmt": "DDMMYYYY" },
+    { "name": "ean", "start": 303, "length": 13, "strip": ["+"] },
+    { "name": "situacao", "start": 317, "length": 2 },
+    { "name": "classificacao", "start": 328, "length": 2 },
+    { "name": "referencia", "start": 330, "length": 20 },
+    { "name": "sufixo_livre", "start": 317, "length": 120, "rtrim": true }
+  ],
+  "postprocess": {
+    "extract": [
+      {
+        "from": "sufixo_livre",
+        "regex": "(?:[#\\-\\s]?)(N[SNRA])\\s*([0-9]{6,12})",
+        "fields": { "tuss_prefix": 1, "tuss_numero": 2 }
+      }
+    ],
+    "derive": [
+      { "name": "tuss", "expr": "tuss_prefix && tuss_numero ? tuss_prefix + tuss_numero : null" }
+    ],
+    "cleanup": ["sufixo_livre"]
+  }
+}

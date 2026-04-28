@@ -128,8 +128,10 @@ SELECT
     p.sequencia,
     p.etag_versao,
     s.id AS item_id,
+    s.codigo_interno,
     s.codigo,
     s.codigo_alt,
+    s.tuss_numero,
     s.descricao,
     s.data_ref,
     s.preco1,
@@ -138,10 +140,12 @@ SELECT
     s.preco4,
     s.qtd_unidade,
     s.fabricante,
+    s.referencia,
     s.anvisa,
     s.validade_anvisa,
     s.ean,
     s.situacao,
+    s.status_final,
     s.imported_at
 FROM publicacao p
 JOIN lote l              ON l.id = p.lote_id
@@ -191,8 +195,10 @@ SELECT
     c.sequencia,
     c.etag_versao,
     c.item_id,
+    c.codigo_interno,
     c.codigo,
     c.codigo_alt,
+    c.tuss_numero,
     c.descricao,
     c.data_ref,
     c.preco1,
@@ -201,10 +207,12 @@ SELECT
     c.preco4,
     c.qtd_unidade,
     c.fabricante,
+    c.referencia,
     c.anvisa,
     c.validade_anvisa,
     c.ean,
     c.situacao,
+    c.status_final,
     c.imported_at,
     CONCAT(CAST('SIMPRO:' AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci, ua.uf, ':', c.etag_versao) AS etag_catalogo
 FROM vw_aliquota_vigente ua

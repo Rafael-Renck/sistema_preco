@@ -10,7 +10,7 @@ Projeto Flask + MySQL, dockerizado, com páginas para login, dashboard e gerenci
    - `docker compose up --build`
 3. Acesse:
    - App: http://localhost:8000
-   - Adminer (opcional): http://localhost:8080 (Servidor: `db`, Usuário: `root`, Senha: `rootpassword`)
+   - Adminer (opcional, dev): http://localhost:8081 (Servidor: `db`, Usuário: `root`, Senha: `rootpassword`)
 
 O backend usa `DATABASE_URL` (definida no compose) e cria as tabelas automaticamente na inicialização.
 Se não houver usuários, ele cria um admin inicial definido por variáveis de ambiente (`ADMIN_EMAIL`, `ADMIN_PASSWORD`).

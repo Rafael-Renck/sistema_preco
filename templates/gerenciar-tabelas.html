@@ -25,10 +25,11 @@
           <th style="width:80px;">Duração</th>
           <th>Mensagem</th>
           <th style="width:140px;">Atualizado</th>
+          <th style="width:120px;">Ações</th>
         </tr>
       </thead>
       <tbody id="jobsTableBody">
-        <tr><td colspan="8" class="text-center text-muted py-2">Nenhuma importação.</td></tr>
+        <tr><td colspan="9" class="text-center text-muted py-2">Nenhuma importação.</td></tr>
       </tbody>
     </table>
   </div>
@@ -394,7 +395,8 @@
     <h2 class="accordion-header">
       <button class="accordion-button collapsed bg-success-subtle" type="button" data-bs-toggle="collapse" data-bs-target="#collapseSimpro">
         <i class="bi bi-box-seam me-2 text-success"></i> <strong class="text-success">SIMPRO</strong>
-        <span class="badge bg-success ms-2">Múltiplos Arquivos</span>
+        <span class="badge bg-success ms-2">Split por Alíquota</span>
+        <span class="badge bg-dark ms-2">Múltiplos Arquivos</span>
       </button>
     </h2>
     <div id="collapseSimpro" class="accordion-collapse collapse" data-bs-parent="#accordionImport">
@@ -402,10 +404,13 @@
         <!-- Importação Rápida SIMPRO -->
         <div class="card border-success mb-3">
           <div class="card-header bg-success text-white py-2">
-            <i class="bi bi-lightning-charge-fill me-1"></i> Importação Rápida (Múltiplos Arquivos)
+            <i class="bi bi-lightning-charge-fill me-1"></i> Importação Rápida - Split por Alíquota (Múltiplos Arquivos)
           </div>
           <div class="card-body">
-            <p class="text-muted small mb-3">Arraste múltiplos arquivos. Versão e alíquota são detectadas do nome (ex: `MSG 50 2025 18.TXT` ou `MSG 17 2026 JSON.JSON`).</p>
+            <p class="text-muted small mb-2">Arraste múltiplos arquivos. Versão e alíquota são detectadas do nome (ex: `MSG 50 2025 18.TXT` ou `MSG 17 2026 JSON.JSON`).</p>
+            <div class="alert alert-success py-2 px-3 small mb-3">
+              <i class="bi bi-diagram-3 me-1"></i> Modo split ativo: para SIMPRO, a identidade do item usa <strong>TUSS</strong> (fallback em <strong>código SIMPRO</strong>) e os preços ficam separados por <strong>alíquota</strong>.
+            </div>
             <div class="row g-3">
               <div class="col-md-8">
                 <input type="file" id="simproBatchFiles" accept=".txt,.csv,.json,.xml" multiple class="d-none">
@@ -420,7 +425,7 @@
                   <label class="form-label small mb-1">Data Atualização</label>
                   <input type="date" class="form-control form-control-sm" id="simproBatchDataRef">
                 </div><div class="alert alert-info py-1 px-2 mb-0 small">
-                  <i class="bi bi-info-circle me-1"></i> Modo acumulativo: dados são adicionados sem apagar
+                  <i class="bi bi-info-circle me-1"></i> Coexistência por versão/alíquota: reimportar outra alíquota da mesma versão não sobrescreve as anteriores.
                 </div>
               </div>
               <div class="col-12 d-none" id="simproBatchPreview">
@@ -441,9 +446,13 @@
         
         <!-- Formulário Avançado SIMPRO -->
         <details class="mb-0">
-          <summary class="text-muted small mb-2" style="cursor:pointer"><i class="bi bi-gear me-1"></i> Formulário Avançado (arquivo único)</summary>
+          <summary class="text-muted small mb-2" style="cursor:pointer"><i class="bi bi-gear me-1"></i> Formulário Avançado (arquivo único - split por alíquota)</summary>
           <div class="card p-3 mt-2" id="imp-simpro">
-            <h6 class="mb-3">Importar: SIMPRO</h6>
+            <h6 class="mb-2">Importar: SIMPRO (Split por Alíquota)</h6>
+            <div class="alert alert-light border small py-2 px-3 mb-3">
+              <strong>Regra de identidade:</strong> TUSS (fallback em código SIMPRO).<br>
+              <strong>Regra de preço:</strong> 1 cadastro pode ter múltiplas alíquotas para a mesma versão.
+            </div>
       <form method="post" action="{{ url_for('insumos_import') }}" enctype="multipart/form-data" class="row g-3" data-fill-label data-import-form>
         <input type="hidden" name="origem" value="SIMPRO">
         <input type="hidden" name="return_to" value="gerenciar_tabelas">
@@ -516,7 +525,7 @@
         <div class="col-md-4 d-flex align-items-center">
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" name="truncate" id="simproTruncate">
-            <label class="form-check-label" for="simproTruncate">Limpar tabela antes de importar</label>
+            <label class="form-check-label" for="simproTruncate">Limpeza total (manutenção)</label>
           </div>
         </div>
         <div class="col-12 d-flex gap-2">
@@ -842,15 +851,48 @@
     return date.toLocaleString('pt-BR');
   }
 
-  function renderStatus(status){
+  function renderStatus(status, message){
+    const paused = status === 'FAILED' && /pausad/i.test(String(message || ''));
     const map = {
       'PENDING': {label: 'Pendente', cls: 'bg-secondary'},
       'RUNNING': {label: 'Processando', cls: 'bg-info'},
       'SUCCESS': {label: 'Concluído', cls: 'bg-success'},
       'FAILED': {label: 'Falhou', cls: 'bg-danger'},
     };
+    if(paused){
+      return '<span class="badge bg-warning text-dark">Pausado</span>';
+    }
     const meta = map[status] || {label: status || '—', cls: 'bg-secondary'};
     return `<span class="badge ${meta.cls}">${meta.label}</span>`;
+  }
+
+  function canPauseJob(item){
+    return item && (item.status === 'PENDING' || item.status === 'RUNNING');
+  }
+
+  async function pauseJob(jobId){
+    if(!jobId) return;
+    const shortId = String(jobId).slice(0, 8);
+    const confirmed = window.confirm(`Pausar importação ${shortId}?`);
+    if(!confirmed) return;
+    try{
+      const response = await fetch(`{{ url_for('insumos_import_jobs_list') }}/${encodeURIComponent(jobId)}/pause`, {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if(!response.ok || payload.status === 'error'){
+        const msg = payload.message || `Falha ao pausar importação ${shortId}.`;
+        summary.textContent = msg;
+        return;
+      }
+      summary.textContent = payload.message || `Pausa solicitada para ${shortId}.`;
+      loadJobs();
+      setTimeout(() => { loadJobs(); }, 1500);
+    } catch(err){
+      summary.textContent = 'Erro ao pausar importação: ' + (err?.message || err);
+    }
   }
 
   async function loadJobs(){
@@ -860,7 +902,7 @@
       const payload = await response.json();
       const items = payload.items || [];
       if(!items.length){
-        tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-muted py-3">Nenhuma importação agendada.</td></tr>';
+        tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">Nenhuma importação agendada.</td></tr>';
         summary.textContent = 'Nenhuma importação recente.';
         return;
       }
@@ -869,11 +911,14 @@
         const origem = escapeHtml(item.origem || '—');
         const versao = escapeHtml(item.versao || '—');
         const ufs = (item.uf_list || []).join(', ') || '—';
-        const statusHtml = renderStatus(item.status);
+        const statusHtml = renderStatus(item.status, item.message);
         const mensagem = escapeHtml(item.message || '—');
         const totalTime = item.metrics?.timings?.total;
         const totalLabel = totalTime ? `${Number(totalTime).toFixed(2)}s` : '—';
         const updatedAt = item.finished_at || item.started_at || item.created_at;
+        const actions = canPauseJob(item)
+          ? `<button type="button" class="btn btn-sm btn-outline-warning" data-action="pause-job" data-job-id="${escapeHtml(item.id || '')}">Pausar</button>`
+          : '<span class="text-muted small">—</span>';
         return `
           <tr>
             <td class="text-muted">${protocolo}</td>
@@ -884,12 +929,13 @@
             <td>${escapeHtml(totalLabel)}</td>
             <td>${mensagem}</td>
             <td>${formatDate(updatedAt)}</td>
+            <td>${actions}</td>
           </tr>`;
       }).join('');
       tableBody.innerHTML = rows;
       summary.textContent = `Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
     } catch(err){
-      tableBody.innerHTML = '<tr><td colspan="8" class="text-center text-danger py-3">Erro ao carregar importações.</td></tr>';
+      tableBody.innerHTML = '<tr><td colspan="9" class="text-center text-danger py-3">Erro ao carregar importações.</td></tr>';
       summary.textContent = err.message;
     }
   }
@@ -1044,6 +1090,17 @@
 
   refreshBtn?.addEventListener('click', function(){
     loadJobs();
+  });
+
+  tableBody.addEventListener('click', function(evt){
+    const btn = evt.target.closest('[data-action="pause-job"]');
+    if(!btn) return;
+    const jobId = btn.getAttribute('data-job-id');
+    if(!jobId) return;
+    btn.disabled = true;
+    pauseJob(jobId).finally(() => {
+      btn.disabled = false;
+    });
   });
 
   document.addEventListener('visibilitychange', function(){
@@ -1578,7 +1635,7 @@
   const simproBatchImportBtn = document.getElementById('simproBatchImportBtn');
   const simproBatchClearBtn = document.getElementById('simproBatchClearBtn');
   const simproBatchDataRef = document.getElementById('simproBatchDataRef');
-  // SIMPRO é sempre acumulativo - não tem opção de truncate
+  // SIMPRO usa modo split por alíquota para coexistência de preços
   
   let simproFilesQueue = [];
   function extractSimproInfo(filename) {
@@ -1665,7 +1722,7 @@
     simproBatchImportBtn.disabled = true;
     
     const dataRef = simproBatchDataRef?.value || '';
-    // SIMPRO é sempre acumulativo
+    // SIMPRO split por alíquota (coexistência por versão/alíquota)
     
     for (let i = 0; i < simproFilesQueue.length; i++) {
       const item = simproFilesQueue[i];
@@ -1686,7 +1743,7 @@
       // UFs
       if (item.ufs.length) item.ufs.forEach(uf => formData.append('ufs', uf));
       
-      // SIMPRO é sempre acumulativo - não envia truncate
+      // No lote rápido, não enviamos truncate (evita limpeza total acidental)
       
       try {
         const resp = await fetch('{{ url_for("insumos_import") }}', {
@@ -1722,7 +1779,8 @@
           if (result.success) {
             item.status = 'ok';
             const linhas = result.job?.linhas_materializadas || 0;
-            item.statusText = `✓ OK (${linhas} linhas)`;
+            const detalhe = [item.versao ? `v${item.versao}` : null, item.aliquota ? `alq ${item.aliquota}` : null].filter(Boolean).join(' / ');
+            item.statusText = detalhe ? `✓ OK (${linhas} linhas, ${detalhe})` : `✓ OK (${linhas} linhas)`;
           } else {
             item.status = 'error';
             item.statusText = result.message || 'Falha';

@@ -184,6 +184,13 @@
   margin-top: 0.125rem;
 }
 
+/* Alerta de sucesso (ex.: senha alterada) */
+.auth-alert-success {
+  background: #d1fae5;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+
 .auth-alert-content {
   flex: 1;
 }

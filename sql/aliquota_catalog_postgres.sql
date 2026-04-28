@@ -448,8 +448,10 @@ SELECT
     lp.sequencia,
     lp.etag_versao,
     s.id                AS item_id,
+    s.codigo_interno,
     s.codigo,
     s.codigo_alt,
+    s.tuss_numero,
     s.descricao,
     s.data_ref,
     s.preco1,
@@ -458,10 +460,12 @@ SELECT
     s.preco4,
     s.qtd_unidade,
     s.fabricante,
+    s.referencia,
     s.anvisa,
     s.validade_anvisa,
     s.ean,
     s.situacao,
+    s.status_final,
     s.imported_at
 FROM simpro_item_norm s
 JOIN last_pub lp ON lp.arquivo_label = s.arquivo;
@@ -504,8 +508,10 @@ SELECT
     s.sequencia,
     s.etag_versao,
     s.item_id,
+    s.codigo_interno,
     s.codigo,
     s.codigo_alt,
+    s.tuss_numero,
     s.descricao,
     s.data_ref,
     s.preco1,
@@ -514,10 +520,12 @@ SELECT
     s.preco4,
     s.qtd_unidade,
     s.fabricante,
+    s.referencia,
     s.anvisa,
     s.validade_anvisa,
     s.ean,
     s.situacao,
+    s.status_final,
     s.imported_at,
     concat('SIMPRO', ':', ua.uf, ':', s.etag_versao) AS etag_catalogo
 FROM vw_aliquota_vigente ua
