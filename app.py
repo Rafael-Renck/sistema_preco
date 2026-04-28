@@ -8779,7 +8779,7 @@ def insumos_sync_simpro_index(purge_only: bool) -> None:
         ).fetchall()
         click.echo(f'Reindexação SIMPRO concluída. Linhas SIMPRO em insumos_index: {total_ix}. Por alíquota (arred.):')
         for col_aq, ct in distinct_aq[:24]:
-            click.echo(f'  {col_aq} → {ct}')
+            click.echo(f'  {col_aq} -> {ct}')
         if distinct_aq and len(distinct_aq) > 24:
             click.echo(f'  … (+{len(distinct_aq) - 24} faixas)')
 
