@@ -14,7 +14,7 @@ from sqlalchemy import inspect
 
 # revision identifiers, used by Alembic.
 revision: str = "20260428_01_add_simpro_split_tables"
-down_revision: Union[str, None] = "20260427_01_add_simpro_fracionavel"
+down_revision: Union[str, None] = "20260428_00_widever"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

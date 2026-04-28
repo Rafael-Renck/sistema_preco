@@ -27,7 +27,7 @@ from flask_sqlalchemy import SQLAlchemy
 import pymysql
 from dotenv import load_dotenv
 from functools import wraps
-from sqlalchemy import text, or_, and_, func, false
+from sqlalchemy import text, or_, and_, func, false, case, literal, cast, Numeric, Unicode
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
@@ -1850,7 +1850,12 @@ class InsumoIndex(db.Model):
     tiss = db.Column(db.String(50), index=True, nullable=True)
     descricao = db.Column(db.String(500), index=True, nullable=True)
     preco = db.Column(db.Numeric(12, 4), nullable=True)
-    aliquota = db.Column(db.Numeric(12, 4), nullable=True)
+    aliquota = db.Column(
+        db.Numeric(12, 4),
+        primary_key=True,
+        nullable=False,
+        server_default=text('0'),
+    )
     fabricante = db.Column(db.String(255), nullable=True)
     anvisa = db.Column(db.String(50), index=True, nullable=True)
     versao_tabela = db.Column(db.String(100), nullable=True)
@@ -3307,6 +3312,46 @@ def _encode_uf_codes(codes: Sequence[str] | None) -> str | None:
     return '|' + '|'.join(filtered) + '|'
 
 
+_SIMPRO_ALIQUOTA_UF_ROWS: tuple[tuple[str, list[str]], ...] = tuple(
+    (s, ufs)
+    for s, ufs in [
+        ('17', ['DF', 'ES', 'MT', 'MS', 'RS', 'SC']),
+        ('18', ['AP', 'MG', 'SP']),
+        ('19', ['AC', 'AL', 'GO', 'PA', 'SE']),
+        ('19.5', ['PR', 'RO']),
+        ('20', ['AM', 'CE', 'PB', 'RN', 'RR', 'TO']),
+        ('20.5', ['BA', 'PE']),
+        ('22', ['RJ']),
+        ('22.5', ['PI']),
+        ('23', ['MA']),
+    ]
+)
+
+
+def _sql_insumo_uf_referencia_from_aliquota_column(col_sql: str) -> str:
+    """
+    Fragmento SQL: retorna literal `|UF|…|` alinhado a `_ufs_pertencentes_a_aliquota_piso`,
+    com tolerância como `_br_aliquota_certeiro`: ABS(a−b) < 0.02.
+    """
+    parts = ['CASE']
+    for rate_str, ufs in _SIMPRO_ALIQUOTA_UF_ROWS:
+        enc = _encode_uf_codes(ufs)
+        if not enc:
+            continue
+        esc = enc.replace("'", "''")
+        rq = Decimal(str(rate_str))
+        rate_lit = format(rq, 'f').replace("'", "''")
+        parts.append(
+            '    WHEN '
+            f'{col_sql} IS NOT NULL AND ABS(CAST({col_sql} AS DECIMAL(14, 4)) - CAST(\'{rate_lit}\' AS DECIMAL(14, 4)))'
+            ' < CAST(0.02 AS DECIMAL(14, 4)) '
+            f"THEN '{esc}'"
+        )
+    parts.append('    ELSE NULL')
+    parts.append('END')
+    return '\n'.join(parts)
+
+
 UF_SPLIT_RE = re.compile(r'[|,\s]+')
 
 
@@ -3710,6 +3755,7 @@ def _sync_bras_insumo_index(
             LEFT JOIN insumos_index idx
               ON idx.origem = 'BRAS'
              AND idx.item_id = n.id
+             AND idx.aliquota = ({aliquota_sql})
             WHERE n.id IN {in_clause}
             ON DUPLICATE KEY UPDATE
                 tuss = VALUES(tuss),
@@ -4064,7 +4110,8 @@ def _align_bras_n_import_version(
 
 def _patch_insumo_from_bras_item_n(n: BrasItemNormalized) -> None:
     """Atualiza linha de `insumos_index` a partir de um `bras_item_n` (após ajuste de preço leve)."""
-    idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=n.id).first()
+    alq_key = _br_norm_aliquota(n.aliquota_ou_ipi) if n.aliquota_ou_ipi is not None else Decimal('0')
+    idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=n.id, aliquota=alq_key).first()
     if not idx:
         return
     preco = n.preco_pmc_unit or n.preco_pmc_pacote or n.preco_pfb_unit or n.preco_pfb_pacote
@@ -4087,20 +4134,9 @@ def _ufs_pertencentes_a_aliquota_piso(alq: Decimal) -> list[str]:
     UFs atribuídas à alíquota na tabela piso (ANVISA), inverso do mapa UF→alíquota.
     Usado para preencher `insumos_index.uf_referencia` após import por alíquota.
     """
-    pairs: list[tuple[str, list[str]]] = [
-        ('17', ['DF', 'ES', 'MT', 'MS', 'RS', 'SC']),
-        ('18', ['AP', 'MG', 'SP']),
-        ('19', ['AC', 'AL', 'GO', 'PA', 'SE']),
-        ('19.5', ['PR', 'RO']),
-        ('20', ['AM', 'CE', 'PB', 'RN', 'RR', 'TO']),
-        ('20.5', ['BA', 'PE']),
-        ('22', ['RJ']),
-        ('22.5', ['PI']),
-        ('23', ['MA']),
-    ]
     aln = _br_norm_aliquota(alq) or alq
     out: set[str] = set()
-    for a_str, ufs in pairs:
+    for a_str, ufs in _SIMPRO_ALIQUOTA_UF_ROWS:
         a = _br_norm_aliquota(Decimal(a_str)) or Decimal(a_str)
         if _br_aliquota_certeiro(a, aln):
             out.update(ufs)
@@ -4158,7 +4194,7 @@ def _reatribuir_insumo_bras_apos_import_precos(
         desc = ' • '.join([x for x in (p1, p2) if x]) or None
         vtab_source = (versao_label or '').strip() or n.edicao or n.arquivo
         vtab = vtab_source[:100] if vtab_source else None
-        idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=nid).first()
+        idx = InsumoIndex.query.filter_by(origem='BRAS', item_id=nid, aliquota=alq).first()
         if idx is None:
             idx = InsumoIndex(
                 origem='BRAS',
@@ -4907,6 +4943,7 @@ def _sync_simpro_insumo_index(
     preco_sql = _sql_clamp_decimal(preco_expr)
     aliquota_sql = _sql_clamp_decimal("p.aliquota", integer_digits=4, scale=4)
     descricao_expr = "TRIM(COALESCE(c.descricao, ''))"
+    uf_from_preco_aliquota = _sql_insumo_uf_referencia_from_aliquota_column('p.aliquota')
 
     upsert_template = text(
         """
@@ -4931,7 +4968,9 @@ def _sync_simpro_insumo_index(
             c.anvisa AS anvisa,
             c.versao AS versao_tabela,
             c.data_ref AS data_atualizacao,
-            COALESCE(:uf_storage, :uf_default) AS uf_referencia,
+            COALESCE(:uf_storage, :uf_default,
+            {uf_from_preco_aliquota}
+            ) AS uf_referencia,
             NOW() AS updated_at
         FROM simpro_item_preco p
         INNER JOIN simpro_item_cadastro c ON c.id = p.cadastro_id
@@ -4948,7 +4987,7 @@ def _sync_simpro_insumo_index(
             data_atualizacao = VALUES(data_atualizacao),
             uf_referencia = VALUES(uf_referencia),
             updated_at = VALUES(updated_at)
-        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql).replace('{descricao_expr}', descricao_expr)
+        """.replace('{where_clause}', where_clause).replace('{preco_sql}', preco_sql).replace('{aliquota_sql}', aliquota_sql).replace('{descricao_expr}', descricao_expr).replace('{uf_from_preco_aliquota}', uf_from_preco_aliquota)
     )
 
     db.session.execute(upsert_template, params_base)
@@ -7027,6 +7066,157 @@ def _prefetch_insumo_related(rows: list['InsumoIndex']) -> dict[str, dict]:
     }
 
 
+def _wrap_insumos_index_latest_version(filters: dict):
+    """
+    Deduplica `insumos_index` quando há vários cadastros (versões) para o mesmo
+    código comercial (TISS+tuss…) + alíquota — mantém o mais recente por
+    `data_ref` / `imported_at` do cadastro e preço, depois por `updated_at` e `item_id`.
+    """
+    base_q = _apply_insumo_filters(InsumoIndex.query, filters)
+    rn = (
+        func.row_number()
+        .over(
+            partition_by=[
+                case(
+                    (
+                        InsumoIndex.origem == literal('SIMPRO'),
+                        func.concat_ws(
+                            literal('|'),
+                            func.coalesce(InsumoIndex.tiss, literal('')),
+                            cast(InsumoIndex.aliquota, Numeric(14, 4)),
+                        ),
+                    ),
+                    else_=func.concat_ws(
+                        literal('|'),
+                        cast(InsumoIndex.origem, Unicode(12)),
+                        cast(InsumoIndex.item_id, Unicode(32)),
+                        cast(InsumoIndex.aliquota, Numeric(14, 4)),
+                    ),
+                ),
+            ],
+            order_by=(
+                func.coalesce(func.unix_timestamp(SimproItemCadastro.data_ref), 0).desc(),
+                func.coalesce(func.unix_timestamp(SimproItemCadastro.imported_at), 0).desc(),
+                func.coalesce(func.unix_timestamp(SimproItemPreco.imported_at), 0).desc(),
+                func.coalesce(func.unix_timestamp(InsumoIndex.updated_at), 0).desc(),
+                InsumoIndex.item_id.desc(),
+            ),
+        )
+        .label('_rn_versao')
+    )
+    inner = (
+        base_q.outerjoin(
+            SimproItemCadastro,
+            and_(
+                InsumoIndex.origem == literal('SIMPRO'),
+                SimproItemCadastro.id == InsumoIndex.item_id,
+            ),
+        ).outerjoin(
+            SimproItemPreco,
+            and_(
+                SimproItemPreco.cadastro_id == InsumoIndex.item_id,
+                SimproItemPreco.aliquota == InsumoIndex.aliquota,
+            ),
+        ).add_columns(rn)
+    )
+    ranked = inner.subquery('rn_ix')
+    rc = ranked.c
+    return (
+        db.session.query(InsumoIndex)
+        .select_from(ranked)
+        .join(
+            InsumoIndex,
+            and_(
+                InsumoIndex.origem == rc.origem,
+                InsumoIndex.item_id == rc.item_id,
+                InsumoIndex.aliquota == rc.aliquota,
+            ),
+        )
+        .filter(rc._rn_versao == 1)
+    )
+
+
+def _simpro_grupo_versao_chave_serializado(it: dict) -> tuple[str, Decimal]:
+    """Alinha ao PARTITION do dedupe SQL: mesmo TISS (texto índice) + alíquota normalizada."""
+    tiss_txt = str(it.get('tiss') or '').strip()
+    aq_str = _coerce_decimal(str(it.get('aliquota') or '0'))
+    al_dec = Decimal(aq_str) if aq_str is not None else Decimal('0')
+    al_fin = _br_norm_aliquota(al_dec) or al_dec
+    return (tiss_txt, al_fin)
+
+
+def _marcar_destaque_versao_mais_recente(items: list[dict]) -> None:
+    """
+    Para SIMPRO com mais de uma linha no resultado (mesmo TISS + alíquota),
+    marca a cadastro/preço mais recente com ``destaque_versao_mais_recente``.
+    Critérios alinhados a ``_wrap_insumos_index_latest_version`` / ROW_NUMBER().
+    """
+    grupos: dict[tuple[str, Decimal], list[dict]] = {}
+    for it in items:
+        if str(it.get('origem')).upper() != 'SIMPRO':
+            continue
+        grupos.setdefault(_simpro_grupo_versao_chave_serializado(it), []).append(it)
+
+    candidatos = [g for g in grupos.values() if len(g) >= 2]
+    if not candidatos:
+        return
+
+    ids_flat: set[int] = set()
+    for grp in candidatos:
+        for it in grp:
+            try:
+                ids_flat.add(int(it['item_id']))
+            except (TypeError, ValueError, KeyError):
+                continue
+    if not ids_flat:
+        return
+
+    cadastros = (
+        SimproItemCadastro.query.filter(SimproItemCadastro.id.in_(ids_flat)).all()
+    )
+    cad_por_id = {int(c.id): c for c in cadastros if c.id is not None}
+
+    precos = SimproItemPreco.query.filter(SimproItemPreco.cadastro_id.in_(list(ids_flat))).all()
+    prec_por_ca: dict[tuple[int, str | None], SimproItemPreco] = {}
+    for p in precos:
+        if p.cadastro_id is None:
+            continue
+        key = (int(p.cadastro_id), _decimal_lookup_key(p.aliquota))
+        prec_por_ca[key] = p
+
+    def _parse_upd_iso(s: object | None) -> datetime:
+        if not s:
+            return datetime.min.replace(microsecond=0)
+        try:
+            t = str(s).strip()
+            if '+' not in t and t.endswith('Z'):
+                t = t[:-1] + '+00:00'
+            dt = datetime.fromisoformat(t)
+            if getattr(dt, 'tzinfo', None):
+                dt = dt.replace(tzinfo=None)
+            return dt
+        except Exception:
+            return datetime.min.replace(microsecond=0)
+
+    def _chave_ordem_recente(rec: dict) -> tuple:
+        cid = int(rec['item_id'])
+        aq_raw = Decimal(str(_coerce_decimal(str(rec.get('aliquota'))) or '0'))
+        aq_key = _decimal_lookup_key(_br_norm_aliquota(aq_raw) or aq_raw)
+        cad = cad_por_id.get(cid)
+        pr = prec_por_ca.get((cid, aq_key))
+        dt_ref_ord = cad.data_ref.toordinal() if cad and cad.data_ref else float('-inf')
+        ts_c_imp = cad.imported_at.timestamp() if cad and cad.imported_at else float('-inf')
+        ts_p_imp = pr.imported_at.timestamp() if pr and pr.imported_at else float('-inf')
+        ts_ix = _parse_upd_iso(rec.get('updated_at')).timestamp()
+        iid = int(rec['item_id'])
+        # Maior tuple = mais recente (consistente com ROW_NUMBER no SQL).
+        return (dt_ref_ord, ts_c_imp, ts_p_imp, ts_ix, iid)
+
+    for grp in candidatos:
+        best = max(grp, key=_chave_ordem_recente)
+        best['destaque_versao_mais_recente'] = True
+
+
 def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     """
     Busca da tela de insumos priorizando `insumos_index`, que ? muito mais barato
@@ -7035,10 +7225,17 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
     import hashlib
 
     filter_key = hashlib.md5(str(sorted(filters.items())).encode()).hexdigest()[:16]
-    base_query = _apply_insumo_filters(InsumoIndex.query, filters)
+    versao_tabela_f = (filters.get('versao_tabela') or '').strip()
+    dedupe_latest = bool(filters.get('versao_unica')) and not versao_tabela_f
+    base_query = (
+        _wrap_insumos_index_latest_version(filters)
+        if dedupe_latest
+        else _apply_insumo_filters(InsumoIndex.query, filters)
+    )
     query = base_query.order_by(
         InsumoIndex.origem.asc(),
         InsumoIndex.item_id.asc(),
+        InsumoIndex.aliquota.asc(),
     )
     cache_key = f'insumos_index_{filter_key}'
     total = _get_cached_count(cache_key, lambda: base_query.order_by(None).count())
@@ -7064,6 +7261,7 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
         _serialize_insumo_index(row, include_related=False, related_context=related_context)
         for row in rows
     ]
+    _marcar_destaque_versao_mais_recente(serialized)
 
     payload = {
         'items': serialized,
@@ -7644,6 +7842,8 @@ def _extract_insumo_filters(args) -> dict:
     tokens = [token.lower() for token in re.split(r'\s+', q) if token]
     filters['tokens'] = tokens[:6]
     filters['raw_q'] = q
+    _vu_raw = str(args.get('versao_unica', '') or '').strip().lower()
+    filters['versao_unica'] = _vu_raw in ('1', 'true', 'yes', 'y', 'on') if _vu_raw else False
     return filters
 
 
@@ -7782,6 +7982,14 @@ def _insumo_distinct_versions(model_cls) -> list[str]:
     result = [row[0] for row in rows if row[0]]
     _insumo_cache[cache_key] = result
     return result
+
+
+def _table_exists(table_name: str) -> bool:
+    try:
+        with db.engine.connect() as connection:
+            return bool(db.engine.dialect.has_table(connection, table_name))
+    except Exception:
+        return False
 
 
 def _get_teto_map(codigos: list[str], operadora_id: int | None = None) -> dict[str, 'CbhpmTeto']:
@@ -9208,7 +9416,7 @@ def health_check():
         counts['procedimentos'] = db.session.query(func.count(Procedimento.id)).scalar() or 0
         counts['simpro'] = db.session.query(func.count(SimproItemNormalized.id)).scalar() or 0
         counts['brasindice'] = db.session.query(func.count(BrasItemNormalized.id)).scalar() or 0
-        counts['insumos_index'] = db.session.query(func.count(InsumoIndex.id)).scalar() or 0
+        counts['insumos_index'] = InsumoIndex.query.count()
 
         # Últimas atualizações
         last_simpro = db.session.query(func.max(SimproItemNormalized.imported_at)).scalar()
@@ -15206,6 +15414,16 @@ def insumo_detail(origem: str, item_id: int):
 
     uf_param = (request.args.get('uf') or request.args.get('uf_referencia') or '').strip().upper()
 
+    aliquota_filter: Decimal | None = None
+    aliquota_qs = (request.args.get('aliquota') or '').strip()
+    if aliquota_qs:
+        aliquota_coerced = _coerce_decimal(aliquota_qs.replace(',', '.'))
+        if aliquota_coerced:
+            try:
+                aliquota_filter = Decimal(aliquota_coerced)
+            except (InvalidOperation, ValueError, TypeError):
+                aliquota_filter = None
+
     catalog_entry, historico_rows = _resolve_catalogo_history(
         origem,
         item_id=item_id,
@@ -15251,6 +15469,8 @@ def insumo_detail(origem: str, item_id: int):
             })
 
     index_query = InsumoIndex.query.filter_by(origem=origem, item_id=item_id)
+    if aliquota_filter is not None:
+        index_query = index_query.filter(InsumoIndex.aliquota == aliquota_filter)
     if uf_param:
         like_pattern = f"%|{uf_param}|%"
         index_entry = index_query.filter(
@@ -15262,7 +15482,7 @@ def insumo_detail(origem: str, item_id: int):
     else:
         index_entry = None
     if index_entry is None:
-        index_entry = index_query.first()
+        index_entry = index_query.order_by(InsumoIndex.updated_at.desc()).first()
 
     detail_payload = _serialize_insumo_detail(
             origem,
@@ -15377,9 +15597,13 @@ def insumo_contexto_create(origem: str, item_id: int):
 @feature_required('insumos')
 def insumos_dashboard():
     bras_summary = _insumo_summary(BrasItemNormalized)
-    simpro_summary = _insumo_summary(SimproItemNormalized)
     bras_versions = _insumo_distinct_versions(BrasItemNormalized)
-    simpro_versions = _insumo_distinct_versions(SimproItemNormalized)
+    if _table_exists('simpro_item_cadastro'):
+        simpro_summary = _insumo_summary(SimproItemCadastro)
+        simpro_versions = _insumo_distinct_versions(SimproItemCadastro)
+    else:
+        simpro_summary = _insumo_summary(SimproItemNormalized)
+        simpro_versions = _insumo_distinct_versions(SimproItemNormalized)
     versions = sorted(set(bras_versions + simpro_versions))
 
     return render_template(

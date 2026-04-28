@@ -6,6 +6,16 @@
 {% block styles %}
 {{ super() }}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/toast.css') }}">
+<style>
+  /* Destaque da versão mais recente quando há várias linhas para o mesmo TISS+alíquota */
+  tr.insumo-row-versao-atual td {
+    background-color: rgba(16, 185, 129, 0.14) !important;
+    box-shadow: inset 4px 0 0 #10b981;
+  }
+  tr.insumo-row-versao-atual:hover td {
+    background-color: rgba(16, 185, 129, 0.22) !important;
+  }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -1049,6 +1059,9 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const ufCodes = Array.isArray(item.uf_referencia_codes) ? item.uf_referencia_codes : [];
       const uf = escapeHtml(ufCodes.length ? ufCodes.join(', ') : (item.uf_referencia || '—'));
       const ufForDetail = ufCodes.length ? ufCodes[0] : (item.uf_referencia || '');
+      const aliquotaParam = item.aliquota != null && String(item.aliquota).trim()
+        ? String(item.aliquota).trim()
+        : '';
       const aliquota = formatAliquota(item.aliquota);
       const tussDisplay = escapeHtml(formatTussValue(item));
       const simproCodes = escapeHtml(formatSimproCodes(item));
@@ -1060,8 +1073,13 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         ? `<div class="text-muted small">${simproCodes || 'SIMPRO: —'}</div>${simproPackaging ? `<div class="text-muted small">${simproPackaging}</div>` : ''}`
         : `<div class="text-muted small">TISS: ${escapeHtml(item.tiss || '—')}</div>`;
 
+      const trDestaque = item.destaque_versao_mais_recente ? 'insumo-row-versao-atual' : '';
+      const badgeVersaoDestaque = item.destaque_versao_mais_recente
+        ? `<span class="badge bg-success ms-1 align-middle" title="Cadastro mais recente para este mesmo TISS e alíquota"><i class="bi bi-check2-circle"></i> Mais recente</span>`
+        : '';
+
       return `
-        <tr>
+        <tr class="${trDestaque}">
           <td class="fw-600 small">${origem}</td>
           <td class="small">
             <div class="fw-600">${tussDisplay}</div>
@@ -1075,10 +1093,10 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
           <td class="text-end small fw-600">${precoPfb}</td>
           <td class="text-center small">${uf}</td>
           <td class="text-end small">${aliquota}</td>
-          <td class="small">${escapeHtml(item.versao_tabela || '—')}</td>
+          <td class="small">${badgeVersaoDestaque}${escapeHtml(item.versao_tabela || '—')}</td>
           <td class="small text-muted">${atualizacao}</td>
           <td class="text-center">
-            <button type="button" class="btn btn-sm btn-outline-primary visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail)}" title="Detalhes">
+            <button type="button" class="btn btn-sm btn-outline-primary visualizar-item" data-origem="${origem}" data-id="${item.item_id}" data-uf="${escapeHtml(ufForDetail)}" data-aliquota="${escapeHtml(aliquotaParam)}" title="Detalhes">
               <i class="bi bi-eye"></i>
             </button>
           </td>
@@ -1292,10 +1310,15 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     const origem = btn.getAttribute('data-origem');
     const itemId = Number(btn.getAttribute('data-id'));
     const ufItem = btn.getAttribute('data-uf') || '';
+    const aliqItem = (btn.getAttribute('data-aliquota') || '').trim();
     if(!origem || !itemId) return;
 
-    // Busca detalhes do item na API
-    fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}?uf=${encodeURIComponent(ufItem)}`)
+    // Busca detalhes do item na API (alíquota garante a linha correta quando há várias por item)
+    const detailQs = new URLSearchParams();
+    if(ufItem) detailQs.set('uf', ufItem);
+    if(aliqItem) detailQs.set('aliquota', aliqItem);
+    const detailQuery = detailQs.toString();
+    fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}${detailQuery ? `?${detailQuery}` : ''}`)
       .then(r => r.json())
       .then(detail => {
         currentDetail = detail;
