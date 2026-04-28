@@ -7828,6 +7828,8 @@ def _extract_insumo_filters(args) -> dict:
     aliquota_raw = (args.get('aliquota') or '').strip()
     aliquota_filter = _coerce_decimal(aliquota_raw) if aliquota_raw else None
     aliquota_value = Decimal(aliquota_filter) if aliquota_filter is not None else None
+    if aliquota_value is not None:
+        aliquota_value = _br_norm_aliquota(aliquota_value) or aliquota_value
     filters = {
         'origem': origem or None,
         'tuss': (args.get('tuss') or '').strip() or None,
@@ -7873,7 +7875,21 @@ def _apply_insumo_filters(query, filters: dict):
             )
         )
     if filters.get('aliquota') is not None:
-        query = query.filter(InsumoIndex.aliquota == filters['aliquota'])
+        aq = filters['aliquota']
+        if isinstance(aq, Decimal):
+            aq_dec = aq
+        else:
+            try:
+                aq_dec = Decimal(str(aq))
+            except (InvalidOperation, ValueError, TypeError):
+                aq_dec = None
+        if aq_dec is not None:
+            tol = Decimal('0.02')
+            query = query.filter(
+                InsumoIndex.aliquota.isnot(None),
+                InsumoIndex.aliquota >= aq_dec - tol,
+                InsumoIndex.aliquota <= aq_dec + tol,
+            )
 
     tokens = [token for token in (filters.get('tokens') or []) if token]
     allow_simpro_ref_lookup = (filters.get('origem') or '').upper() in ('', 'SIMPRO')
@@ -8692,10 +8708,9 @@ def insumos_optimize() -> None:
 
 @app.cli.command('insumos:clear-cache')
 def insumos_clear_cache() -> None:
-    """Limpa cache de contagens de insumos."""
-    global _CATALOGO_COUNT_CACHE
-    _CATALOGO_COUNT_CACHE.clear()
-    click.echo("Cache de contagens limpo!")
+    """Limpa caches de insumos (resumos na tela e contagens de busca por filtro)."""
+    _clear_insumo_cache()
+    click.echo("Cache de insumos e contagens limpo!")
 
 
 @app.cli.command('insumos:sync-simpro-index')
@@ -8711,11 +8726,25 @@ def insumos_sync_simpro_index(purge_only: bool) -> None:
         db.session.commit()
         click.echo('Removido SIMPRO de insumos_index.')
         if purge_only:
+            _clear_insumo_cache()
             return
         _sync_simpro_insumo_index(None)
         _backfill_catalogo_simpro_identifiers()
-        _CATALOGO_COUNT_CACHE.clear()
-        click.echo('Reindexação SIMPRO concluída (insumos_index + backfill catálogo).')
+        _clear_insumo_cache()
+        total_ix = db.session.execute(
+            text("SELECT COUNT(*) FROM insumos_index WHERE origem = 'SIMPRO'")
+        ).scalar()
+        distinct_aq = db.session.execute(
+            text(
+                "SELECT ROUND(aliquota, 2), COUNT(*) FROM insumos_index "
+                "WHERE origem = 'SIMPRO' GROUP BY ROUND(aliquota, 2) ORDER BY ROUND(aliquota, 2)"
+            )
+        ).fetchall()
+        click.echo(f'Reindexação SIMPRO concluída. Linhas SIMPRO em insumos_index: {total_ix}. Por alíquota (arred.):')
+        for col_aq, ct in distinct_aq[:24]:
+            click.echo(f'  {col_aq} → {ct}')
+        if distinct_aq and len(distinct_aq) > 24:
+            click.echo(f'  … (+{len(distinct_aq) - 24} faixas)')
 
 
 @app.cli.command('unlock-user')
