@@ -8698,6 +8698,26 @@ def insumos_clear_cache() -> None:
     click.echo("Cache de contagens limpo!")
 
 
+@app.cli.command('insumos:sync-simpro-index')
+@click.option('--purge-only', is_flag=True, help='Apenas remove linhas SIMPRO do insumos_index.')
+def insumos_sync_simpro_index(purge_only: bool) -> None:
+    """
+    Recria entradas de busca SIMPRO em `insumos_index` a partir de `simpro_item_cadastro`
+    + `simpro_item_preco`. Use após mysqldump/restore só das tabelas SIMPRO, quando a lista
+    de insumos fica incompleta por UF/alíquota.
+    """
+    with app.app_context():
+        db.session.execute(text("DELETE FROM insumos_index WHERE origem = 'SIMPRO'"))
+        db.session.commit()
+        click.echo('Removido SIMPRO de insumos_index.')
+        if purge_only:
+            return
+        _sync_simpro_insumo_index(None)
+        _backfill_catalogo_simpro_identifiers()
+        _CATALOGO_COUNT_CACHE.clear()
+        click.echo('Reindexação SIMPRO concluída (insumos_index + backfill catálogo).')
+
+
 @app.cli.command('unlock-user')
 @click.argument('email')
 def unlock_user(email: str) -> None:
