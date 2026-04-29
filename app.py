@@ -175,6 +175,50 @@ def _clear_insumo_cache():
     except Exception:
         pass
 
+
+def _catalog_count_cache_ttl_seconds() -> float:
+    """TTL do cache de COUNT na busca de insumos (segundos). Após import, subir vía INSUMOS_COUNT_CACHE_TTL reduz picos."""
+    try:
+        return max(30.0, float(os.getenv('INSUMOS_COUNT_CACHE_TTL', '120')))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def _schedule_post_import_analyze_tables() -> None:
+    """
+    Opcional: ANALYZE TABLE em segundo plano após import grande ajuda o MySQL/MariaDB
+    a atualizar estatísticas e evitar planos lentos em COUNT/JOIN.
+
+    POST_IMPORT_ANALYZE_TABLES=lista separada por vírgula, ex.:
+    insumos_index,simpro_item_cadastro,simpro_item_preco
+    """
+    raw = (os.getenv('POST_IMPORT_ANALYZE_TABLES') or '').strip()
+    if not raw or raw.lower() in {'0', 'false', 'no'}:
+        return
+    tables = [t.strip() for t in raw.split(',') if t.strip()]
+    if not tables:
+        return
+
+    def _run() -> None:
+        try:
+            with app.app_context():
+                bind = db.session.bind
+                dialect = (bind.dialect.name if bind is not None else '').lower()
+                if dialect not in {'mysql', 'mariadb'}:
+                    return
+                for tbl in tables[:40]:
+                    safe = ''.join(c for c in tbl if c.isalnum() or c == '_')
+                    if not safe or safe != tbl:
+                        app.logger.warning('POST_IMPORT ANALYZE: nome de tabela ignorado (%r)', tbl)
+                        continue
+                    db.session.execute(text(f'ANALYZE TABLE `{safe}`'))
+                db.session.commit()
+                app.logger.info('POST_IMPORT ANALYZE TABLE concluído: %s', tables)
+        except Exception as exc:  # noqa: BLE001
+            app.logger.warning('POST_IMPORT ANALYZE falhou: %s', exc)
+
+    threading.Thread(target=_run, name='PostImportAnalyze', daemon=True).start()
+
 PASSWORD_EXPIRATION_DAYS = 90
 PASSWORD_HISTORY_SIZE = int(os.getenv('PASSWORD_HISTORY_SIZE', '5') or '5')
 PASSWORD_MIN_LENGTH = int(os.getenv('PASSWORD_MIN_LENGTH', '10') or '10')
@@ -7079,17 +7123,17 @@ def _catalogo_search_bras_cadastro_preco_fallback(
     return None
 
 
-# Cache simples para contagens de catálogo (TTL de 60 segundos)
+# Cache simples para contagens na busca de insumos (TTL configurável; default 120s — ver INSUMOS_COUNT_CACHE_TTL).
 _CATALOGO_COUNT_CACHE: dict[str, tuple[int, float]] = {}
-_CATALOGO_COUNT_CACHE_TTL = 60.0  # segundos
 
 
 def _get_cached_count(cache_key: str, query_fn) -> int:
     """Retorna contagem do cache ou executa query se expirado."""
     import time
     now = time.time()
+    ttl = _catalog_count_cache_ttl_seconds()
     cached = _CATALOGO_COUNT_CACHE.get(cache_key)
-    if cached and (now - cached[1]) < _CATALOGO_COUNT_CACHE_TTL:
+    if cached and (now - cached[1]) < ttl:
         return cached[0]
     count = query_fn()
     _CATALOGO_COUNT_CACHE[cache_key] = (count, now)
@@ -16315,6 +16359,8 @@ def _run_import_job(job_id: str) -> None:
             if job:
                 _set_job_metrics(job, metrics)
                 db.session.commit()
+                if job.status == ImportJobStatus.SUCCESS.value:
+                    _schedule_post_import_analyze_tables()
             app.logger.info(
                 'Import job %s concluído em %.2fs (linhas=%s, estratégia=%s).',
                 job_id,
