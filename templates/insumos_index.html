@@ -1067,8 +1067,9 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const simproCodes = escapeHtml(formatSimproCodes(item));
       const simproPackaging = escapeHtml(formatSimproPackaging(item));
       const anvisaHtml = renderAnvisaLink(item.anvisa);
-      const precoPmc = formatMoney(item.preco_pmc ?? item.preco);
-      const precoPfb = formatMoney(item.preco_pfb ?? item.preco);
+      // Não usar item.preco como fallback: quando só PFB existe a API manda preco_pmc=null e ?? mascararia com o preço genérico.
+      const precoPmc = formatMoney(item.preco_pmc);
+      const precoPfb = formatMoney(item.preco_pfb);
       const codigoMeta = item.origem === 'SIMPRO'
         ? `<div class="text-muted small">${simproCodes || 'SIMPRO: —'}</div>${simproPackaging ? `<div class="text-muted small">${simproPackaging}</div>` : ''}`
         : `<div class="text-muted small">TISS: ${escapeHtml(item.tiss || '—')}</div>`;
@@ -1077,10 +1078,13 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const badgeVersaoDestaque = item.destaque_versao_mais_recente
         ? `<span class="badge bg-success ms-1 align-middle" title="Cadastro mais recente para este mesmo TISS e alíquota"><i class="bi bi-check2-circle"></i> Mais recente</span>`
         : '';
+      const badgeOutraUf = item.cross_uf_preview
+        ? `<span class="badge bg-info text-dark ms-1 align-middle" title="Preço cadastrado em outra UF; abra Detalhes para incluir na UF dos filtros">Outra UF</span>`
+        : '';
 
       return `
         <tr class="${trDestaque}">
-          <td class="fw-600 small">${origem}</td>
+          <td class="fw-600 small">${origem}${badgeOutraUf}</td>
           <td class="small">
             <div class="fw-600">${tussDisplay}</div>
             ${codigoMeta}
@@ -1190,6 +1194,7 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       const items = payload.items || [];
       const pagination = payload.pagination || {};
       const emptyHint = payload.empty_hint || '';
+      const crossUfPreview = payload.cross_uf_preview === true;
       const total = Number(pagination.total || 0);
 
       // Atualiza variáveis de paginação
@@ -1205,7 +1210,11 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       if(total > 0) {
         const start = ((page - 1) * Number(pagination.per_page || 0)) + 1;
         const end = start + items.length - 1;
-        resumo.textContent = `Mostrando ${start}–${end} de ${total.toLocaleString('pt-BR')} itens`;
+        let summary = `Mostrando ${start}–${end} de ${total.toLocaleString('pt-BR')} itens`;
+        if(crossUfPreview && emptyHint) {
+          summary = `${emptyHint} Itens abaixo são de outras UFs — use «Detalhes» para cadastrar preço na UF dos filtros.`;
+        }
+        resumo.textContent = summary;
       } else {
         resumo.textContent = emptyHint || 'Nenhum item encontrado';
         if(emptyHint) {
@@ -1317,6 +1326,11 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
     const detailQs = new URLSearchParams();
     if(ufItem) detailQs.set('uf', ufItem);
     if(aliqItem) detailQs.set('aliquota', aliqItem);
+    const filtrosDet = getFilters();
+    const ufFiltro = (filtrosDet.get('uf_referencia') || '').trim();
+    const aliqFiltro = (filtrosDet.get('aliquota') || '').trim();
+    if(ufFiltro) detailQs.set('target_uf', ufFiltro);
+    if(aliqFiltro) detailQs.set('target_aliquota', aliqFiltro);
     const detailQuery = detailQs.toString();
     fetch(`/insumos/${encodeURIComponent(origem)}/${itemId}${detailQuery ? `?${detailQuery}` : ''}`)
       .then(r => r.json())
@@ -1340,8 +1354,8 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       ['ANVISA', renderAnvisaLink(data.anvisa)],
       ['Descrição', data.descricao || ''],
       ['Fabricante', data.fabricante || '—'],
-      ['PMC', formatMoney(data.preco_pmc ?? data.preco)],
-      ['PFB', formatMoney(data.preco_pfb ?? data.preco)],
+      ['PMC', formatMoney(data.preco_pmc)],
+      ['PFB', formatMoney(data.preco_pfb)],
       ['Alíquota', formatAliquota(data.aliquota)],
       ['UF', data.uf_referencia || '—'],
       ['Versão', data.versao_tabela || '—'],
@@ -1374,8 +1388,62 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
         </div>`;
     }).join('');
 
-    // Insere HTML no corpo do modal
-    modalBody.innerHTML = `<div>${entriesMarkup}</div>`;
+    let manualHtml = '';
+    const mp = data.manual_price;
+    if(mp && mp.show) {
+      if(mp.already_has_price) {
+        manualHtml = `<div class="alert alert-secondary mt-3 small mb-0">Já existe preço cadastrado para a alíquota ${escapeHtml(String(mp.target_aliquota))}% neste cadastro.</div>`;
+      } else if(!mp.uf_matches_aliquota_map) {
+        manualHtml = `<div class="alert alert-warning mt-3 small mb-0">A UF <strong>${escapeHtml(mp.target_uf)}</strong> não corresponde ao piso da alíquota <strong>${escapeHtml(String(mp.target_aliquota))}%</strong> no mapa SIMPRO usado pelo sistema. Ajuste UF ou alíquota nos filtros.</div>`;
+      } else {
+        manualHtml = `
+          <div class="border-top mt-3 pt-3">
+            <h6 class="fw-600 mb-2"><i class="bi bi-plus-circle me-1"></i>Registrar preço manual</h6>
+            <p class="small text-muted mb-2">Para os filtros atuais: <strong>${escapeHtml(mp.target_uf)}</strong> — <strong>${escapeHtml(String(mp.target_aliquota))}%</strong>. Informe ao menos PMC ou PFB.</p>
+            <div class="row g-2 mb-2">
+              <div class="col-md-6"><label class="form-label small mb-0">PMC (R$)</label><input type="text" class="form-control form-control-sm" id="mpPMC" inputmode="decimal" placeholder="0,00" autocomplete="off" /></div>
+              <div class="col-md-6"><label class="form-label small mb-0">PFB (R$)</label><input type="text" class="form-control form-control-sm" id="mpPFB" inputmode="decimal" placeholder="0,00" autocomplete="off" /></div>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="mpSalvar"><i class="bi bi-save me-1"></i>Salvar preço</button>
+          </div>`;
+      }
+    }
+
+    modalBody.innerHTML = `<div>${entriesMarkup}</div>${manualHtml}`;
+
+    const mpBtn = document.getElementById('mpSalvar');
+    if(mpBtn && mp && mp.show && !mp.already_has_price && mp.uf_matches_aliquota_map) {
+      mpBtn.addEventListener('click', () => {
+        const pmc = (document.getElementById('mpPMC') && document.getElementById('mpPMC').value || '').trim();
+        const pfb = (document.getElementById('mpPFB') && document.getElementById('mpPFB').value || '').trim();
+        fetch(`/insumos/simpro/${mp.cadastro_id}/preco-manual`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uf_referencia: mp.target_uf,
+            aliquota: String(mp.target_aliquota).replace(',', '.'),
+            preco_pmc: pmc,
+            preco_pfb: pfb,
+          }),
+        })
+          .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j })))
+          .then(({ ok, j }) => {
+            if(!ok || !j.ok) {
+              const msg = (j && j.error) ? j.error : 'Erro ao salvar preço';
+              if(typeof Toast !== 'undefined') Toast.error(msg);
+              else alert(msg);
+              return;
+            }
+            if(typeof Toast !== 'undefined') Toast.success('Preço salvo. Atualize a busca para ver o item.');
+            else alert('Preço salvo.');
+            modal.hide();
+          })
+          .catch(() => {
+            if(typeof Toast !== 'undefined') Toast.error('Erro de rede ao salvar.');
+            else alert('Erro de rede.');
+          });
+      });
+    }
   }
 
   // ===== INICIALIZAÃ‡ÃƒO DO AUTOCOMPLETE =====

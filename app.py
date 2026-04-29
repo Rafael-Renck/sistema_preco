@@ -3330,6 +3330,38 @@ _SIMPRO_ALIQUOTA_UF_ROWS: tuple[tuple[str, list[str]], ...] = tuple(
 )
 
 
+def _simpro_piso_aliquota_for_uf(uf: str | None) -> Decimal | None:
+    """Alíquota (piso) SIMPRO associada à UF no mapa ``_SIMPRO_ALIQUOTA_UF_ROWS``, ou None."""
+    u = (uf or '').strip().upper()
+    if not u:
+        return None
+    for rate_str, ufs in _SIMPRO_ALIQUOTA_UF_ROWS:
+        if u in {x.upper() for x in ufs}:
+            try:
+                return Decimal(str(rate_str))
+            except (InvalidOperation, ValueError, TypeError):
+                return None
+    return None
+
+
+def _simpro_aliquota_includes_uf(aliquota: Decimal | None, uf: str | None) -> bool:
+    """True se a UF pertence ao piso SIMPRO da alíquota (mapa ``_SIMPRO_ALIQUOTA_UF_ROWS``)."""
+    if not (uf or '').strip():
+        return True
+    if aliquota is None:
+        return False
+    u = uf.strip().upper()
+    aq = _br_norm_aliquota(aliquota) or aliquota
+    for rate_str, ufs in _SIMPRO_ALIQUOTA_UF_ROWS:
+        try:
+            rq = Decimal(str(rate_str))
+        except Exception:
+            continue
+        if abs(aq - rq) < Decimal('0.02'):
+            return u in {x.upper() for x in ufs}
+    return True
+
+
 def _sql_insumo_uf_referencia_from_aliquota_column(col_sql: str) -> str:
     """
     Fragmento SQL: retorna literal `|UF|…|` alinhado a `_ufs_pertencentes_a_aliquota_piso`,
@@ -4913,27 +4945,8 @@ def _sync_bras_split_from_bras_n_fast(
     return stat
 
 
-def _sync_simpro_insumo_index(
-    arquivo_label: str | None,
-    *,
-    uf_default: str | None = None,
-    uf_values: Sequence[str] | None = None,
-    aliquota_default: Decimal | None = None,
-) -> None:
-    """Replica linhas de ``simpro_item_preco`` em ``insumos_index`` em lotes (evita INSERT único enorme)."""
-    target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
-    uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
-    if not uf_codes and aliquota_default is not None:
-        uf_codes = _ufs_pertencentes_a_aliquota_piso(aliquota_default)
-        if uf_codes and not uf_default:
-            uf_default = uf_codes[0]
-    uf_storage = _encode_uf_codes(uf_codes)
-
-    params_base: dict[str, object] = {
-        'uf_default': uf_default,
-        'uf_storage': uf_storage,
-    }
-
+def _simpro_insumo_index_upsert_sql_template() -> str:
+    """SQL INSERT…SELECT para popular ``insumos_index`` a partir de ``simpro_item_preco`` (inclui ``{where_clause}``)."""
     preco_expr = (
         "COALESCE("
         "NULLIF(p.preco2, 0), NULLIF(p.preco1, 0), NULLIF(p.preco3, 0), NULLIF(p.preco4, 0), "
@@ -4944,7 +4957,7 @@ def _sync_simpro_insumo_index(
     descricao_expr = "TRIM(COALESCE(c.descricao, ''))"
     uf_from_preco_aliquota = _sql_insumo_uf_referencia_from_aliquota_column('p.aliquota')
 
-    upsert_sql = (
+    return (
         """
         INSERT INTO insumos_index (
             origem, item_id, tuss, tiss, descricao, preco, aliquota,
@@ -4992,6 +5005,45 @@ def _sync_simpro_insumo_index(
         .replace('{descricao_expr}', descricao_expr)
         .replace('{uf_from_preco_aliquota}', uf_from_preco_aliquota)
     )
+
+
+def _sync_simpro_insumo_index_for_preco_ids(preco_ids: Sequence[int]) -> None:
+    """Atualiza ``insumos_index`` só para ``simpro_item_preco.id`` informados (após preço manual ou patch)."""
+    ids = sorted({int(x) for x in preco_ids if x is not None})
+    if not ids:
+        return
+    params_base: dict[str, object] = {'uf_default': None, 'uf_storage': None}
+    tpl = _simpro_insumo_index_upsert_sql_template()
+    chunk = 800
+    for i in range(0, len(ids), chunk):
+        part = ids[i : i + chunk]
+        wc = 'WHERE p.id IN (' + ','.join(str(x) for x in part) + ')'
+        db.session.execute(text(tpl.replace('{where_clause}', wc)), params_base)
+        db.session.commit()
+
+
+def _sync_simpro_insumo_index(
+    arquivo_label: str | None,
+    *,
+    uf_default: str | None = None,
+    uf_values: Sequence[str] | None = None,
+    aliquota_default: Decimal | None = None,
+) -> None:
+    """Replica linhas de ``simpro_item_preco`` em ``insumos_index`` em lotes (evita INSERT único enorme)."""
+    target_ufs = list(dict.fromkeys([*(uf_values or []), *( [uf_default] if uf_default else [] )]))
+    uf_codes = _normalize_uf_codes(target_ufs, uf_default=uf_default)
+    if not uf_codes and aliquota_default is not None:
+        uf_codes = _ufs_pertencentes_a_aliquota_piso(aliquota_default)
+        if uf_codes and not uf_default:
+            uf_default = uf_codes[0]
+    uf_storage = _encode_uf_codes(uf_codes)
+
+    params_base: dict[str, object] = {
+        'uf_default': uf_default,
+        'uf_storage': uf_storage,
+    }
+
+    upsert_sql = _simpro_insumo_index_upsert_sql_template()
 
     arquivo_strip = (arquivo_label or '').strip() or None
     last_id = 0
@@ -7281,6 +7333,10 @@ def _catalogo_search(filters: dict, page: int, per_page: int) -> dict:
         sp = _catalogo_search_bras_cadastro_preco_fallback(filters, page, per_page)
         if sp is not None:
             return sp
+        if page == 1:
+            simpro_xuf = _simpro_cross_uf_preview_search(filters, per_page)
+            if simpro_xuf is not None:
+                return simpro_xuf
         return {
             'items': [],
             'empty_hint': _build_empty_catalog_hint(filters),
@@ -7351,6 +7407,73 @@ def _build_empty_catalog_hint(filters: dict) -> str | None:
         return f'Nenhum item encontrado para a UF {selected_uf}. Com os demais filtros atuais, há resultados em: {uf_text} ({origem_text}).'
 
     return f'Nenhum item encontrado para a UF {selected_uf} com os filtros atuais.'
+
+
+def _simpro_cross_uf_preview_has_narrow_filters(filters: dict) -> bool:
+    """
+    Preview entre UFs só faz sentido com algum critério além de Origem+UF (senão a consulta
+    sem UF seria arbitrária e pesada). Aceita termo (tokens), códigos, fabricante, versão, alíquota.
+    """
+    if any(filters.get(k) for k in ('tuss', 'tiss', 'anvisa')):
+        return True
+    tokens = filters.get('tokens') or []
+    if isinstance(tokens, list) and len(tokens) > 0:
+        return True
+    if (filters.get('fabricante') or '').strip():
+        return True
+    vt = (filters.get('versao_tabela') or '').strip()
+    if vt and vt.lower() not in ('todas', 'all', '*'):
+        return True
+    if filters.get('aliquota') is not None:
+        return True
+    return False
+
+
+def _simpro_cross_uf_preview_search(filters: dict, per_page: int) -> dict | None:
+    """
+    Se não há linha no índice para a UF filtrada, mas o mesmo critério (TISS, termo ``q``, etc.)
+    existe em outra UF, devolve linhas SIMPRO para o usuário abrir Detalhes e registrar preço
+    manual na UF dos filtros.
+    """
+    origem = (filters.get('origem') or '').upper()
+    if origem not in ('SIMPRO', ''):
+        return None
+    uf_sel = (filters.get('uf_referencia') or '').strip().upper()
+    if not uf_sel:
+        return None
+    if not _simpro_cross_uf_preview_has_narrow_filters(filters):
+        return None
+
+    relaxed = dict(filters)
+    relaxed.pop('uf_referencia', None)
+    relaxed['origem'] = 'SIMPRO'
+    query = _apply_insumo_filters(InsumoIndex.query, relaxed).filter(InsumoIndex.origem == 'SIMPRO')
+    query = query.order_by(InsumoIndex.item_id.desc())
+    limit_n = min(max(int(per_page or 50), 1), 50)
+    rows = query.limit(limit_n).all()
+    if not rows:
+        return None
+
+    related_context = _prefetch_insumo_related(rows)
+    serialized = [
+        _serialize_insumo_index(row, include_related=False, related_context=related_context)
+        for row in rows
+    ]
+    for s in serialized:
+        s['cross_uf_preview'] = True
+    _marcar_destaque_versao_mais_recente(serialized)
+    total = len(serialized)
+    return {
+        'items': serialized,
+        'pagination': {
+            'page': 1,
+            'per_page': per_page,
+            'total': total,
+            'pages': 1,
+        },
+        'cross_uf_preview': True,
+        'empty_hint': _build_empty_catalog_hint(filters),
+    }
 
 
 def _catalogo_fetch_all(filters: dict, limit: int | None = None) -> list[dict]:
@@ -7533,10 +7656,16 @@ def _serialize_insumo_index(
             )
             if preco_effective is not None:
                 preco_display_value = preco_effective
-            if preco_pmc_simpro is not None:
+            # Com linha em ``simpro_item_preco``, não usar ``item.preco`` como fallback só para um
+            # dos dois — senão PMC repetia o PFB quando só um valor foi informado.
+            if split_preco is not None:
                 preco_pmc_value = preco_pmc_simpro
-            if preco_pfb_simpro is not None:
                 preco_pfb_value = preco_pfb_simpro
+            else:
+                if preco_pmc_simpro is not None:
+                    preco_pmc_value = preco_pmc_simpro
+                if preco_pfb_simpro is not None:
+                    preco_pfb_value = preco_pfb_simpro
             codigo_simpro = simpro_split.codigo
             codigo_usuario = simpro_split.codigo_interno
             codigo_fracao = simpro_split.codigo_alt
@@ -7556,10 +7685,8 @@ def _serialize_insumo_index(
                 )
                 if preco_effective is not None:
                     preco_display_value = preco_effective
-                if preco_pmc_simpro is not None:
-                    preco_pmc_value = preco_pmc_simpro
-                if preco_pfb_simpro is not None:
-                    preco_pfb_value = preco_pfb_simpro
+                preco_pmc_value = preco_pmc_simpro
+                preco_pfb_value = preco_pfb_simpro
                 codigo_simpro = simpro_row.codigo
                 codigo_usuario = simpro_row.codigo_interno
                 codigo_fracao = simpro_row.codigo_alt
@@ -15594,7 +15721,134 @@ def insumo_detail(origem: str, item_id: int):
                 _serialize_contexto_clinico(row, detail_payload)
                 for row in contexto_rows
             ]
+
+    detail_payload['manual_price'] = None
+    if origem == 'SIMPRO' and isinstance(item, SimproItemCadastro):
+        tu = (request.args.get('target_uf') or '').strip().upper()
+        ta_qs = (request.args.get('target_aliquota') or '').strip()
+        ta_val: Decimal | None = None
+        if ta_qs:
+            cs = _coerce_decimal(ta_qs.replace(',', '.'))
+            if cs:
+                try:
+                    ta_val = _br_norm_aliquota(Decimal(cs)) or Decimal(cs)
+                except (InvalidOperation, ValueError, TypeError):
+                    ta_val = None
+        elif tu:
+            ta_val = _simpro_piso_aliquota_for_uf(tu)
+        if tu and ta_val is not None:
+            tol = Decimal('0.02')
+            existing_preco_row = (
+                SimproItemPreco.query.filter(
+                    SimproItemPreco.cadastro_id == item.id,
+                    SimproItemPreco.aliquota >= ta_val - tol,
+                    SimproItemPreco.aliquota <= ta_val + tol,
+                ).first()
+            )
+            detail_payload['manual_price'] = {
+                'show': True,
+                'target_uf': tu,
+                'target_aliquota': _decimal_to_string(ta_val),
+                'uf_matches_aliquota_map': _simpro_aliquota_includes_uf(ta_val, tu),
+                'already_has_price': existing_preco_row is not None,
+                'cadastro_id': int(item.id),
+            }
+
     return jsonify(detail_payload)
+
+
+@app.route('/insumos/simpro/<int:cadastro_id>/preco-manual', methods=['POST'])
+@login_required
+@feature_required('insumos')
+def insumos_simpro_preco_manual(cadastro_id: int):
+    """Cria ou atualiza linha em ``simpro_item_preco`` e atualiza ``insumos_index`` (preço manual por UF/alíquota)."""
+    cad = SimproItemCadastro.query.get_or_404(cadastro_id)
+    payload = request.get_json(silent=True) or {}
+    uf_req = (payload.get('uf_referencia') or payload.get('uf') or '').strip().upper()
+    al_raw = (payload.get('aliquota') or '').strip()
+    if not al_raw and uf_req:
+        aq_inf = _simpro_piso_aliquota_for_uf(uf_req)
+        if aq_inf is not None:
+            al_raw = _decimal_to_string(aq_inf) or str(aq_inf)
+    if not al_raw:
+        return jsonify({'ok': False, 'error': 'Informe a alíquota (ou uma UF mapeada no piso SIMPRO).'}), 400
+    al_cs = _coerce_decimal(al_raw.replace(',', '.'))
+    if not al_cs:
+        return jsonify({'ok': False, 'error': 'Alíquota inválida.'}), 400
+    try:
+        al_dec = _br_norm_aliquota(Decimal(al_cs)) or Decimal(al_cs)
+    except (InvalidOperation, ValueError, TypeError):
+        return jsonify({'ok': False, 'error': 'Alíquota inválida.'}), 400
+
+    if uf_req and not _simpro_aliquota_includes_uf(al_dec, uf_req):
+        return jsonify({
+            'ok': False,
+            'error': 'Esta UF não corresponde ao piso da alíquota informada no cadastro SIMPRO.',
+        }), 400
+
+    def _parse_money(key_a: str, key_b: str) -> Decimal | None:
+        raw = (payload.get(key_a) or payload.get(key_b) or '').strip()
+        if not raw:
+            return None
+        cs = _coerce_decimal(raw.replace(',', '.'))
+        if not cs:
+            return None
+        try:
+            return Decimal(cs)
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+
+    pmc = _parse_money('preco_pmc', 'pmc')
+    pfb = _parse_money('preco_pfb', 'pfb')
+    if (pmc is None or pmc <= 0) and (pfb is None or pfb <= 0):
+        return jsonify({'ok': False, 'error': 'Informe PMC ou PFB maior que zero.'}), 400
+
+    tol = Decimal('0.02')
+    row = (
+        SimproItemPreco.query.filter(
+            SimproItemPreco.cadastro_id == cad.id,
+            SimproItemPreco.aliquota >= al_dec - tol,
+            SimproItemPreco.aliquota <= al_dec + tol,
+        ).first()
+    )
+    label = f"MANUAL_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+    if row is None:
+        row = SimproItemPreco(
+            cadastro_id=cad.id,
+            aliquota=al_dec,
+            arquivo_fonte=label,
+        )
+        db.session.add(row)
+
+    if pfb is not None and pfb > 0:
+        row.preco1 = pfb
+    if pmc is not None and pmc > 0:
+        row.preco2 = pmc
+    row.arquivo_fonte = (row.arquivo_fonte or '')[:200] or label
+    if row.imported_at is None:
+        row.imported_at = datetime.utcnow()
+
+    db.session.flush()
+    usuario = getattr(g, 'current_user', None)
+    _register_audit(
+        'simpro_preco_manual',
+        usuario=usuario if isinstance(usuario, Usuario) else None,
+        detalhes={
+            'cadastro_id': cad.id,
+            'aliquota': str(al_dec),
+            'uf': uf_req or None,
+            'preco_pmc': str(pmc) if pmc is not None else None,
+            'preco_pfb': str(pfb) if pfb is not None else None,
+            'preco_row_id': int(row.id) if row.id is not None else None,
+        },
+    )
+
+    db.session.commit()
+
+    _sync_simpro_insumo_index_for_preco_ids([int(row.id)])
+    _clear_insumo_cache()
+
+    return jsonify({'ok': True, 'preco_id': int(row.id), 'cadastro_id': int(cad.id)})
 
 
 @app.route('/insumos/<origem>/<int:item_id>/contexto', methods=['POST'])
