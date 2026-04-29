@@ -1148,16 +1148,18 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
 
     toggleLoading(true);
 
+    // Timeout configurável no servidor (INSUMOS_SEARCH_TIMEOUT_MS); default 90s — buscas por texto em índice grande costumam demorar.
+    const INSUMOS_SEARCH_TIMEOUT_MS = {{ insumos_search_timeout_ms | default(90000) }};
+
     // Cria AbortController para timeout
     const controller = new AbortController();
     let timeoutId = null;
 
     try {
-      // Define timeout de 15 segundos para resposta rápida
       timeoutId = setTimeout(() => {
-        console.log('⏱️ Timeout de 15s acionado, abortando requisição');
+        console.log('⏱️ Timeout de busca acionado, abortando requisição');
         controller.abort();
-      }, 15000);
+      }, INSUMOS_SEARCH_TIMEOUT_MS);
 
       // Requisição à API
       console.log('ðŸ”„ Iniciando requisiÃ§Ã£o para:', `{{ url_for('insumos_search') }}?${params.toString()}`);
@@ -1234,7 +1236,8 @@ const IS_ADMIN = {{ is_admin|default(false)|tojson }};
       // Trata erros
       let mensagemErro = err.message;
       if(err.name === 'AbortError') {
-        mensagemErro = 'Requisição expirou (timeout de 15s). A API está lenta.';
+        const sec = Math.max(1, Math.round(INSUMOS_SEARCH_TIMEOUT_MS / 1000));
+        mensagemErro = `Requisição expirou (timeout de ${sec}s). A consulta está lenta — refine o termo, desative «versão única» se estiver marcado, ou peça ao admin para aumentar INSUMOS_SEARCH_TIMEOUT_MS / índices no banco.`;
       }
 
       console.error('âŒ Erro ao carregar itens:', err);

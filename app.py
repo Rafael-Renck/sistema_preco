@@ -8057,6 +8057,88 @@ def _extract_insumo_filters(args) -> dict:
     return filters
 
 
+def _insumo_fulltext_search_enabled() -> bool:
+    """MySQL/MariaDB: exige índice FULLTEXT — ver ``scripts/sql/insumos_index_fulltext_mysql.sql``."""
+    return os.getenv('INSUMOS_FULLTEXT_SEARCH', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _insumo_token_ref_lookup_enabled() -> bool:
+    """
+    Por padrão **desligado**: por token, duas subconsultas IN em ``referencia`` deixam a busca por texto muito lenta.
+    Ative só se precisar pesquisar código de referência SIMPRO pelo campo «Buscar termo»:
+    INSUMOS_TOKEN_SEARCH_INCLUDE_REF=1
+    """
+    return os.getenv('INSUMOS_TOKEN_SEARCH_INCLUDE_REF', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _apply_insumo_token_filters(query, filters: dict):
+    """Filtros por palavras do campo ``q`` (tokens): FULLTEXT no MySQL se configurado; senão LIKE."""
+    tokens = [token for token in (filters.get('tokens') or []) if token]
+    if not tokens:
+        return query
+
+    sess = getattr(query, 'session', None) or db.session
+    bind = sess.bind if sess is not None else None
+    dialect = (bind.dialect.name if bind is not None else '').lower()
+
+    if dialect in {'mysql', 'mariadb'} and _insumo_fulltext_search_enabled():
+        parts: list[str] = []
+        for t in tokens[:6]:
+            clean = re.sub(r'[^\w]', '', t, flags=re.UNICODE)
+            if len(clean) >= 2:
+                parts.append(f'+{clean}*')
+        if parts:
+            ft_str = ' '.join(parts)
+            try:
+                return query.filter(
+                    text(
+                        'MATCH(insumos_index.descricao, insumos_index.fabricante) '
+                        'AGAINST (:ft IN BOOLEAN MODE)'
+                    ).bindparams(ft=ft_str)
+                )
+            except Exception as exc:  # noqa: BLE001
+                app.logger.warning(
+                    'Busca FULLTEXT insumos falhou (%s); usando LIKE. Índice criado? Desative INSUMOS_FULLTEXT_SEARCH se necessário.',
+                    exc,
+                )
+
+    allow_simpro_ref_lookup = (
+        (filters.get('origem') or '').upper() in ('', 'SIMPRO')
+        and _insumo_token_ref_lookup_enabled()
+    )
+    for token in tokens:
+        pattern = f"%{token}%"
+        simpro_ref_predicate = false()
+        if allow_simpro_ref_lookup:
+            simpro_ref_subquery_norm = (
+                db.session.query(SimproItemNormalized.id)
+                .filter(func.lower(func.coalesce(SimproItemNormalized.referencia, '')).like(pattern))
+            )
+            simpro_ref_subquery_split = (
+                db.session.query(SimproItemCadastro.id)
+                .filter(func.lower(func.coalesce(SimproItemCadastro.referencia, '')).like(pattern))
+            )
+            simpro_ref_predicate = and_(
+                InsumoIndex.origem == 'SIMPRO',
+                or_(
+                    InsumoIndex.item_id.in_(simpro_ref_subquery_norm),
+                    InsumoIndex.item_id.in_(simpro_ref_subquery_split),
+                ),
+            )
+        query = query.filter(
+            or_(
+                func.lower(InsumoIndex.descricao).like(pattern),
+                func.lower(InsumoIndex.fabricante).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.tuss, '')).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.tiss, '')).like(pattern),
+                func.lower(func.coalesce(InsumoIndex.anvisa, '')).like(pattern),
+                simpro_ref_predicate,
+            )
+        )
+
+    return query
+
+
 def _apply_insumo_filters(query, filters: dict):
     origem = filters.get('origem')
     if origem:
@@ -8099,37 +8181,7 @@ def _apply_insumo_filters(query, filters: dict):
                 InsumoIndex.aliquota <= aq_dec + tol,
             )
 
-    tokens = [token for token in (filters.get('tokens') or []) if token]
-    allow_simpro_ref_lookup = (filters.get('origem') or '').upper() in ('', 'SIMPRO')
-    for token in tokens:
-        pattern = f"%{token}%"
-        simpro_ref_predicate = false()
-        if allow_simpro_ref_lookup:
-            simpro_ref_subquery_norm = (
-                db.session.query(SimproItemNormalized.id)
-                .filter(func.lower(func.coalesce(SimproItemNormalized.referencia, '')).like(pattern))
-            )
-            simpro_ref_subquery_split = (
-                db.session.query(SimproItemCadastro.id)
-                .filter(func.lower(func.coalesce(SimproItemCadastro.referencia, '')).like(pattern))
-            )
-            simpro_ref_predicate = and_(
-                InsumoIndex.origem == 'SIMPRO',
-                or_(
-                    InsumoIndex.item_id.in_(simpro_ref_subquery_norm),
-                    InsumoIndex.item_id.in_(simpro_ref_subquery_split),
-                ),
-            )
-        query = query.filter(
-            or_(
-                func.lower(InsumoIndex.descricao).like(pattern),
-                func.lower(InsumoIndex.fabricante).like(pattern),
-                func.lower(func.coalesce(InsumoIndex.tuss, '')).like(pattern),
-                func.lower(func.coalesce(InsumoIndex.tiss, '')).like(pattern),
-                func.lower(func.coalesce(InsumoIndex.anvisa, '')).like(pattern),
-                simpro_ref_predicate,
-            )
-        )
+    query = _apply_insumo_token_filters(query, filters)
 
     return query
 
@@ -15990,6 +16042,10 @@ def insumos_dashboard():
         simpro_versions = _insumo_distinct_versions(SimproItemNormalized)
     versions = sorted(set(bras_versions + simpro_versions))
 
+    # Timeout do fetch na página de insumos (ms). Buscas por termo em base grande podem passar de 15s.
+    _to = _safe_int_env('INSUMOS_SEARCH_TIMEOUT_MS', 90000)
+    insumos_search_timeout_ms = max(15000, min(300000, _to))
+
     return render_template(
         'insumos_index.html',
         bras_summary=bras_summary,
@@ -15999,6 +16055,7 @@ def insumos_dashboard():
         versions=versions,
         is_admin=(session.get('perfil') == 'adm'),
         UFS=BR_UFS,
+        insumos_search_timeout_ms=insumos_search_timeout_ms,
     )
 
 
