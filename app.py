@@ -5291,6 +5291,7 @@ def _import_bras(
     aliquota_default: Decimal | None = None,
     arquivo_label_override: str | None = None,
     keep_only_latest_version: bool = False,
+    job_id: str | None = None,
 ) -> dict:
     del data_ref
     arquivo_label_base = arquivo_label_override or map_config.get('arquivo') or versao or file_path.name
@@ -5329,6 +5330,12 @@ def _import_bras(
             arquivo_label=arquivo_label,
         )
 
+    if job_id:
+        _touch_import_job_progress(
+            job_id,
+            message=f'BRAS: {inserted} linhas brutas; normalizando cadastro…',
+            total_linhas=inserted,
+        )
     # Sempre materializa apenas o arquivo atual
     _materialize_bras_items(arquivo_label)
     aligned_rows = _align_bras_n_import_version(versao, arquivo_label=arquivo_label)
@@ -5338,6 +5345,12 @@ def _import_bras(
         text("SELECT COUNT(*) FROM bras_item_n WHERE arquivo = :arquivo"),
         {'arquivo': arquivo_label}
     ).scalar() or 0
+    if job_id:
+        _touch_import_job_progress(
+            job_id,
+            message='BRAS: sincronizando cadastros e preços (split)…',
+            linhas_materializadas=int(count_result),
+        )
     split_sync = _sync_bras_split_from_bras_n_fast(
         arquivo_label=arquivo_label,
         aliquota_override=aliquota_default,
@@ -5346,6 +5359,8 @@ def _import_bras(
     sync_ufs: list[str] = list(uf_values) if uf_values else []
     if aliquota_default is not None and not sync_ufs and not uf_default:
         sync_ufs = _ufs_pertencentes_a_aliquota_piso(aliquota_default)
+    if job_id:
+        _touch_import_job_progress(job_id, message='BRAS: atualizando índice de insumos…')
     _sync_bras_insumo_index(
         arquivo_label,
         uf_default=uf_default,
@@ -5356,6 +5371,13 @@ def _import_bras(
 
     purge_summary: dict[str, int] | None = None
     if keep_only_latest_version:
+        if job_id:
+            _touch_import_job_progress(
+                job_id,
+                message=_job_message_trim(
+                    f'BRAS: removendo outras edições (mantém só {versao}); operação pesada no banco…'
+                ),
+            )
         purge_summary = _purge_bras_versions_except(versao)
 
     return {
@@ -16378,6 +16400,7 @@ def _run_import_job(job_id: str) -> None:
                     aliquota_default=aliquota_decimal,
                     arquivo_label_override=arquivo_label_override,
                     keep_only_latest_version=keep_only_latest_version,
+                    job_id=job_id,
                 )
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
             else:
