@@ -149,6 +149,10 @@ BRAS_INDEX_SYNC_BATCH = _bras_clamped_batch('BRAS_INDEX_SYNC_BATCH_SIZE', 2000)
 BRAS_RAW_CSV_BATCH = _bras_clamped_batch('BRAS_RAW_CSV_BATCH', 2000)
 # SIMPRO: INSERT único gigante pode estourar pacote/servidor; lotes por simpro_item_preco.id.
 SIMPRO_INDEX_SYNC_BATCH = _bras_clamped_batch('SIMPRO_INDEX_SYNC_BATCH_SIZE', 4000)
+# SIMPRO JSON: materialização em lotes (evita lista gigante em RAM e permite heartbeat no job).
+SIMPRO_JSON_MATERIALIZE_BATCH = _bras_clamped_batch('SIMPRO_JSON_MATERIALIZE_BATCH_SIZE', 500)
+# SIMPRO split: tamanho máximo do IN (...) por query (MySQL/plan cache).
+SIMPRO_SPLIT_IN_CHUNK = _bras_clamped_batch('SIMPRO_SPLIT_FILTER_CHUNK_SIZE', 2000)
 
 def _load_public_api_tokens() -> set[str]:
     tokens: set[str] = set()
@@ -1001,6 +1005,32 @@ def _job_message_trim(message: str | None, *, limit: int = 500) -> str | None:
     if len(msg) <= limit:
         return msg
     return msg[: limit - 3] + '...'
+
+
+def _touch_import_job_progress(
+    job_id: str | None,
+    *,
+    message: str | None = None,
+    total_linhas: int | None = None,
+    linhas_materializadas: int | None = None,
+) -> None:
+    """Atualiza linha do job durante import longo (SIMPRO JSON, etc.). Falhas são ignoradas (não abortam import)."""
+    if not job_id:
+        return
+    try:
+        job = ImportJob.query.get(job_id)
+        if not job:
+            return
+        if message is not None:
+            job.message = _job_message_trim(message)
+        if total_linhas is not None:
+            job.total_linhas = total_linhas
+        if linhas_materializadas is not None:
+            job.linhas_materializadas = linhas_materializadas
+        db.session.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        app.logger.warning('Falha ao atualizar progresso do job %s: %s', job_id, exc)
 
 
 _IMPORT_JOB_CONTEXT = threading.local()
@@ -2969,8 +2999,8 @@ def _load_simpro_json_payload(file_path: Path, encoding: str | None = None) -> l
     last_error: Exception | None = None
     for enc in encodings:
         try:
-            text = file_path.read_text(encoding=enc)
-            payload = json.loads(text)
+            with file_path.open('r', encoding=enc, newline='') as fp:
+                payload = json.load(fp)
             if isinstance(payload, dict):
                 items = payload.get('produtos')
             elif isinstance(payload, list):
@@ -2997,13 +3027,37 @@ def _materialize_simpro_json_items(
     records: Sequence[dict],
     versao: str,
     uf_default: str | None,
+    job_id: str | None = None,
 ) -> int:
     if not records:
         return 0
 
     max_id = db.session.query(func.max(SimproItemNormalized.id)).scalar() or 0
     next_id = int(max_id) + 1
-    rows: list[dict[str, object | None]] = []
+    raw_total = len(records)
+    batch_size = SIMPRO_JSON_MATERIALIZE_BATCH
+    batch: list[dict[str, object | None]] = []
+    total_inserted = 0
+
+    def _flush_batch() -> None:
+        nonlocal batch, total_inserted
+        if not batch:
+            return
+        _raise_if_import_paused()
+        db.session.bulk_insert_mappings(SimproItemNormalized, batch)
+        db.session.commit()
+        total_inserted += len(batch)
+        if job_id:
+            _touch_import_job_progress(
+                job_id,
+                message=(
+                    f'SIMPRO JSON: {total_inserted} linhas materializadas '
+                    f'({raw_total} registros no arquivo; lote {batch_size})…'
+                ),
+                total_linhas=raw_total,
+                linhas_materializadas=total_inserted,
+            )
+        batch = []
 
     for idx, source in enumerate(records, start=1):
         _raise_if_import_paused()
@@ -3024,7 +3078,7 @@ def _materialize_simpro_json_items(
         preco_fabrica_fracao = _coerce_decimal(source.get('precoFabricaFracao'))
         preco_usuario_fracao = _coerce_decimal(source.get('precoUsuarioFracao'))
 
-        rows.append({
+        batch.append({
             'id': next_id + idx - 1,
             'arquivo': arquivo_label,
             'linha_num': idx,
@@ -3053,19 +3107,10 @@ def _materialize_simpro_json_items(
             'tuss_numero': tuss_digits or None,
             'status_final': (source.get('classificacao') or '').strip() or None,
         })
+        if len(batch) >= batch_size:
+            _flush_batch()
 
-    if not rows:
-        return 0
-
-    batch_size = 500
-    total_inserted = 0
-    for i in range(0, len(rows), batch_size):
-        _raise_if_import_paused()
-        batch = rows[i:i + batch_size]
-        db.session.bulk_insert_mappings(SimproItemNormalized, batch)
-        db.session.commit()
-        total_inserted += len(batch)
-
+    _flush_batch()
     return total_inserted
 
 
@@ -3971,16 +4016,17 @@ def _sync_simpro_split_from_norm_fast(
         last_norm_id = int(norm_rows[-1].id)
     if not prepared_by_key:
         return stat
-    identity_keys = set(prepared_by_key.keys())
+    identity_keys = list(prepared_by_key.keys())
 
-    existing_cadastros = (
-        SimproItemCadastro.query
-        .filter(
-            SimproItemCadastro.versao == version_label,
-            SimproItemCadastro.item_key.in_(list(identity_keys)),
+    existing_cadastros: list[SimproItemCadastro] = []
+    for i in range(0, len(identity_keys), SIMPRO_SPLIT_IN_CHUNK):
+        chunk = identity_keys[i : i + SIMPRO_SPLIT_IN_CHUNK]
+        existing_cadastros.extend(
+            SimproItemCadastro.query.filter(
+                SimproItemCadastro.versao == version_label,
+                SimproItemCadastro.item_key.in_(chunk),
+            ).all()
         )
-        .all()
-    )
     cadastro_map = {(row.versao, row.item_key): row for row in existing_cadastros}
 
     new_cadastros: list[dict[str, object | None]] = []
@@ -4048,28 +4094,32 @@ def _sync_simpro_split_from_norm_fast(
     if new_cadastros:
         db.session.bulk_insert_mappings(SimproItemCadastro, new_cadastros)
 
-    cadastro_rows = (
-        SimproItemCadastro.query
-        .with_entities(SimproItemCadastro.id, SimproItemCadastro.item_key)
-        .filter(
-            SimproItemCadastro.versao == version_label,
-            SimproItemCadastro.item_key.in_(list(identity_keys)),
+    cadastro_rows: list = []
+    for i in range(0, len(identity_keys), SIMPRO_SPLIT_IN_CHUNK):
+        chunk = identity_keys[i : i + SIMPRO_SPLIT_IN_CHUNK]
+        cadastro_rows.extend(
+            SimproItemCadastro.query.with_entities(SimproItemCadastro.id, SimproItemCadastro.item_key)
+            .filter(
+                SimproItemCadastro.versao == version_label,
+                SimproItemCadastro.item_key.in_(chunk),
+            )
+            .all()
         )
-        .all()
-    )
     cadastro_id_by_key = {row.item_key: int(row.id) for row in cadastro_rows if row.item_key and row.id is not None}
     if not cadastro_id_by_key:
         db.session.commit()
         return stat
 
-    existing_precos = (
-        SimproItemPreco.query
-        .filter(
-            SimproItemPreco.cadastro_id.in_(list(cadastro_id_by_key.values())),
-            SimproItemPreco.aliquota == aliquota,
+    cadastro_ids = list(cadastro_id_by_key.values())
+    existing_precos: list[SimproItemPreco] = []
+    for i in range(0, len(cadastro_ids), SIMPRO_SPLIT_IN_CHUNK):
+        chunk = cadastro_ids[i : i + SIMPRO_SPLIT_IN_CHUNK]
+        existing_precos.extend(
+            SimproItemPreco.query.filter(
+                SimproItemPreco.cadastro_id.in_(chunk),
+                SimproItemPreco.aliquota == aliquota,
+            ).all()
         )
-        .all()
-    )
     preco_by_cadastro = {int(row.cadastro_id): row for row in existing_precos if row.cadastro_id is not None}
 
     new_precos: list[dict[str, object | None]] = []
@@ -5668,6 +5718,7 @@ def _import_simpro(
     uf_values: Sequence[str] | None = None,
     aliquota_default: Decimal | None,
     arquivo_label_override: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
     arquivo_label = _build_simpro_arquivo_label(
         arquivo_label_override=arquivo_label_override,
@@ -5687,13 +5738,26 @@ def _import_simpro(
     )
 
     if fmt == 'json':
+        if job_id:
+            _touch_import_job_progress(
+                job_id,
+                message='SIMPRO JSON: lendo e interpretando arquivo (pode demorar em arquivos grandes)…',
+            )
         payload = _load_simpro_json_payload(file_path, encoding)
         inserted = len(payload)
+        if job_id:
+            _touch_import_job_progress(
+                job_id,
+                message=f'SIMPRO JSON: arquivo com {inserted} registros; iniciando materialização em lotes…',
+                total_linhas=inserted,
+                linhas_materializadas=0,
+            )
         materialized = _materialize_simpro_json_items(
             arquivo_label=arquivo_label,
             records=payload,
             versao=versao,
             uf_default=uf_default,
+            job_id=job_id,
         )
         stage_strategy = 'json_native'
     elif fmt == 'fixed':
@@ -5713,11 +5777,21 @@ def _import_simpro(
     else:
         raise click.ClickException('Importação SIMPRO suporta apenas formatos JSON e largura fixa.')
 
+    if job_id:
+        _touch_import_job_progress(
+            job_id,
+            message='SIMPRO: sincronizando cadastros e preços (split)…',
+        )
     split_sync = _sync_simpro_split_from_norm_fast(
         arquivo_label=arquivo_label,
         versao=versao,
         aliquota_override=aliquota_default,
     )
+    if job_id:
+        _touch_import_job_progress(
+            job_id,
+            message='SIMPRO: atualizando índice de insumos em lotes…',
+        )
     _sync_simpro_insumo_index(
         arquivo_label,
         uf_default=uf_default,
@@ -16329,6 +16403,7 @@ def _run_import_job(job_id: str) -> None:
                     uf_values=target_ufs if target_ufs else None,
                     aliquota_default=aliquota_decimal,
                     arquivo_label_override=base_label,
+                    job_id=job_id,
                 )
 
                 metrics['timings']['import_stage'] = round(time.perf_counter() - stage_start, 4)
