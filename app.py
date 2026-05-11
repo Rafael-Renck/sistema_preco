@@ -5214,57 +5214,129 @@ def _purge_bras_versions_except(keep_version: str) -> dict[str, int]:
         'bras_catalog_snapshot': 0,
     }
 
-    summary['insumos_index'] = (
+    old_versions: set[str] = set()
+    old_versions.update(
+        row[0]
+        for row in db.session.query(BrasItemNormalized.edicao)
+        .filter(
+            BrasItemNormalized.edicao.isnot(None),
+            func.coalesce(BrasItemNormalized.edicao, '') != keep,
+        )
+        .distinct()
+        .all()
+        if row[0]
+    )
+    old_versions.update(
+        row[0]
+        for row in db.session.query(BrasItemCadastro.edicao)
+        .filter(
+            BrasItemCadastro.edicao.isnot(None),
+            func.coalesce(BrasItemCadastro.edicao, '') != keep,
+        )
+        .distinct()
+        .all()
+        if row[0]
+    )
+    old_versions.update(
+        row[0]
+        for row in db.session.query(BrasCatalogSnapshot.versao)
+        .filter(
+            BrasCatalogSnapshot.versao.isnot(None),
+            func.coalesce(BrasCatalogSnapshot.versao, '') != keep,
+        )
+        .distinct()
+        .all()
+        if row[0]
+    )
+    old_versions.update(
+        row[0]
+        for row in db.session.query(InsumoIndex.versao_tabela)
+        .filter(
+            InsumoIndex.origem == 'BRAS',
+            InsumoIndex.versao_tabela.isnot(None),
+            func.coalesce(InsumoIndex.versao_tabela, '') != keep,
+        )
+        .distinct()
+        .all()
+        if row[0]
+    )
+
+    for version in sorted(old_versions):
+        summary['insumos_index'] += (
+            db.session.query(InsumoIndex)
+            .filter(
+                InsumoIndex.origem == 'BRAS',
+                InsumoIndex.versao_tabela == version,
+            )
+            .delete(synchronize_session=False)
+        ) or 0
+        db.session.commit()
+
+    dialect = (db.session.bind.dialect.name if db.session.bind is not None else '').lower()
+    for version in sorted(old_versions):
+        if dialect in {'mysql', 'mariadb'}:
+            summary['bras_item_preco'] += db.session.execute(
+                text(
+                    """
+                    DELETE p
+                    FROM bras_item_preco p
+                    INNER JOIN bras_item_cadastro c ON c.id = p.cadastro_id
+                    WHERE c.edicao = :version
+                    """
+                ),
+                {'version': version},
+            ).rowcount or 0
+        else:
+            cadastro_ids = [
+                row[0]
+                for row in db.session.query(BrasItemCadastro.id)
+                .filter(BrasItemCadastro.edicao == version)
+                .all()
+            ]
+            if cadastro_ids:
+                summary['bras_item_preco'] += (
+                    db.session.query(BrasItemPreco)
+                    .filter(BrasItemPreco.cadastro_id.in_(cadastro_ids))
+                    .delete(synchronize_session=False)
+                ) or 0
+
+        summary['bras_item_cadastro'] += (
+            db.session.query(BrasItemCadastro)
+            .filter(BrasItemCadastro.edicao == version)
+            .delete(synchronize_session=False)
+        ) or 0
+
+        summary['bras_item_n'] += (
+            db.session.query(BrasItemNormalized)
+            .filter(BrasItemNormalized.edicao == version)
+            .delete(synchronize_session=False)
+        ) or 0
+
+        summary['bras_catalog_snapshot'] += (
+            db.session.query(BrasCatalogSnapshot)
+            .filter(BrasCatalogSnapshot.versao == version)
+            .delete(synchronize_session=False)
+        ) or 0
+        db.session.commit()
+
+    summary['insumos_index'] += (
         db.session.query(InsumoIndex)
         .filter(
             InsumoIndex.origem == 'BRAS',
-            func.coalesce(InsumoIndex.versao_tabela, '') != keep,
+            or_(InsumoIndex.versao_tabela.is_(None), InsumoIndex.versao_tabela == ''),
         )
         .delete(synchronize_session=False)
     ) or 0
 
-    dialect = (db.session.bind.dialect.name if db.session.bind is not None else '').lower()
-    if dialect in {'mysql', 'mariadb'}:
-        summary['bras_item_preco'] = db.session.execute(
-            text(
-                """
-                DELETE p
-                FROM bras_item_preco p
-                INNER JOIN bras_item_cadastro c ON c.id = p.cadastro_id
-                WHERE COALESCE(c.edicao, '') <> :keep_version
-                """
-            ),
-            {'keep_version': keep},
-        ).rowcount or 0
-    else:
-        cadastro_ids = [
-            row[0]
-            for row in db.session.query(BrasItemCadastro.id)
-            .filter(func.coalesce(BrasItemCadastro.edicao, '') != keep)
-            .all()
-        ]
-        if cadastro_ids:
-            summary['bras_item_preco'] = (
-                db.session.query(BrasItemPreco)
-                .filter(BrasItemPreco.cadastro_id.in_(cadastro_ids))
-                .delete(synchronize_session=False)
-            ) or 0
-
-    summary['bras_item_cadastro'] = (
-        db.session.query(BrasItemCadastro)
-        .filter(func.coalesce(BrasItemCadastro.edicao, '') != keep)
-        .delete(synchronize_session=False)
-    ) or 0
-
-    summary['bras_item_n'] = (
+    summary['bras_item_n'] += (
         db.session.query(BrasItemNormalized)
-        .filter(func.coalesce(BrasItemNormalized.edicao, '') != keep)
+        .filter(or_(BrasItemNormalized.edicao.is_(None), BrasItemNormalized.edicao == ''))
         .delete(synchronize_session=False)
     ) or 0
 
-    summary['bras_catalog_snapshot'] = (
+    summary['bras_catalog_snapshot'] += (
         db.session.query(BrasCatalogSnapshot)
-        .filter(func.coalesce(BrasCatalogSnapshot.versao, '') != keep)
+        .filter(or_(BrasCatalogSnapshot.versao.is_(None), BrasCatalogSnapshot.versao == ''))
         .delete(synchronize_session=False)
     ) or 0
 
@@ -8984,6 +9056,7 @@ def insumos_create_indexes() -> None:
         # Índices para insumos_index (fallback)
         ("idx_insumos_origem_uf", "insumos_index", "origem, uf_referencia"),
         ("idx_insumos_origem_aliquota", "insumos_index", "origem, aliquota"),
+        ("idx_insumos_origem_versao", "insumos_index", "origem, versao_tabela"),
         ("idx_insumos_fabricante", "insumos_index", "fabricante(100)"),
     ]
     
