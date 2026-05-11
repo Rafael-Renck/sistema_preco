@@ -2499,6 +2499,97 @@ def _delete_insumos_by_arquivo(origem: str, item_table: str, arquivo_label: str,
     return total_deleted
 
 
+def _delete_model_by_version_in_batches(
+    model_cls,
+    version_column,
+    version_value: str,
+    *,
+    batch_size: int = 2000,
+) -> int:
+    """
+    Remove linhas de um model em batches por ``id`` para reduzir lock time em tabelas grandes.
+    """
+    total_deleted = 0
+    last_id = 0
+
+    while True:
+        ids = [
+            row[0]
+            for row in db.session.query(model_cls.id)
+            .filter(version_column == version_value, model_cls.id > last_id)
+            .order_by(model_cls.id.asc())
+            .limit(batch_size)
+            .all()
+        ]
+        if not ids:
+            break
+
+        last_id = int(ids[-1])
+        deleted = (
+            db.session.query(model_cls)
+            .filter(model_cls.id.in_(ids))
+            .delete(synchronize_session=False)
+        ) or 0
+        total_deleted += int(deleted)
+        db.session.commit()
+
+        if len(ids) < batch_size:
+            break
+
+        time.sleep(0.05)
+
+    return total_deleted
+
+
+def _delete_bras_precos_e_cadastros_by_version(
+    version_value: str,
+    *,
+    batch_size: int = 2000,
+) -> tuple[int, int]:
+    """
+    Remove ``bras_item_preco`` e ``bras_item_cadastro`` em lotes baseados nos IDs do cadastro da edição.
+    """
+    total_precos = 0
+    total_cadastros = 0
+    last_id = 0
+
+    while True:
+        cadastro_ids = [
+            row[0]
+            for row in db.session.query(BrasItemCadastro.id)
+            .filter(BrasItemCadastro.edicao == version_value, BrasItemCadastro.id > last_id)
+            .order_by(BrasItemCadastro.id.asc())
+            .limit(batch_size)
+            .all()
+        ]
+        if not cadastro_ids:
+            break
+
+        last_id = int(cadastro_ids[-1])
+
+        deleted_precos = (
+            db.session.query(BrasItemPreco)
+            .filter(BrasItemPreco.cadastro_id.in_(cadastro_ids))
+            .delete(synchronize_session=False)
+        ) or 0
+        deleted_cadastros = (
+            db.session.query(BrasItemCadastro)
+            .filter(BrasItemCadastro.id.in_(cadastro_ids))
+            .delete(synchronize_session=False)
+        ) or 0
+
+        total_precos += int(deleted_precos)
+        total_cadastros += int(deleted_cadastros)
+        db.session.commit()
+
+        if len(cadastro_ids) < batch_size:
+            break
+
+        time.sleep(0.05)
+
+    return total_precos, total_cadastros
+
+
 def _delete_existing_bras_records(
     arquivo_label: str | None,
     truncate: bool,
@@ -5205,6 +5296,7 @@ def _purge_bras_versions_except(keep_version: str) -> dict[str, int]:
     keep = (keep_version or '').strip()
     if not keep:
         return {}
+    purge_batch_size = max(200, min(4000, _safe_int_env('BRAS_PURGE_BATCH_SIZE', 1500)))
 
     summary = {
         'insumos_index': 0,
@@ -5262,62 +5354,31 @@ def _purge_bras_versions_except(keep_version: str) -> dict[str, int]:
     )
 
     for version in sorted(old_versions):
-        summary['insumos_index'] += (
-            db.session.query(InsumoIndex)
-            .filter(
-                InsumoIndex.origem == 'BRAS',
-                InsumoIndex.versao_tabela == version,
-            )
-            .delete(synchronize_session=False)
-        ) or 0
-        db.session.commit()
+        summary['insumos_index'] += _delete_in_batches(
+            "DELETE FROM insumos_index WHERE origem = 'BRAS' AND versao_tabela = :version",
+            {'version': version},
+            batch_size=purge_batch_size,
+        )
 
-    dialect = (db.session.bind.dialect.name if db.session.bind is not None else '').lower()
-    for version in sorted(old_versions):
-        if dialect in {'mysql', 'mariadb'}:
-            summary['bras_item_preco'] += db.session.execute(
-                text(
-                    """
-                    DELETE p
-                    FROM bras_item_preco p
-                    INNER JOIN bras_item_cadastro c ON c.id = p.cadastro_id
-                    WHERE c.edicao = :version
-                    """
-                ),
-                {'version': version},
-            ).rowcount or 0
-        else:
-            cadastro_ids = [
-                row[0]
-                for row in db.session.query(BrasItemCadastro.id)
-                .filter(BrasItemCadastro.edicao == version)
-                .all()
-            ]
-            if cadastro_ids:
-                summary['bras_item_preco'] += (
-                    db.session.query(BrasItemPreco)
-                    .filter(BrasItemPreco.cadastro_id.in_(cadastro_ids))
-                    .delete(synchronize_session=False)
-                ) or 0
+        summary['bras_item_n'] += _delete_model_by_version_in_batches(
+            BrasItemNormalized,
+            BrasItemNormalized.edicao,
+            version,
+            batch_size=purge_batch_size,
+        )
 
-        summary['bras_item_cadastro'] += (
-            db.session.query(BrasItemCadastro)
-            .filter(BrasItemCadastro.edicao == version)
-            .delete(synchronize_session=False)
-        ) or 0
+        deleted_precos, deleted_cadastros = _delete_bras_precos_e_cadastros_by_version(
+            version,
+            batch_size=purge_batch_size,
+        )
+        summary['bras_item_preco'] += deleted_precos
+        summary['bras_item_cadastro'] += deleted_cadastros
 
-        summary['bras_item_n'] += (
-            db.session.query(BrasItemNormalized)
-            .filter(BrasItemNormalized.edicao == version)
-            .delete(synchronize_session=False)
-        ) or 0
-
-        summary['bras_catalog_snapshot'] += (
-            db.session.query(BrasCatalogSnapshot)
-            .filter(BrasCatalogSnapshot.versao == version)
-            .delete(synchronize_session=False)
-        ) or 0
-        db.session.commit()
+        summary['bras_catalog_snapshot'] += _delete_in_batches(
+            "DELETE FROM bras_catalog_snapshot WHERE versao = :version",
+            {'version': version},
+            batch_size=purge_batch_size,
+        )
 
     summary['insumos_index'] += (
         db.session.query(InsumoIndex)
@@ -5327,18 +5388,19 @@ def _purge_bras_versions_except(keep_version: str) -> dict[str, int]:
         )
         .delete(synchronize_session=False)
     ) or 0
+    db.session.commit()
 
-    summary['bras_item_n'] += (
-        db.session.query(BrasItemNormalized)
-        .filter(or_(BrasItemNormalized.edicao.is_(None), BrasItemNormalized.edicao == ''))
-        .delete(synchronize_session=False)
-    ) or 0
+    summary['bras_item_n'] += _delete_in_batches(
+        "DELETE FROM bras_item_n WHERE edicao IS NULL OR edicao = ''",
+        {},
+        batch_size=purge_batch_size,
+    )
 
-    summary['bras_catalog_snapshot'] += (
-        db.session.query(BrasCatalogSnapshot)
-        .filter(or_(BrasCatalogSnapshot.versao.is_(None), BrasCatalogSnapshot.versao == ''))
-        .delete(synchronize_session=False)
-    ) or 0
+    summary['bras_catalog_snapshot'] += _delete_in_batches(
+        "DELETE FROM bras_catalog_snapshot WHERE versao IS NULL OR versao = ''",
+        {},
+        batch_size=purge_batch_size,
+    )
 
     db.session.commit()
     app.logger.info('BRAS purge versões antigas (mantida=%s): %s', keep, summary)
@@ -9058,6 +9120,8 @@ def insumos_create_indexes() -> None:
         ("idx_insumos_origem_aliquota", "insumos_index", "origem, aliquota"),
         ("idx_insumos_origem_versao", "insumos_index", "origem, versao_tabela"),
         ("idx_insumos_fabricante", "insumos_index", "fabricante(100)"),
+        ("idx_bras_item_n_edicao_id", "bras_item_n", "edicao, id"),
+        ("idx_bras_item_cadastro_edicao_id", "bras_item_cadastro", "edicao, id"),
     ]
     
     created = 0
