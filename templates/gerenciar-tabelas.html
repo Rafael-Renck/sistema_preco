@@ -844,6 +844,39 @@
     }
   }
 
+  function parseServerDate(value){
+    if(!value) return null;
+    const dt = new Date(String(value).replace(' ', 'T'));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  async function findRecentImportJobMatch({ origem, filename, versao, createdAfterMs = 10 * 60 * 1000 }){
+    try{
+      const response = await fetch('{{ url_for('insumos_import_jobs_list') }}', {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+      });
+      if(!response.ok) return null;
+      const payload = await response.json();
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      const now = Date.now();
+      const targetName = String(filename || '').trim().toLowerCase();
+      const targetVersao = String(versao || '').trim();
+
+      return items.find((job) => {
+        if(String(job.origem || '').toUpperCase() !== String(origem || '').toUpperCase()) return false;
+        if(targetVersao && String(job.versao || '').trim() !== targetVersao) return false;
+        const jobFile = String(job.arquivo || '').trim().toLowerCase();
+        if(targetName && jobFile !== targetName) return false;
+        const createdAt = parseServerDate(job.created_at);
+        if(!createdAt) return true;
+        return (now - createdAt.getTime()) <= createdAfterMs;
+      }) || null;
+    } catch(_err){
+      return null;
+    }
+  }
+
   function formatDate(value){
     if(!value) { return '—'; }
     const date = new Date(value.replace(' ', 'T'));
@@ -1618,8 +1651,35 @@
           item.statusText = '✓ OK';
         }
       } catch (err) {
-        item.status = 'error';
-        item.statusText = err.message || 'Erro';
+        const recoveredJob = await findRecentImportJobMatch({
+          origem: 'BRAS',
+          filename: item.file.name,
+          versao: item.versao || '1000',
+        });
+        if (recoveredJob?.id) {
+          item.statusText = 'Processando...';
+          renderBrasFilesPreview();
+          const result = await waitForJobCompletion(recoveredJob.id, (job) => {
+            if (job.linhas_materializadas) {
+              item.statusText = `Processando... (${job.linhas_materializadas} linhas)`;
+            } else {
+              item.statusText = 'Processando...';
+            }
+            renderBrasFilesPreview();
+            loadJobs();
+          });
+          if (result.success) {
+            item.status = 'ok';
+            const linhas = result.job?.linhas_materializadas || 0;
+            item.statusText = `✓ OK (${linhas} linhas)`;
+          } else {
+            item.status = 'error';
+            item.statusText = result.message || 'Falha';
+          }
+        } else {
+          item.status = 'error';
+          item.statusText = err.message || 'Erro';
+        }
       }
       renderBrasFilesPreview();
     }
@@ -1790,8 +1850,36 @@
           item.statusText = '✓ OK';
         }
       } catch (err) {
-        item.status = 'error';
-        item.statusText = err.message || 'Erro';
+        const recoveredJob = await findRecentImportJobMatch({
+          origem: 'SIMPRO',
+          filename: item.file.name,
+          versao: item.versao || '2025-01',
+        });
+        if (recoveredJob?.id) {
+          item.statusText = 'Processando...';
+          renderSimproFilesPreview();
+          const result = await waitForJobCompletion(recoveredJob.id, (job) => {
+            if (job.linhas_materializadas) {
+              item.statusText = `Processando... (${job.linhas_materializadas} linhas)`;
+            } else {
+              item.statusText = 'Processando...';
+            }
+            renderSimproFilesPreview();
+            loadJobs();
+          });
+          if (result.success) {
+            item.status = 'ok';
+            const linhas = result.job?.linhas_materializadas || 0;
+            const detalhe = [item.versao ? `v${item.versao}` : null, item.aliquota ? `alq ${item.aliquota}` : null].filter(Boolean).join(' / ');
+            item.statusText = detalhe ? `✓ OK (${linhas} linhas, ${detalhe})` : `✓ OK (${linhas} linhas)`;
+          } else {
+            item.status = 'error';
+            item.statusText = result.message || 'Falha';
+          }
+        } else {
+          item.status = 'error';
+          item.statusText = err.message || 'Erro';
+        }
       }
       renderSimproFilesPreview();
     }
