@@ -877,6 +877,44 @@
     }
   }
 
+  async function postImportFormData(url, formData, { retries = 1, retryDelayMs = 1200 } = {}){
+    let lastError = null;
+    for(let attempt = 0; attempt <= retries; attempt++){
+      try{
+        const response = await fetch(url, {
+          method: 'POST',
+          body: formData,
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json',
+          },
+          credentials: 'same-origin',
+          cache: 'no-store',
+        });
+        const raw = await response.text();
+        let payload = {};
+        if(raw){
+          try{
+            payload = JSON.parse(raw);
+          } catch(parseErr){
+            const err = new Error(`Resposta inválida do servidor (HTTP ${response.status})`);
+            err.response = response;
+            err.raw = raw;
+            throw err;
+          }
+        }
+        return { response, payload };
+      } catch(err){
+        lastError = err;
+        if(attempt < retries){
+          await new Promise(r => setTimeout(r, retryDelayMs));
+          continue;
+        }
+      }
+    }
+    throw lastError || new Error('Falha ao enviar requisição.');
+  }
+
   function formatDate(value){
     if(!value) { return '—'; }
     const date = new Date(value.replace(' ', 'T'));
@@ -1608,16 +1646,11 @@
       if (brasBatchKeepLatest?.checked) formData.append('keep_only_latest_version', 'on');
       
       try {
-        const resp = await fetch('{{ url_for("insumos_import") }}', {
-          method: 'POST',
-          body: formData,
-          headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
-        const data = await resp.json();
+        const { response: resp, payload: data } = await postImportFormData('{{ url_for("insumos_import") }}', formData);
         
         if (!resp.ok || data.status === 'error') {
           item.status = 'error';
-          item.statusText = data.message || 'Erro ao enviar';
+          item.statusText = data.message || `Erro ao enviar (HTTP ${resp.status})`;
         } else if (data.inline) {
           // Processamento inline - já terminou
           item.status = 'ok';
@@ -1806,16 +1839,11 @@
       // No lote rápido, não enviamos truncate (evita limpeza total acidental)
       
       try {
-        const resp = await fetch('{{ url_for("insumos_import") }}', {
-          method: 'POST',
-          body: formData,
-          headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
-        const data = await resp.json();
+        const { response: resp, payload: data } = await postImportFormData('{{ url_for("insumos_import") }}', formData);
         
         if (!resp.ok || data.status === 'error') {
           item.status = 'error';
-          item.statusText = data.message || 'Erro ao enviar';
+          item.statusText = data.message || `Erro ao enviar (HTTP ${resp.status})`;
         } else if (data.inline) {
           // Processamento inline - já terminou
           item.status = 'ok';
