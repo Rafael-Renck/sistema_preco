@@ -1,5 +1,7 @@
 # Produção — use quando o servidor não tiver "docker compose" (plugin v2).
-# Deploy: docker-compose -f docker-compose.prod.yml up -d --build
+# Deploy (projeto isolado do dev):
+#   docker-compose -p sistema_preco_prod -f docker-compose.prod.yml up -d --build
+#   ./scripts/deploy-prod.sh
 version: '3.9'
 
 services:
