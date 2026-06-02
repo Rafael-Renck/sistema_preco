@@ -1955,7 +1955,9 @@ DECIMAL_FIELDS = {'preco', 'aliquota'}
 DATE_FIELDS = {'data_atualizacao'}
 DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
 TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
-INSUMO_IMPORT_ASYNC_DIR = Path(tempfile.gettempdir()) / 'insumo_async_imports'
+INSUMO_IMPORT_ASYNC_DIR = Path(
+    os.getenv('INSUMO_IMPORT_ASYNC_DIR') or (Path(tempfile.gettempdir()) / 'insumo_async_imports')
+)
 INSUMO_IMPORT_ASYNC_DIR.mkdir(parents=True, exist_ok=True)
 
 REEMBOLSO_STORAGE_DIR = Path(os.getenv('REEMBOLSO_STORAGE_DIR', Path(__file__).parent / 'data' / 'reembolsos'))

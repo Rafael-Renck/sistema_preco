@@ -92,9 +92,28 @@ services:
       SECRET_KEY: ${SECRET_KEY:-change-me}
       PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
       CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}
+      FLASK_APP: app
+      # Jobs ficam PENDING; o import_worker_prod processa em container dedicado.
+      INSUMO_IMPORT_BACKGROUND_DISABLE: "1"
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
     ports:
       - "8010:8000"
+    volumes:
+      - insumo_import_data:/data/insumo_async_imports
     # Sem depends_on, pois usa banco externo
+
+  import_worker_prod:
+    profiles: ["prod"]
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://appuser:SENHA@192.168.40.84:3306/operadora_saude}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      FLASK_APP: app
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
+    volumes:
+      - insumo_import_data:/data/insumo_async_imports
+    command: ["flask", "insumos-import-worker", "--poll-interval", "5"]
 
   adminer_prod:
     profiles: ["prod"]
@@ -106,3 +125,4 @@ services:
 
 volumes:
   db_data:
+  insumo_import_data:
