@@ -82,6 +82,7 @@ services:
 
   # =======================
   # PROD: sua app apontando para DB externo (192.168.40.84)
+  # Servidor sem "docker compose" v2: use docker-compose.prod.yml
   # =======================
   web_prod:
     profiles: ["prod"]

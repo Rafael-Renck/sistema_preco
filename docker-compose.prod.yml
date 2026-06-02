@@ -1,49 +1,34 @@
-version: "3.8"
+# Produção — use quando o servidor não tiver "docker compose" (plugin v2).
+# Deploy: docker-compose -f docker-compose.prod.yml up -d --build
+version: '3.9'
 
 services:
-  db:
-    image: mysql:8.0
-    container_name: sistema_preco-db
-    restart: unless-stopped
-    command: >
-      --default-authentication-plugin=mysql_native_password
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
-      --innodb-lock-wait-timeout=120
-      --innodb-deadlock-detect=ON
-      --innodb-buffer-pool-size=512M
-      --max-connections=100
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: sistema_preco
-    ports:
-      - "3308:3306"
-    volumes:
-      - db_data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  web:
+  web_prod:
     build: .
-    container_name: sistema_preco-web
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-    ports:
-      - "8000:8000"
     environment:
-      DB_HOST: db
-      DB_USER: root
-      DB_PASSWORD: root
-      DB_NAME: sistema_preco
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://appuser:SENHA@192.168.40.84:3306/operadora_saude}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
+      CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}
+      FLASK_APP: app
+      INSUMO_IMPORT_BACKGROUND_DISABLE: "1"
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
+    ports:
+      - "8010:8000"
     volumes:
-      - ./templates:/app/templates
-      - ./static:/app/static
+      - insumo_import_data:/data/insumo_async_imports
+
+  import_worker_prod:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://appuser:SENHA@192.168.40.84:3306/operadora_saude}
+      SECRET_KEY: ${SECRET_KEY:-change-me}
+      FLASK_APP: app
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
+    volumes:
+      - insumo_import_data:/data/insumo_async_imports
+    command: ["flask", "insumos-import-worker", "--poll-interval", "5"]
 
 volumes:
-  db_data:
-
+  insumo_import_data:
