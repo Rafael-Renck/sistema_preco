@@ -15,6 +15,10 @@ echo "Parando stack dev (db/web na 8000) se estiver rodando..."
 docker-compose down --remove-orphans 2>/dev/null || true
 
 "${COMPOSE[@]}" up -d --build web_prod import_worker_prod
+
+echo "Aplicando migrations..."
+"${COMPOSE[@]}" exec -T web_prod alembic upgrade head
+
 "${COMPOSE[@]}" ps
 echo
 echo "Logs do worker: ${COMPOSE[*]} logs -f import_worker_prod"
