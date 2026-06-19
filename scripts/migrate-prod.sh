@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Aplica migrations Alembic no container de produção.
+# Usa alembic.ini e migrations/ do host (git pull), sem depender de rebuild da imagem.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 if command -v docker-compose >/dev/null 2>&1; then
   COMPOSE=(docker-compose -p sistema_preco_prod -f docker-compose.prod.yml)
@@ -12,12 +14,22 @@ else
   exit 1
 fi
 
-if ! "${COMPOSE[@]}" exec -T -w /app web_prod test -f /app/alembic.ini; then
-  echo "alembic.ini não está no container — rebuild necessário:" >&2
-  echo "  ${COMPOSE[*]} build --no-cache web_prod" >&2
-  echo "  ${COMPOSE[*]} up -d web_prod" >&2
+if [[ ! -f "$ROOT/alembic.ini" ]]; then
+  echo "alembic.ini não encontrado em $ROOT — rode: git pull" >&2
   exit 1
 fi
 
-"${COMPOSE[@]}" exec -T -w /app web_prod alembic -c /app/alembic.ini upgrade head
+if [[ ! -d "$ROOT/migrations/versions" ]]; then
+  echo "Pasta migrations/ não encontrada — rode: git pull" >&2
+  exit 1
+fi
+
+echo "Aplicando migrations (arquivos montados de $ROOT)..."
+"${COMPOSE[@]}" run --rm --no-deps \
+  -v "$ROOT/alembic.ini:/app/alembic.ini:ro" \
+  -v "$ROOT/migrations:/app/migrations:ro" \
+  -v "$ROOT/app.py:/app/app.py:ro" \
+  -v "$ROOT/rol_import.py:/app/rol_import.py:ro" \
+  web_prod alembic -c /app/alembic.ini upgrade head
+
 echo "Migrations aplicadas."

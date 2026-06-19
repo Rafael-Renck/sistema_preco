@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
 if command -v docker-compose >/dev/null 2>&1; then
   COMPOSE=(docker-compose -p sistema_preco_prod -f docker-compose.prod.yml)
@@ -14,19 +15,10 @@ fi
 echo "Parando stack dev (db/web na 8000) se estiver rodando..."
 docker-compose down --remove-orphans 2>/dev/null || true
 
-"${COMPOSE[@]}" up -d --build web_prod import_worker_prod
-
-echo "Verificando arquivos de migration na imagem..."
-if ! "${COMPOSE[@]}" exec -T -w /app web_prod test -f /app/alembic.ini; then
-  echo "ERRO: /app/alembic.ini não encontrado no container." >&2
-  echo "Rebuild falhou ou imagem antiga. Rode:" >&2
-  echo "  ${COMPOSE[*]} build --no-cache web_prod import_worker_prod" >&2
-  echo "  ${COMPOSE[*]} up -d web_prod import_worker_prod" >&2
-  exit 1
-fi
+"${COMPOSE[@]}" up -d --build --force-recreate web_prod import_worker_prod
 
 echo "Aplicando migrations..."
-"${COMPOSE[@]}" exec -T -w /app web_prod alembic -c /app/alembic.ini upgrade head
+bash "$ROOT/scripts/migrate-prod.sh"
 
 "${COMPOSE[@]}" ps
 echo
