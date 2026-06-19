@@ -19,10 +19,12 @@ services:
       - "8010:8000"
     volumes:
       - insumo_import_data:/data/insumo_async_imports
-      # Sincroniza migrations com git pull (sem rebuild só para Alembic)
+      # Código e migrations do host — git pull + recreate atualiza sem rebuild completo
       - ./alembic.ini:/app/alembic.ini:ro
       - ./migrations:/app/migrations:ro
       - ./rol_import.py:/app/rol_import.py:ro
+      - ./app.py:/app/app.py:ro
+      - ./templates:/app/templates:ro
 
   import_worker_prod:
     build: .
@@ -34,6 +36,8 @@ services:
       INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
     volumes:
       - insumo_import_data:/data/insumo_async_imports
+      - ./app.py:/app/app.py:ro
+      - ./rol_import.py:/app/rol_import.py:ro
     command: ["flask", "insumos-import-worker", "--poll-interval", "5"]
 
 volumes:
