@@ -2908,7 +2908,14 @@ function simularCBHPM(){
           }else if(rolData){
             const badgeClass = rolData.consta ? 'bg-success-subtle text-success' : 'bg-secondary-subtle text-secondary';
             const label = rolData.consta ? 'Sim' : 'Não';
-            const tooltip = rolData.descricao ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolData.descricao)}"` : '';
+            const rolTipParts = [];
+            if(rolData.descricao) rolTipParts.push(rolData.descricao);
+            if(rolData.rol && rolData.rol.dut && rolData.rol.dut.resumo){
+              rolTipParts.push(`DUT ${rolData.rol.dut.numero}: ${rolData.rol.dut.resumo}`);
+            }else if(rolData.rol && rolData.rol.segmentacao && rolData.rol.segmentacao.length){
+              rolTipParts.push(`Seg: ${rolData.rol.segmentacao.join(', ')}`);
+            }
+            const tooltip = rolTipParts.length ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolTipParts.join(' · '))}"` : '';
             rolHtml = `<span class="badge ${badgeClass}"${tooltip}>${label}</span>`;
           }else{
             rolHtml = '<span class="text-muted">—</span>';
@@ -3097,7 +3104,14 @@ function simularCBHPM(){
       if(rolInfoSingle){
         const badgeClass = rolInfoSingle.consta ? 'bg-success-subtle text-success' : 'bg-secondary-subtle text-secondary';
         const label = rolInfoSingle.consta ? 'Sim' : 'Não';
-        const tooltip = rolInfoSingle.descricao ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolInfoSingle.descricao)}"` : '';
+        const rolTipParts = [];
+        if(rolInfoSingle.descricao) rolTipParts.push(rolInfoSingle.descricao);
+        if(rolInfoSingle.rol && rolInfoSingle.rol.dut && rolInfoSingle.rol.dut.resumo){
+          rolTipParts.push(`DUT ${rolInfoSingle.rol.dut.numero}: ${rolInfoSingle.rol.dut.resumo}`);
+        }else if(rolInfoSingle.rol && rolInfoSingle.rol.segmentacao && rolInfoSingle.rol.segmentacao.length){
+          rolTipParts.push(`Seg: ${rolInfoSingle.rol.segmentacao.join(', ')}`);
+        }
+        const tooltip = rolTipParts.length ? ` data-bs-toggle="tooltip" data-bs-title="${esc(rolTipParts.join(' · '))}"` : '';
         rolBadgeSingle = `<span class="badge ${badgeClass}"${tooltip}>${label}</span>`;
       }
       {% endif %}

@@ -1,23 +1,193 @@
 {% extends 'base.html' %}
-{% block title %}Consulta TUSS x ROL{% endblock %}
+{% block title %}Consulta TUSS x Rol ANS{% endblock %}
+
+{% macro rol_breadcrumb(rol) -%}
+  {%- if rol -%}
+    {%- set ns = namespace(parts=[]) -%}
+    {%- for p in [rol.capitulo, rol.grupo, rol.subgrupo] -%}
+      {%- if p and p not in ['---', '—', '-'] -%}
+        {%- set _ = ns.parts.append(p) -%}
+      {%- endif -%}
+    {%- endfor -%}
+    {%- if ns.parts -%}
+      <nav class="rol-bc" aria-label="Classificação Rol">{{ ns.parts | join(' › ') }}</nav>
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro format_rn_label(rn) -%}
+  {%- if rn -%}
+    {%- set rn_clean = rn|string|trim -%}
+    {%- if rn_clean.upper().startswith('RN') -%}
+      {{- rn_clean -}}
+    {%- else -%}
+      RN {{ rn_clean }}
+    {%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
 {% block content %}
-<div class="page-header d-flex align-items-center justify-content-between flex-wrap gap-2">
-  <h4 class="mb-0">Consulta Rápida — TUSS x ROL ANS</h4>
-  <a class="btn btn-sm btn-outline-secondary btn-icon" href="{{ url_for('tuss_rol_consulta') }}"><i data-lucide="arrow-clockwise"></i> Limpar</a>
+<style>
+  .tuss-rol-stat {
+    border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 12px;
+    padding: .75rem 1rem;
+    background: #fff;
+    min-width: 120px;
+  }
+  .tuss-rol-stat .label {
+    font-size: .68rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: #64748b;
+    font-weight: 600;
+  }
+  .tuss-rol-stat .value {
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .tuss-rol-row--consta { --row-bg: #edfbf3; }
+  .tuss-rol-row--fora { --row-bg: #f8fafc; }
+  .tuss-rol-row--missing { --row-bg: #fffbeb; }
+  .tuss-rol-table tbody tr {
+    background: var(--row-bg, #fff);
+  }
+  .tuss-rol-table tbody tr:nth-child(even) {
+    background: var(--row-bg-even, var(--row-bg, #f8fbff));
+  }
+  .tuss-rol-row--consta { --row-bg-even: #e4f7ec; }
+  .tuss-rol-row--fora { --row-bg-even: #f1f5f9; }
+  .tuss-rol-row--missing { --row-bg-even: #fef3c7; }
+  .tuss-rol-table tbody tr:hover {
+    background: #e8f4fd !important;
+  }
+  .tuss-rol-table tbody td {
+    background: inherit;
+  }
+  .tuss-rol-table .desc-tuss {
+    font-weight: 500;
+    color: #0f172a;
+  }
+  .tuss-rol-table .desc-rol {
+    font-size: .78rem;
+    color: #64748b;
+    margin-top: .15rem;
+  }
+  .rol-bc {
+    font-size: .75rem;
+    color: #64748b;
+    line-height: 1.35;
+  }
+  .dut-resumo {
+    font-size: .78rem;
+    line-height: 1.4;
+    color: #334155;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dut-resumo.is-expanded {
+    -webkit-line-clamp: unset;
+    display: block;
+  }
+  .seg-badge {
+    font-size: .68rem;
+    font-weight: 600;
+    padding: .2rem .45rem;
+  }
+  .btn-dut {
+    font-size: .75rem;
+    font-weight: 600;
+    padding: .15rem .5rem;
+  }
+  .rn-cell .rn-badge {
+    display: inline-block;
+    font-size: .72rem;
+    font-weight: 700;
+    white-space: nowrap;
+    background: #fff7ed;
+    color: #9a3412;
+    border: 1px solid #fdba74;
+    border-radius: 999px;
+    padding: .2rem .55rem;
+  }
+  .rn-cell .rn-vig {
+    font-size: .72rem;
+    color: #475569;
+    margin-top: .25rem;
+    font-weight: 500;
+  }
+  .tuss-rol-table thead th {
+    background: #f1f5f9 !important;
+    color: #334155;
+    font-weight: 600;
+    border-bottom: 2px solid #cbd5e1;
+    box-shadow: inset 0 -1px 0 #cbd5e1;
+    z-index: 5;
+  }
+  .tuss-rol-table thead th.col-rn {
+    min-width: 118px;
+    white-space: normal;
+    line-height: 1.25;
+  }
+  .tuss-rol-table td.rn-cell {
+    min-width: 118px;
+    vertical-align: middle;
+  }
+  /* Sobrescreve zebra semitransparente do table-clean global */
+  .tuss-rol-table.table-clean tbody tr:nth-child(odd),
+  .tuss-rol-table.table-clean tbody tr:nth-child(even) {
+    background: var(--row-bg, #fff);
+  }
+  .tuss-rol-table.table-clean tbody tr:nth-child(even) {
+    background: var(--row-bg-even, var(--row-bg, #f8fbff));
+  }
+</style>
+
+<div class="page-header d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+  <div>
+    <h4 class="mb-0">Consulta — TUSS × Rol ANS</h4>
+    <div class="soft small mt-1">Cobertura obrigatória, segmentação assistencial, PAC e diretrizes de utilização (DUT).</div>
+  </div>
+  <a class="btn btn-sm btn-outline-secondary btn-icon" href="{{ url_for('tuss_rol_consulta') }}">
+    <i data-lucide="arrow-clockwise"></i> Limpar
+  </a>
 </div>
 
+{% if resumo.total %}
+<div class="d-flex flex-wrap gap-2 mb-3">
+  <div class="tuss-rol-stat">
+    <div class="label">Consultados</div>
+    <div class="value text-primary">{{ resumo.total }}</div>
+  </div>
+  <div class="tuss-rol-stat">
+    <div class="label">No Rol</div>
+    <div class="value text-success">{{ resumo.consta }}</div>
+  </div>
+  <div class="tuss-rol-stat">
+    <div class="label">Fora do Rol</div>
+    <div class="value text-secondary">{{ resumo.nao_consta }}</div>
+  </div>
+  <div class="tuss-rol-stat">
+    <div class="label">Sem correlação</div>
+    <div class="value {% if resumo.nao_encontrado %}text-warning{% else %}text-muted{% endif %}">{{ resumo.nao_encontrado }}</div>
+  </div>
+</div>
+{% endif %}
+
 <div class="row g-3">
-  <div class="col-12 col-lg-4">
+  <div class="col-12 col-lg-4 col-xl-3">
     <div class="card h-100 p-3">
       <div class="section-title mb-1">Códigos TUSS</div>
-      <div class="soft mb-3">
-        Informe um ou mais códigos (um por linha ou separados por vírgula/semicolons). O sistema retorna se cada código consta no ROL de Procedimentos da ANS.
+      <div class="soft mb-3 small">
+        Cole códigos separados por linha, vírgula ou ponto e vírgula. Retorna cobertura no Rol, resolução normativa de alteração, segmentação, PAC e DUT.
       </div>
       <form method="post" class="d-flex flex-column gap-3">
         <div>
           <label class="form-label" for="codigosInput">Códigos</label>
-          <textarea class="form-control" id="codigosInput" name="codigos" rows="10" placeholder="10101010&#10;20102030">{{ entrada or '' }}</textarea>
-          <div class="form-text">Ex.: <code>30101018</code>, <code>30101026</code></div>
+          <textarea class="form-control font-monospace" id="codigosInput" name="codigos" rows="12" placeholder="10101012&#10;41101014&#10;40314650">{{ entrada or '' }}</textarea>
         </div>
         <button class="btn btn-primary btn-icon" type="submit">
           <i data-lucide="search"></i> Consultar
@@ -26,61 +196,205 @@
     </div>
   </div>
 
-  <div class="col-12 col-lg-8">
-    <div class="card h-100 p-3">
-      <div class="d-flex justify-content-between align-items-start flex-wrap gap-3">
-        <div>
-          <div class="section-title mb-1">Resultado</div>
-          <div class="soft">
-            {% if resumo.total %}
-              {{ resumo.total }} código(s) verificado(s): {{ resumo.consta }} no ROL, {{ resumo.nao_consta }} fora do ROL, {{ resumo.nao_encontrado }} sem correlação.
-            {% else %}
-              Nenhum código consultado ainda.
-            {% endif %}
-          </div>
-        </div>
-        {% if resumo.total %}
-        <div class="badge rounded-pill text-bg-info-subtle text-info fw-semibold px-3 py-2">
-          <i class="bi bi-clipboard-check me-1"></i> Atualizações realizadas via módulo administrativo.
-        </div>
+  <div class="col-12 col-lg-8 col-xl-9">
+    <div class="card h-100 p-0 overflow-hidden">
+      <div class="p-3 border-bottom bg-white">
+        <div class="section-title mb-0">Resultado</div>
+        {% if not resumo.total %}
+          <div class="soft small mt-1">Nenhum código consultado ainda.</div>
         {% endif %}
       </div>
-      <hr>
-      <div class="table-responsive" style="max-height:520px;">
-        <table class="table table-sm align-middle mb-0">
-          <thead class="table-light">
-            <tr>
-              <th style="width:120px;">Código</th>
-              <th>Descrição</th>
-              <th style="width:150px;" class="text-center">Consta no ROL?</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in resultados %}
+
+      <div class="tbl-wrap border-0 shadow-none rounded-0">
+        <div class="table-responsive" style="max-height:680px;">
+          <table class="table table-clean table-sm align-middle mb-0 tuss-rol-table">
+            <thead class="table-light">
               <tr>
-                <td class="fw-semibold">{{ item.codigo }}</td>
-                <td>{{ item.descricao or '-' }}</td>
+                <th style="width:96px;">Código</th>
+                <th style="min-width:220px;">Descrição</th>
+                <th style="width:88px;" class="text-center">Rol</th>
+                <th class="col-rn" style="width:124px;">Resolução<br>Normativa</th>
+                <th style="width:130px;">Segmentação</th>
+                <th style="width:64px;" class="text-center">PAC</th>
+                <th style="width:72px;" class="text-center">DUT</th>
+                <th style="width:180px;">Classificação</th>
+                <th style="min-width:200px;">Critérios DUT</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in resultados %}
+              {% set rol = item.rol or {} %}
+              {% set dut = rol.dut if rol else none %}
+              {% set row_class = 'tuss-rol-row--missing' if item.status == 'nao_encontrado' else ('tuss-rol-row--consta' if item.consta else 'tuss-rol-row--fora') %}
+              {% set rol_desc = rol.descricao if rol else '' %}
+              {% set tuss_desc = item.descricao or '' %}
+              <tr class="{{ row_class }}">
+                <td class="font-monospace fw-semibold">{{ item.codigo }}</td>
+                <td>
+                  <div class="desc-tuss">{{ tuss_desc or '—' }}</div>
+                  {% if rol_desc and rol_desc != tuss_desc %}
+                    <div class="desc-rol"><span class="text-muted">Rol:</span> {{ rol_desc }}</div>
+                  {% endif %}
+                </td>
                 <td class="text-center">
                   {% if item.consta is true %}
                     <span class="badge text-bg-success">Sim</span>
                   {% elif item.consta is false %}
                     <span class="badge text-bg-secondary">Não</span>
                   {% else %}
-                    <span class="badge text-bg-warning text-dark">Não encontrado</span>
+                    <span class="badge text-bg-warning text-dark" title="Código não encontrado na base TUSS×Rol">?</span>
+                  {% endif %}
+                </td>
+                <td class="rn-cell">
+                  {% set rn_txt = item.rn_label or (format_rn_label(rol.rn_alteracao) if rol.rn_alteracao else '') %}
+                  {% set vig_txt = item.vigencia_label or (rol.vigencia_label if rol.vigencia_label else '') %}
+                  {% if not vig_txt and rol.vigencia %}
+                    {% set vig_txt = rol.vigencia %}
+                  {% endif %}
+                  {% if rn_txt or vig_txt %}
+                    {% if rn_txt %}
+                      <span class="rn-badge">{{ rn_txt }}</span>
+                    {% endif %}
+                    {% if vig_txt %}
+                      <div class="rn-vig">Vig. {{ vig_txt }}</div>
+                    {% endif %}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if rol.segmentacao %}
+                    {% for seg in rol.segmentacao %}
+                      <span class="badge rounded-pill text-bg-primary-subtle text-primary seg-badge me-1 mb-1">{{ seg }}</span>
+                    {% endfor %}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  {% if rol.pac %}
+                    <span class="badge text-bg-danger-subtle text-danger">Sim</span>
+                  {% elif rol %}
+                    <span class="text-muted small">Não</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  {% if dut and dut.numero %}
+                    <button type="button" class="btn btn-sm btn-outline-primary btn-dut js-dut-detail" data-dut="{{ dut.numero }}" title="{{ dut.titulo or 'Ver DUT completa' }}">
+                      {{ dut.numero }}
+                    </button>
+                  {% elif rol.dut_numero %}
+                    <button type="button" class="btn btn-sm btn-outline-secondary btn-dut js-dut-detail" data-dut="{{ rol.dut_numero }}" title="Carregar DUT">
+                      {{ rol.dut_numero }}
+                    </button>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if rol %}
+                    {{ rol_breadcrumb(rol) or '—' }}
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if dut and dut.resumo %}
+                    <div class="dut-resumo" id="dut-resumo-{{ loop.index }}">{{ dut.resumo }}</div>
+                    {% if dut.resumo|length > 180 %}
+                      <button type="button" class="btn btn-link btn-sm p-0 mt-1 js-toggle-resumo" data-target="dut-resumo-{{ loop.index }}">Ver mais</button>
+                    {% endif %}
+                  {% elif dut and dut.numero %}
+                    <span class="text-muted small">Clique na DUT {{ dut.numero }} para ver critérios.</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
                   {% endif %}
                 </td>
               </tr>
-            {% else %}
+              {% else %}
               <tr>
-                <td colspan="3" class="text-center text-muted py-4">
-                  Informe os códigos ao lado para consultar a situação no ROL.
+                <td colspan="9" class="text-center text-muted py-5">
+                  <i data-lucide="search" class="mb-2 opacity-50"></i>
+                  <div>Informe os códigos TUSS e clique em <strong>Consultar</strong>.</div>
                 </td>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
 </div>
+
+<div class="modal fade" id="dutModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title mb-0" id="dutModalTitle">DUT</h5>
+          <div class="small text-muted" id="dutModalSubtitle"></div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="mini-label text-muted text-uppercase mb-1">Resumo</div>
+          <div id="dutModalResumo" class="small text-body-secondary"></div>
+        </div>
+        <div>
+          <div class="mini-label text-muted text-uppercase mb-1">Texto completo</div>
+          <div id="dutModalTexto" class="small border rounded p-3 bg-light" style="white-space:pre-wrap; max-height:420px; overflow-y:auto;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.js-dut-detail').forEach(el => {
+  el.addEventListener('click', async () => {
+    const numero = el.dataset.dut;
+    if (!numero) return;
+    const modalEl = document.getElementById('dutModal');
+    const titleEl = document.getElementById('dutModalTitle');
+    const subtitleEl = document.getElementById('dutModalSubtitle');
+    const resumoEl = document.getElementById('dutModalResumo');
+    const textoEl = document.getElementById('dutModalTexto');
+    titleEl.textContent = `DUT ${numero}`;
+    subtitleEl.textContent = 'Carregando…';
+    resumoEl.textContent = '';
+    textoEl.textContent = '';
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    try {
+      const resp = await fetch(`/api/rol/duts/${encodeURIComponent(numero)}`);
+      if (!resp.ok) throw new Error('DUT não encontrada na base.');
+      const data = await resp.json();
+      titleEl.textContent = `DUT ${data.numero}`;
+      subtitleEl.textContent = data.titulo || '';
+      resumoEl.textContent = data.resumo || 'Sem resumo disponível.';
+      textoEl.textContent = data.texto_completo || 'Texto completo não disponível.';
+    } catch (err) {
+      subtitleEl.textContent = '';
+      resumoEl.textContent = err.message || 'Erro ao carregar DUT.';
+      textoEl.textContent = '';
+    }
+  });
+});
+
+document.querySelectorAll('.js-toggle-resumo').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.dataset.target);
+    if (!target) return;
+    const expanded = target.classList.toggle('is-expanded');
+    btn.textContent = expanded ? 'Ver menos' : 'Ver mais';
+  });
+});
+
+if (window.lucide) lucide.createIcons();
+</script>
 {% endblock %}

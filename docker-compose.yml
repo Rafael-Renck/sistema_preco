@@ -46,7 +46,8 @@ services:
     profiles: ["dev"]
     build: .
     environment:
-      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@db/${MYSQL_DATABASE:-operadora_saude}}
+      # Dev sempre usa o MySQL do compose (não herda DATABASE_URL do host).
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-rootpassword}@db/${MYSQL_DATABASE:-operadora_saude}
       SECRET_KEY: ${SECRET_KEY:-change-me}
       PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
       CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}

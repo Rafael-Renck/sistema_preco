@@ -28,7 +28,7 @@ import pymysql
 from dotenv import load_dotenv
 from functools import wraps
 from sqlalchemy import text, or_, and_, func, false, case, literal, cast, Numeric, Unicode
-from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.mysql import insert as mysql_insert, LONGTEXT
 from sqlalchemy.orm import joinedload
 from werkzeug.utils import secure_filename
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -74,6 +74,8 @@ try:
 except Exception:  # noqa: BLE001
     PILImage = None
     ImageOps = None
+
+import rol_import
 # --- 1. CONFIGURAÇÃO INICIAL ---
 # Inicializa a aplicação Flask
 load_dotenv()
@@ -825,12 +827,43 @@ class CBHPMItem(db.Model):
     id_tabela = db.Column(db.Integer, db.ForeignKey('tabelas.id'), nullable=False)
 
 
-class TussRolCorrelacao(db.Model):
-    __tablename__ = 'tuss_rol_correlacoes'
+class RolCapitulo(db.Model):
+    __tablename__ = 'rol_capitulos'
     id = db.Column(db.Integer, primary_key=True)
-    codigo = db.Column(db.String(30), unique=True, nullable=False)
-    descricao = db.Column(db.String(500), nullable=True)
-    consta_rol = db.Column(db.Boolean, nullable=False, default=False)
+    nome = db.Column(db.String(255), unique=True, nullable=False)
+
+
+class RolGrupo(db.Model):
+    __tablename__ = 'rol_grupos'
+    id = db.Column(db.Integer, primary_key=True)
+    capitulo_id = db.Column(db.Integer, db.ForeignKey('rol_capitulos.id', ondelete='CASCADE'), nullable=False)
+    nome = db.Column(db.String(255), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('capitulo_id', 'nome', name='uq_rol_grupo_capitulo_nome'),
+        db.Index('idx_rol_grupo_capitulo', 'capitulo_id'),
+    )
+
+
+class RolSubgrupo(db.Model):
+    __tablename__ = 'rol_subgrupos'
+    id = db.Column(db.Integer, primary_key=True)
+    grupo_id = db.Column(db.Integer, db.ForeignKey('rol_grupos.id', ondelete='CASCADE'), nullable=False)
+    nome = db.Column(db.String(255), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint('grupo_id', 'nome', name='uq_rol_subgrupo_grupo_nome'),
+        db.Index('idx_rol_subgrupo_grupo', 'grupo_id'),
+    )
+
+
+class RolDut(db.Model):
+    __tablename__ = 'rol_duts'
+    numero = db.Column(db.String(10), primary_key=True)
+    titulo = db.Column(db.String(500), nullable=False)
+    texto_completo = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql'), nullable=False)
+    resumo = db.Column(db.Text().with_variant(LONGTEXT(), 'mysql'), nullable=True)
+    resumo_tipo = db.Column(db.String(20), nullable=False, default='automatico', server_default=text("'automatico'"))
     atualizado_em = db.Column(
         db.DateTime,
         nullable=False,
@@ -838,9 +871,68 @@ class TussRolCorrelacao(db.Model):
         server_onupdate=text('CURRENT_TIMESTAMP'),
     )
 
+
+class RolProcedimento(db.Model):
+    __tablename__ = 'rol_procedimentos'
+    id = db.Column(db.Integer, primary_key=True)
+    descricao = db.Column(db.String(500), nullable=False)
+    descricao_norm = db.Column(db.String(500), unique=True, nullable=False)
+    capitulo_id = db.Column(db.Integer, db.ForeignKey('rol_capitulos.id', ondelete='SET NULL'), nullable=True)
+    grupo_id = db.Column(db.Integer, db.ForeignKey('rol_grupos.id', ondelete='SET NULL'), nullable=True)
+    subgrupo_id = db.Column(db.Integer, db.ForeignKey('rol_subgrupos.id', ondelete='SET NULL'), nullable=True)
+    rn_alteracao = db.Column(db.String(50), nullable=True)
+    vigencia = db.Column(db.String(30), nullable=True)
+    seg_od = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    seg_amb = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    seg_hco = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    seg_hso = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    seg_ref = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    pac = db.Column(db.Boolean, nullable=False, default=False, server_default=text('0'))
+    dut_numero = db.Column(db.String(10), nullable=True)
+    versao_label = db.Column(db.String(120), nullable=True)
+    atualizado_em = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+    capitulo = db.relationship('RolCapitulo', lazy='joined', foreign_keys=[capitulo_id])
+    grupo = db.relationship('RolGrupo', lazy='joined', foreign_keys=[grupo_id])
+    subgrupo = db.relationship('RolSubgrupo', lazy='joined', foreign_keys=[subgrupo_id])
+    dut = db.relationship(
+        'RolDut',
+        lazy='joined',
+        foreign_keys=[dut_numero],
+        primaryjoin='RolProcedimento.dut_numero == RolDut.numero',
+    )
+
+    __table_args__ = (
+        db.Index('idx_rol_proc_dut', 'dut_numero'),
+        db.Index('idx_rol_proc_capitulo', 'capitulo_id'),
+    )
+
+
+class TussRolCorrelacao(db.Model):
+    __tablename__ = 'tuss_rol_correlacoes'
+    id = db.Column(db.Integer, primary_key=True)
+    codigo = db.Column(db.String(30), unique=True, nullable=False)
+    descricao = db.Column(db.String(500), nullable=True)
+    consta_rol = db.Column(db.Boolean, nullable=False, default=False)
+    rol_procedimento_id = db.Column(db.Integer, db.ForeignKey('rol_procedimentos.id', ondelete='SET NULL'), nullable=True)
+    atualizado_em = db.Column(
+        db.DateTime,
+        nullable=False,
+        server_default=text('CURRENT_TIMESTAMP'),
+        server_onupdate=text('CURRENT_TIMESTAMP'),
+    )
+
+    rol_procedimento = db.relationship('RolProcedimento', lazy='joined', foreign_keys=[rol_procedimento_id])
+
     __table_args__ = (
         db.Index('idx_tuss_rol_codigo', 'codigo'),
         db.Index('idx_tuss_rol_flag', 'consta_rol'),
+        db.Index('idx_tuss_rol_proc', 'rol_procedimento_id'),
     )
 
 
@@ -12396,11 +12488,7 @@ def api_tuss_rol_lookup():
             .all()
         )
 
-    items = [{
-        'codigo': rec.codigo,
-        'descricao': rec.descricao,
-        'consta': bool(rec.consta_rol),
-    } for rec in records]
+    items = [_serialize_tuss_rol_entry(rec) for rec in records]
     return jsonify({'items': items})
 
 
@@ -12414,11 +12502,17 @@ def api_tuss_rol_item(codigo: str):
     registro = TussRolCorrelacao.query.filter_by(codigo=codigo_norm).first()
     if not registro:
         return jsonify({'codigo': codigo_norm, 'consta': False, 'descricao': None}), 404
-    return jsonify({
-        'codigo': registro.codigo,
-        'descricao': registro.descricao,
-        'consta': bool(registro.consta_rol),
-    })
+    return jsonify(_serialize_tuss_rol_entry(registro))
+
+
+@app.route('/api/rol/duts/<numero>')
+@login_required
+@feature_required('tuss_rol')
+def api_rol_dut_detail(numero: str):
+    dut = RolDut.query.filter_by(numero=str(numero).strip()).first()
+    if not dut:
+        abort(404, description='DUT não encontrada.')
+    return jsonify(rol_import.serialize_rol_dut(dut, include_full_text=True))
 
 
 @app.route('/gerenciar-usuarios')
@@ -13235,14 +13329,35 @@ def admin_tuss_rol():
         'total': db.session.query(func.count(TussRolCorrelacao.id)).scalar() or 0,
         'total_consta': db.session.query(func.count(TussRolCorrelacao.id)).filter(TussRolCorrelacao.consta_rol.is_(True)).scalar() or 0,
         'last_updated': db.session.query(func.max(TussRolCorrelacao.atualizado_em)).scalar(),
+        'rol_procedimentos': db.session.query(func.count(RolProcedimento.id)).scalar() or 0,
+        'rol_duts': db.session.query(func.count(RolDut.numero)).scalar() or 0,
+        'rol_versao': db.session.query(func.max(RolProcedimento.versao_label)).scalar(),
     }
-    erros_import: list[str] = []
-    resumo_import: dict[str, int] | None = None
+    resumo_import: dict[str, int | str] | None = None
 
     if request.method == 'POST':
+        import_tipo = (request.form.get('import_tipo') or 'tuss_correlacao').strip().lower()
+
+        if import_tipo == 'dut_resumo':
+            numero = (request.form.get('dut_numero') or '').strip()
+            resumo = (request.form.get('resumo') or '').strip()
+            if not numero:
+                flash('Informe o número da DUT.', 'danger')
+                return redirect(url_for('admin_tuss_rol'))
+            dut = RolDut.query.filter_by(numero=numero).first()
+            if not dut:
+                flash(f'DUT {numero} não encontrada.', 'warning')
+                return redirect(url_for('admin_tuss_rol'))
+            dut.resumo = resumo or rol_import.generate_dut_resumo(dut.texto_completo, dut.titulo)
+            dut.resumo_tipo = 'manual' if resumo else 'automatico'
+            db.session.commit()
+            _clear_rol_cache()
+            flash(f'Resumo da DUT {numero} atualizado.', 'success')
+            return redirect(url_for('admin_tuss_rol'))
+
         upload = request.files.get('arquivo')
         if not upload or not upload.filename:
-            flash('Selecione um arquivo CSV ou XLSX para importar.', 'danger')
+            flash('Selecione um arquivo para importar.', 'danger')
             return redirect(url_for('admin_tuss_rol'))
 
         raw_bytes = upload.read() or b''
@@ -13251,148 +13366,186 @@ def admin_tuss_rol():
             return redirect(url_for('admin_tuss_rol'))
 
         suffix = (Path(upload.filename).suffix or '').lower()
+        versao_label = (request.form.get('versao_label') or '').strip() or None
 
-        def _read_rows_from_upload(data: bytes, ext: str):
-            if ext in {'.xlsx', '.xlsm', '.xltx', '.xltm'}:
-                try:
-                    from openpyxl import load_workbook
-                except ImportError as exc:
-                    raise ValueError('Biblioteca openpyxl não disponível para ler arquivos XLSX.') from exc
-                workbook = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
-                try:
-                    sheet = workbook.active
-                    rows = list(sheet.iter_rows(values_only=True))
-                finally:
-                    workbook.close()
+        try:
+            if import_tipo == 'anexo_i':
+                bundle = rol_import.parse_anexo_i_file(raw_bytes, suffix)
+                if not bundle.procedimentos and not bundle.correlacoes:
+                    for msg in bundle.erros[:20]:
+                        flash(msg, 'danger')
+                    return redirect(url_for('admin_tuss_rol'))
+
+                import_stats = rol_import.import_anexo_i_to_db(
+                    db.session,
+                    _rol_models_dict(),
+                    bundle.procedimentos,
+                    versao_label=versao_label,
+                )
+                tuss_stats = rol_import.import_tuss_correlacoes_to_db(
+                    db.session,
+                    _rol_models_dict(),
+                    bundle.correlacoes,
+                ) if bundle.correlacoes else None
+
+                db.session.commit()
+                _clear_rol_cache()
+                linked = rol_import.link_tuss_correlacoes(db.session, _rol_models_dict())
+                if linked:
+                    db.session.commit()
+
+                tipo_label = 'Planilha TUSS × Rol ANS' if bundle.formato == 'tuss_rol_planilha' else 'Anexo I'
+                resumo_import = {
+                    'tipo': tipo_label,
+                    'processados': import_stats.processados,
+                    'criados': import_stats.criados,
+                    'atualizados': import_stats.atualizados,
+                    'vinculos_tuss': linked,
+                    'erros': len(bundle.erros),
+                }
+                if tuss_stats:
+                    resumo_import['tuss_processados'] = tuss_stats.processados
+                    resumo_import['tuss_criados'] = tuss_stats.criados
+                    resumo_import['tuss_atualizados'] = tuss_stats.atualizados
+
+                msg = (
+                    f'{tipo_label} importado: {import_stats.processados} procedimento(s) Rol; '
+                    f'{import_stats.criados} novo(s); {import_stats.atualizados} atualizado(s).'
+                )
+                if tuss_stats:
+                    msg += (
+                        f' TUSS: {tuss_stats.processados} código(s); '
+                        f'{tuss_stats.criados} novo(s); {tuss_stats.atualizados} atualizado(s).'
+                    )
+                if linked:
+                    msg += f' {linked} vínculo(s) adicionais.'
+                flash(msg, 'success')
+                for msg_warn in bundle.erros[:10]:
+                    flash(msg_warn, 'warning')
+
+            elif import_tipo == 'anexo_ii':
+                if suffix != '.pdf':
+                    flash('O Anexo II (DUTs) deve ser importado em formato PDF.', 'danger')
+                    return redirect(url_for('admin_tuss_rol'))
+                rows, erros = rol_import.parse_anexo_ii_pdf(raw_bytes)
                 if not rows:
-                    raise ValueError('Arquivo XLSX sem conteúdo.')
-                headers = [str(cell or '').strip() for cell in rows[0]]
-                data_rows = []
-                for row in rows[1:]:
-                    values = [str(cell) if cell is not None else '' for cell in row]
-                    data_rows.append(values)
-                return headers, data_rows
+                    for msg in erros[:20]:
+                        flash(msg, 'danger')
+                    return redirect(url_for('admin_tuss_rol'))
+                import_stats = rol_import.import_duts_to_db(db.session, _rol_models_dict(), rows)
+                db.session.commit()
+                _clear_rol_cache()
+                resumo_import = {
+                    'tipo': 'Anexo II',
+                    'processados': import_stats.processados,
+                    'criados': import_stats.criados,
+                    'atualizados': import_stats.atualizados,
+                    'erros': len(erros),
+                }
+                flash(
+                    f'Anexo II importado: {import_stats.processados} DUT(s); '
+                    f'{import_stats.criados} nova(s); {import_stats.atualizados} atualizada(s).',
+                    'success',
+                )
+                for msg in erros[:10]:
+                    flash(msg, 'warning')
 
-            # fallback CSV / texto
-            try:
-                text_data = data.decode('utf-8-sig')
-            except UnicodeDecodeError:
-                text_data = data.decode('latin-1', errors='ignore')
-
-            sio = io.StringIO(text_data)
-            try:
-                sample = sio.read(2048)
-                sio.seek(0)
-                dialect = csv.Sniffer().sniff(sample, delimiters=';,')
-            except Exception:
-                sio.seek(0)
-                dialect = csv.excel
-
-            reader = csv.reader(sio, dialect)
-            headers = next(reader, [])
-            if not headers:
-                raise ValueError('Cabeçalho não encontrado no arquivo.')
-            data_rows = [[cell for cell in row] for row in reader]
-            return headers, data_rows
-
-        try:
-            headers, data_rows = _read_rows_from_upload(raw_bytes, suffix)
-        except ValueError as exc:
-            flash(str(exc), 'danger')
-            return redirect(url_for('admin_tuss_rol'))
-
-        header_map = {_norm_header(h): idx for idx, h in enumerate(headers)}
-        codigo_idx = header_map.get('codigo')
-        desc_idx = header_map.get('descricao')
-        consta_idx = header_map.get('seconsta') or header_map.get('consta')
-        if codigo_idx is None or desc_idx is None or consta_idx is None:
-            flash('As colunas esperadas "CODIGO", "DESCRIÇÃO" e "SE CONSTA" não foram encontradas.', 'danger')
-            return redirect(url_for('admin_tuss_rol'))
-
-        registros: dict[str, dict] = {}
-        for offset, row in enumerate(data_rows, start=2):
-            if not row or all(not (cell or '').strip() for cell in row):
-                continue
-            try:
-                codigo_raw = row[codigo_idx] if codigo_idx < len(row) else ''
-                descricao_raw = row[desc_idx] if desc_idx < len(row) else ''
-                consta_raw = row[consta_idx] if consta_idx < len(row) else ''
-            except IndexError:
-                erros_import.append(f'Linha {offset}: formato incorreto.')
-                continue
-
-            codigo_norm = _normalize_tuss_codigo(codigo_raw)
-            if not codigo_norm:
-                erros_import.append(f'Linha {offset}: código vazio.')
-                continue
-            consta_val = _parse_sim_nao(consta_raw)
-            if consta_val is None:
-                erros_import.append(f'Linha {offset}: valor inválido em "Se Consta" ({consta_raw!r}).')
-                continue
-            descricao_val = (descricao_raw or '').strip()
-            registros[codigo_norm] = {
-                'codigo': codigo_norm,
-                'descricao': descricao_val,
-                'consta': consta_val,
-            }
-
-        if not registros:
-            flash('Nenhum registro válido encontrado no arquivo.', 'warning')
-            return redirect(url_for('admin_tuss_rol'))
-
-        codigos = list(registros.keys())
-        existentes = {
-            item.codigo: item
-            for item in TussRolCorrelacao.query.filter(TussRolCorrelacao.codigo.in_(codigos)).all()
-        }
-
-        criados = 0
-        atualizados = 0
-        try:
-            for codigo, payload in registros.items():
-                row = existentes.get(codigo)
-                if row:
-                    alterou = False
-                    if (row.descricao or '') != payload['descricao']:
-                        row.descricao = payload['descricao']
-                        alterou = True
-                    if bool(row.consta_rol) != bool(payload['consta']):
-                        row.consta_rol = bool(payload['consta'])
-                        alterou = True
-                    if alterou:
-                        atualizados += 1
-                else:
-                    db.session.add(TussRolCorrelacao(
-                        codigo=payload['codigo'],
-                        descricao=payload['descricao'],
-                        consta_rol=bool(payload['consta']),
-                    ))
-                    criados += 1
-            db.session.commit()
-            resumo_import = {
-                'processados': len(registros),
-                'criados': criados,
-                'atualizados': atualizados,
-                'erros': len(erros_import),
-            }
-            if criados or atualizados:
-                flash(f'Importação concluída: {len(registros)} registro(s), {criados} novo(s), {atualizados} atualizado(s).', 'success')
             else:
-                flash('Arquivo processado, mas nenhum registro foi alterado.', 'info')
+                headers, data_rows = rol_import.read_spreadsheet_rows(raw_bytes, suffix)
+                header_map = {rol_import.norm_header(h): idx for idx, h in enumerate(headers)}
+                codigo_idx = header_map.get('CODIGO')
+                desc_idx = header_map.get('DESCRICAO')
+                consta_idx = header_map.get('SECONSTA') or header_map.get('CONSTA')
+                if codigo_idx is None or desc_idx is None or consta_idx is None:
+                    flash('Colunas esperadas: CODIGO, DESCRIÇÃO e SE CONSTA.', 'danger')
+                    return redirect(url_for('admin_tuss_rol'))
+
+                registros: dict[str, dict] = {}
+                erros_import: list[str] = []
+                for offset, row in enumerate(data_rows, start=2):
+                    if not row or all(not str(cell or '').strip() for cell in row):
+                        continue
+                    codigo_raw = row[codigo_idx] if codigo_idx < len(row) else ''
+                    descricao_raw = row[desc_idx] if desc_idx < len(row) else ''
+                    consta_raw = row[consta_idx] if consta_idx < len(row) else ''
+                    codigo_norm = _normalize_tuss_codigo(codigo_raw)
+                    if not codigo_norm:
+                        erros_import.append(f'Linha {offset}: código vazio.')
+                        continue
+                    consta_val = _parse_sim_nao(consta_raw)
+                    if consta_val is None:
+                        erros_import.append(f'Linha {offset}: valor inválido em "Se Consta" ({consta_raw!r}).')
+                        continue
+                    registros[codigo_norm] = {
+                        'codigo': codigo_norm,
+                        'descricao': (descricao_raw or '').strip(),
+                        'consta': consta_val,
+                    }
+
+                if not registros:
+                    flash('Nenhum registro válido encontrado no arquivo TUSS x Rol.', 'warning')
+                    return redirect(url_for('admin_tuss_rol'))
+
+                existentes = {
+                    item.codigo: item
+                    for item in TussRolCorrelacao.query.filter(TussRolCorrelacao.codigo.in_(registros.keys())).all()
+                }
+                criados = 0
+                atualizados = 0
+                for codigo, payload in registros.items():
+                    row = existentes.get(codigo)
+                    if row:
+                        alterou = False
+                        if (row.descricao or '') != payload['descricao']:
+                            row.descricao = payload['descricao']
+                            alterou = True
+                        if bool(row.consta_rol) != bool(payload['consta']):
+                            row.consta_rol = bool(payload['consta'])
+                            alterou = True
+                        if alterou:
+                            atualizados += 1
+                    else:
+                        db.session.add(TussRolCorrelacao(
+                            codigo=payload['codigo'],
+                            descricao=payload['descricao'],
+                            consta_rol=bool(payload['consta']),
+                        ))
+                        criados += 1
+                linked = rol_import.link_tuss_correlacoes(db.session, _rol_models_dict())
+                db.session.commit()
+                _clear_rol_cache()
+                resumo_import = {
+                    'tipo': 'TUSS x Rol',
+                    'processados': len(registros),
+                    'criados': criados,
+                    'atualizados': atualizados,
+                    'vinculos_tuss': linked,
+                    'erros': len(erros_import),
+                }
+                if criados or atualizados:
+                    flash(
+                        f'TUSS x Rol: {len(registros)} registro(s); {criados} novo(s); '
+                        f'{atualizados} atualizado(s); {linked} vínculo(s) ao Rol.',
+                        'success',
+                    )
+                else:
+                    flash('Arquivo TUSS x Rol processado, mas nenhum registro foi alterado.', 'info')
+                for msg in erros_import[:20]:
+                    flash(msg, 'warning')
+
         except Exception as exc:
             db.session.rollback()
-            flash(f'Erro ao salvar importação: {exc}', 'danger')
-            app.logger.exception('Falha ao importar TUSS/ROL')
+            flash(f'Erro ao importar: {exc}', 'danger')
+            app.logger.exception('Falha na importação Rol ANS')
             return redirect(url_for('admin_tuss_rol'))
-
-        if erros_import:
-            for msg in erros_import[:20]:
-                flash(msg, 'warning')
 
         stats = {
             'total': db.session.query(func.count(TussRolCorrelacao.id)).scalar() or 0,
             'total_consta': db.session.query(func.count(TussRolCorrelacao.id)).filter(TussRolCorrelacao.consta_rol.is_(True)).scalar() or 0,
             'last_updated': db.session.query(func.max(TussRolCorrelacao.atualizado_em)).scalar(),
+            'rol_procedimentos': db.session.query(func.count(RolProcedimento.id)).scalar() or 0,
+            'rol_duts': db.session.query(func.count(RolDut.numero)).scalar() or 0,
+            'rol_versao': db.session.query(func.max(RolProcedimento.versao_label)).scalar(),
         }
 
     exemplos = (
@@ -13401,10 +13554,17 @@ def admin_tuss_rol():
         .limit(50)
         .all()
     )
+    duts_exemplo = (
+        RolDut.query
+        .order_by(RolDut.numero.asc())
+        .limit(30)
+        .all()
+    )
     return render_template(
         'admin_tuss_rol.html',
         stats=stats,
         exemplos=exemplos,
+        duts_exemplo=duts_exemplo,
         resumo_import=resumo_import,
     )
 
@@ -13442,12 +13602,17 @@ def tuss_rol_consulta():
     for code in requested_codes:
         entry = rol_map.get(code)
         if entry:
-            results.append({
+            rol_data = entry.get('rol') or {}
+            row = {
                 'codigo': code,
                 'descricao': entry.get('descricao') or '',
                 'consta': bool(entry.get('consta')),
                 'status': 'consta' if entry.get('consta') else 'nao_consta',
-            })
+                'rol': rol_data,
+                'rn_label': rol_data.get('rn_label') or rol_import.format_rn_display(rol_data.get('rn_alteracao')),
+                'vigencia_label': rol_data.get('vigencia_label') or rol_import.format_vigencia_display(rol_data.get('vigencia')),
+            }
+            results.append(row)
             summary['total'] += 1
             if entry.get('consta'):
                 summary['consta'] += 1
@@ -14444,7 +14609,40 @@ def _normalize_tuss_codigo(raw: str | None) -> str | None:
     code = str(raw).strip()
     if not code:
         return None
-    return code.upper()
+    if re.fullmatch(r'\d+\.0+', code):
+        code = code.split('.', 1)[0]
+    code = code.upper()
+    if code.isdigit() and len(code) < 8:
+        code = code.zfill(8)
+    return code
+
+
+def _rol_models_dict() -> dict:
+    return {
+        'RolCapitulo': RolCapitulo,
+        'RolGrupo': RolGrupo,
+        'RolSubgrupo': RolSubgrupo,
+        'RolProcedimento': RolProcedimento,
+        'RolDut': RolDut,
+        'TussRolCorrelacao': TussRolCorrelacao,
+    }
+
+
+def _clear_rol_cache() -> None:
+    _rol_cache.clear()
+
+
+def _serialize_tuss_rol_entry(item: TussRolCorrelacao) -> dict:
+    payload = {
+        'codigo': item.codigo,
+        'descricao': item.descricao,
+        'consta': bool(item.consta_rol),
+    }
+    proc = item.rol_procedimento
+    if proc:
+        dut = proc.dut if proc.dut_numero else None
+        payload['rol'] = rol_import.serialize_rol_procedimento(proc, dut)
+    return payload
 
 
 def _fetch_tuss_rol_map(codigos: Sequence[str] | None) -> dict[str, dict]:
@@ -14457,19 +14655,42 @@ def _fetch_tuss_rol_map(codigos: Sequence[str] | None) -> dict[str, dict]:
         normalized.setdefault(norm, c)
     if not normalized:
         return {}
-    records = (
-        TussRolCorrelacao.query
-        .filter(TussRolCorrelacao.codigo.in_(normalized.keys()))
-        .all()
-    )
+
     result: dict[str, dict] = {}
-    for item in records:
-        key = normalized.get(item.codigo, item.codigo)
-        result[key] = {
-            'codigo': item.codigo,
-            'descricao': item.descricao,
-            'consta': bool(item.consta_rol),
-        }
+    cache_miss: list[str] = []
+    for norm, orig in normalized.items():
+        cached = _rol_cache.get(norm)
+        if cached is not None:
+            result[orig] = cached
+        else:
+            cache_miss.append(norm)
+
+    if cache_miss:
+        records = (
+            TussRolCorrelacao.query
+            .options(
+                joinedload(TussRolCorrelacao.rol_procedimento)
+                .joinedload(RolProcedimento.capitulo),
+                joinedload(TussRolCorrelacao.rol_procedimento)
+                .joinedload(RolProcedimento.grupo),
+                joinedload(TussRolCorrelacao.rol_procedimento)
+                .joinedload(RolProcedimento.subgrupo),
+            )
+            .filter(TussRolCorrelacao.codigo.in_(cache_miss))
+            .all()
+        )
+        by_code = {item.codigo: item for item in records}
+        for norm in cache_miss:
+            orig = normalized[norm]
+            item = by_code.get(norm)
+            payload = _serialize_tuss_rol_entry(item) if item else {
+                'codigo': norm,
+                'descricao': None,
+                'consta': False,
+            }
+            _rol_cache[norm] = payload
+            result[orig] = payload
+
     return result
 
 
