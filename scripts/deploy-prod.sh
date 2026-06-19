@@ -16,8 +16,17 @@ docker-compose down --remove-orphans 2>/dev/null || true
 
 "${COMPOSE[@]}" up -d --build web_prod import_worker_prod
 
+echo "Verificando arquivos de migration na imagem..."
+if ! "${COMPOSE[@]}" exec -T -w /app web_prod test -f /app/alembic.ini; then
+  echo "ERRO: /app/alembic.ini não encontrado no container." >&2
+  echo "Rebuild falhou ou imagem antiga. Rode:" >&2
+  echo "  ${COMPOSE[*]} build --no-cache web_prod import_worker_prod" >&2
+  echo "  ${COMPOSE[*]} up -d web_prod import_worker_prod" >&2
+  exit 1
+fi
+
 echo "Aplicando migrations..."
-"${COMPOSE[@]}" exec -T web_prod alembic upgrade head
+"${COMPOSE[@]}" exec -T -w /app web_prod alembic -c /app/alembic.ini upgrade head
 
 "${COMPOSE[@]}" ps
 echo
