@@ -15317,59 +15317,55 @@ def _apply_ruleset_to_breakdown(item: CBHPMItem, tabela_ref: Tabela, breakdown: 
         aux_cfg = (rules or {}).get('auxiliares') or {}
         current_aux = _as_decimal(result.get('total_auxiliares'))
         aux_count_raw = getattr(item, 'numero_auxiliares', None)
-        explicit_no_aux = False
-        if aux_count_raw is not None:
+        aux_count = 0
+        if aux_count_raw is not None and str(aux_count_raw).strip() != '':
             try:
-                explicit_no_aux = Decimal(str(aux_count_raw)) == Decimal('0')
-            except (InvalidOperation, ValueError):
-                explicit_no_aux = False
+                aux_count = int(aux_count_raw)
+            except (TypeError, ValueError):
+                aux_count = 0
+        aux_count = max(aux_count, 0)
         aux_details = []
-        if (current_aux is None or current_aux == Decimal('0')) and aux_cfg.get('percentuais') and not explicit_no_aux:
-            percentuais = aux_cfg.get('percentuais') or []
-            try:
-                aux_count = int(aux_count_raw) if aux_count_raw is not None else None
-            except (TypeError, ValueError):
-                aux_count = None
-            max_por_porte = aux_cfg.get('max_por_porte') or {}
-            porte_key = str(getattr(item, 'porte', '') or '').strip()
-            max_aux = max_por_porte.get(porte_key, max_por_porte.get('default'))
-            try:
-                max_aux = int(max_aux) if max_aux is not None else None
-            except (TypeError, ValueError):
-                max_aux = None
-            if aux_count is None:
-                aux_count = max_aux if max_aux is not None else len(percentuais)
-            elif max_aux is not None:
-                aux_count = min(aux_count, max_aux)
-            aux_count = max(aux_count or 0, 0)
-            if aux_count and percentuais:
-                computed = Decimal('0')
-                for idx in range(aux_count):
-                    perc = percentuais[min(idx, len(percentuais) - 1)]
-                    perc = Decimal(str(perc))
-                    if perc > 1:
-                        perc = perc / Decimal('100')
-                    if perc <= 0:
-                        continue
-                    value_aux = total_porte * perc
-                    computed += value_aux
-                    perc_display = perc * Decimal('100')
-                    aux_details.append({
-                        'indice': idx + 1,
-                        'percentual_pct': str(perc_display),
-                        'valor': value_aux
-                    })
-                if computed > 0:
-                    result['total_auxiliares'] = computed
-                    result['auxiliares_detalhe'] = aux_details
-                    applied.append({
-                        'component': 'auxiliares',
-                        'rule': 'percentuais',
-                        'quantidade': aux_count
-                    })
-        elif explicit_no_aux:
-            result['total_auxiliares'] = Decimal('0')
-            result['auxiliares_detalhe'] = []
+        if (current_aux is None or current_aux == Decimal('0')) and aux_cfg.get('percentuais'):
+            if aux_count > 0:
+                percentuais = aux_cfg.get('percentuais') or []
+                max_por_porte = aux_cfg.get('max_por_porte') or {}
+                porte_key = str(getattr(item, 'porte', '') or '').strip()
+                max_aux = max_por_porte.get(porte_key, max_por_porte.get('default'))
+                try:
+                    max_aux = int(max_aux) if max_aux is not None else None
+                except (TypeError, ValueError):
+                    max_aux = None
+                if max_aux is not None:
+                    aux_count = min(aux_count, max_aux)
+                aux_count = max(aux_count, 0)
+                if aux_count and percentuais:
+                    computed = Decimal('0')
+                    for idx in range(aux_count):
+                        perc = percentuais[min(idx, len(percentuais) - 1)]
+                        perc = Decimal(str(perc))
+                        if perc > 1:
+                            perc = perc / Decimal('100')
+                        if perc <= 0:
+                            continue
+                        value_aux = total_porte * perc
+                        computed += value_aux
+                        perc_display = perc * Decimal('100')
+                        aux_details.append({
+                            'indice': idx + 1,
+                            'percentual_pct': str(perc_display),
+                            'valor': value_aux
+                        })
+                    if computed > 0:
+                        result['total_auxiliares'] = computed
+                        result['auxiliares_detalhe'] = aux_details
+                        applied.append({
+                            'component': 'auxiliares',
+                            'rule': 'percentuais',
+                            'quantidade': aux_count
+                        })
+            else:
+                result['total_auxiliares'] = Decimal('0')
+                result['auxiliares_detalhe'] = []
     if 'auxiliares_detalhe' not in result or result['auxiliares_detalhe'] is None:
         aux_existing = []
         for idx, attr in enumerate(['total_1_aux', 'total_2_aux', 'total_3_aux', 'total_4_aux'], start=1):
