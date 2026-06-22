@@ -15330,11 +15330,12 @@ def _apply_ruleset_to_breakdown(item: CBHPMItem, tabela_ref: Tabela, breakdown: 
                 percentuais = aux_cfg.get('percentuais') or []
                 max_por_porte = aux_cfg.get('max_por_porte') or {}
                 porte_key = str(getattr(item, 'porte', '') or '').strip()
-                max_aux = max_por_porte.get(porte_key, max_por_porte.get('default'))
-                try:
-                    max_aux = int(max_aux) if max_aux is not None else None
-                except (TypeError, ValueError):
-                    max_aux = None
+                max_aux = None
+                if porte_key in max_por_porte:
+                    try:
+                        max_aux = int(max_por_porte[porte_key])
+                    except (TypeError, ValueError):
+                        max_aux = None
                 if max_aux is not None:
                     aux_count = min(aux_count, max_aux)
                 aux_count = max(aux_count, 0)
@@ -15363,6 +15364,9 @@ def _apply_ruleset_to_breakdown(item: CBHPMItem, tabela_ref: Tabela, breakdown: 
                             'rule': 'percentuais',
                             'quantidade': aux_count
                         })
+                else:
+                    result['total_auxiliares'] = Decimal('0')
+                    result['auxiliares_detalhe'] = []
             else:
                 result['total_auxiliares'] = Decimal('0')
                 result['auxiliares_detalhe'] = []

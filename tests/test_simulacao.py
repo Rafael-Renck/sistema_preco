@@ -33,20 +33,22 @@ def test_simulacao_cbhpm_teto_alert(app_ctx):
         id_tabela=tabela.id,
     )
     session.add(item)
-    session.add(app_ctx.CBHPMTeto(
+    session.add(app_ctx.CbhpmTeto(
         codigo='123',
+        operadora_id=operadora.id,
         descricao='Teto referência',
         valor_total=Decimal('120.00'),
-        versao_ref='2024',
     ))
     session.commit()
 
-    payload, status = app_ctx._compute_simulacao_cbhpm({
-        'codigos': ['123'],
-        'versao': 'CBHPM Test',
-    })
+    with app_ctx.app.test_request_context():
+        payload, status = app_ctx._compute_simulacao_cbhpm({
+            'codigos': ['123'],
+            'versao': 'CBHPM Test',
+            'operadora_id': operadora.id,
+        })
     assert status == 200
-    assert payload['teto_status'] == 'EXCEDIDO'
+    assert payload['teto_status'] == 'ULTRAPASSA'
     assert payload['teto_alertas']
     alerta = payload['teto_alertas'][0]
     assert alerta['codigo'] == '123'
@@ -88,3 +90,78 @@ def test_simulacao_cbhpm_calcula_auxiliares_quando_informado(app_ctx):
     br = app_ctx.compute_cbhpm_breakdown(item, tabela, rules=app_ctx.DEFAULT_CBHPM_RULES)
     assert br['total_auxiliares'] == Decimal('50.00')
     assert br['total'] == Decimal('150.00')
+
+
+def test_simulacao_cbhpm_quatro_auxiliares_porte_alfanumerico(app_ctx):
+    """Porte 11B não deve ser limitado pelo default numérico do ruleset."""
+    item = app_ctx.CBHPMItem(
+        codigo='30401020',
+        procedimento='Exérese de tumor com abordagem craniofacial oncológica pavilhão auricular (tempo facial)',
+        porte='11B',
+        valor_porte=Decimal('3756.00'),
+        total_porte=Decimal('3756.00'),
+        valor_porte_anestesico=Decimal('3490.67'),
+        total_porte_anestesico=Decimal('3490.67'),
+        numero_auxiliares=4,
+        id_tabela=1,
+    )
+    tabela = app_ctx.Tabela(nome='CBHPM 2021', tipo_tabela='cbhpm', id_operadora=1)
+
+    br = app_ctx.compute_cbhpm_breakdown(item, tabela, rules=app_ctx.DEFAULT_CBHPM_RULES)
+    assert br['total_auxiliares'] == Decimal('2629.20')
+    assert br['total_porte_an'] == Decimal('3490.67')
+    assert br['total'] == Decimal('9875.87')
+    assert len(br.get('auxiliares_detalhe') or []) == 4
+
+
+def test_simulacao_cbhpm_cap_auxiliares_apenas_porte_numerico(app_ctx):
+    """Porte numérico 6 limita a 3 auxiliares mesmo se o catálogo informar 4."""
+    item = app_ctx.CBHPMItem(
+        codigo='99999999',
+        procedimento='Cirurgia porte 6',
+        porte='6',
+        valor_porte=Decimal('100.00'),
+        total_porte=Decimal('100.00'),
+        numero_auxiliares=4,
+        id_tabela=1,
+    )
+    tabela = app_ctx.Tabela(nome='CBHPM Test', tipo_tabela='cbhpm', id_operadora=1)
+
+    br = app_ctx.compute_cbhpm_breakdown(item, tabela, rules=app_ctx.DEFAULT_CBHPM_RULES)
+    assert br['total_auxiliares'] == Decimal('60.00')
+    assert br['total'] == Decimal('160.00')
+    assert len(br.get('auxiliares_detalhe') or []) == 3
+
+
+def test_simulacao_cbhpm_porte_numerico_zero_auxiliares(app_ctx):
+    item = app_ctx.CBHPMItem(
+        codigo='88888888',
+        procedimento='Procedimento porte 1',
+        porte='1',
+        valor_porte=Decimal('100.00'),
+        total_porte=Decimal('100.00'),
+        numero_auxiliares=2,
+        id_tabela=1,
+    )
+    tabela = app_ctx.Tabela(nome='CBHPM Test', tipo_tabela='cbhpm', id_operadora=1)
+
+    br = app_ctx.compute_cbhpm_breakdown(item, tabela, rules=app_ctx.DEFAULT_CBHPM_RULES)
+    assert br['total_auxiliares'] == Decimal('0')
+    assert br['total'] == Decimal('100.00')
+
+
+def test_simulacao_cbhpm_zero_auxiliares_explicito(app_ctx):
+    item = app_ctx.CBHPMItem(
+        codigo='10101012',
+        procedimento='Consulta',
+        porte='2B',
+        valor_porte=Decimal('224.90'),
+        total_porte=Decimal('224.90'),
+        numero_auxiliares=0,
+        id_tabela=1,
+    )
+    tabela = app_ctx.Tabela(nome='CBHPM Consulta', tipo_tabela='cbhpm', id_operadora=1)
+
+    br = app_ctx.compute_cbhpm_breakdown(item, tabela, rules=app_ctx.DEFAULT_CBHPM_RULES)
+    assert br['total_auxiliares'] == Decimal('0')
+    assert br['total'] == Decimal('224.90')
