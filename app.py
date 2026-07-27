@@ -24,7 +24,7 @@ from flask import (
 )
 import json
 from flask_sqlalchemy import SQLAlchemy
-import pymysql
+import pymysql  # noqa: F401 — registra driver MySQL para SQLAlchemy
 from dotenv import load_dotenv
 from functools import wraps
 from sqlalchemy import text, or_, and_, func, false, case, literal, cast, Numeric, Unicode
@@ -1225,7 +1225,7 @@ class BrasFixedStage(db.Model):
 class BrasItemNormalized(db.Model):
     __tablename__ = 'bras_item_n'
 
-    id = db.Column(db.BigInteger, primary_key=True)
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
     arquivo = db.Column(db.String(255), nullable=False)
     linha_num = db.Column(db.Integer, nullable=False)
     laboratorio_codigo = db.Column(db.String(50), nullable=True)
@@ -7375,7 +7375,7 @@ def _catalogo_search_bras_cadastro_preco_fallback(
         return None
     alq_f = filters.get('aliquota')
     if alq_f is not None:
-        alq: Decimal | None = _br_norm_aliquota(aliq_f) or alq_f
+        alq: Decimal | None = _br_norm_aliquota(alq_f) or alq_f
     else:
         alq = _UF_PISO_ALIQUOTA_BRAS.get(uf)
     if alq is None:
@@ -14578,7 +14578,6 @@ def _as_decimal(v):
         except InvalidOperation:
             return _parse_money(s)
     except Exception:
-        setattr(load_logo_bytes, 'last_static_name', None)
         return None
 
 
@@ -17452,32 +17451,6 @@ def insumos_bras_analyze_delta():
     
     raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
     uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
-    raw_ufs = request.form.getlist('ufs') or request.form.getlist('uf')
-    uf_values = _normalize_uf_codes(raw_ufs)
-    if not uf_values:
-        uf_values = [uf for uf, floor in _UF_PISO_ALIQUOTA_BRAS.items() if floor == alq]
     delimiter = request.form.get('delimiter') or ','
     encoding = (request.form.get('encoding') or 'latin-1').strip()
     catalog_upload = request.files.get('catalogo')

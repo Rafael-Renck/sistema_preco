@@ -37,15 +37,11 @@ def _ensure_alembic_version_width(connection) -> None:
     insp = inspect(connection)
     if not insp.has_table("alembic_version"):
         return
-    connection.execute(
-        text("ALTER TABLE alembic_version MODIFY version_num VARCHAR(255) NOT NULL")
-    )
-
-
-def process_revision_directives(context, revision, directives):
-    """Amplia version_num antes de cada revisão (IDs > 32 caracteres)."""
-    if directives and context.connection is not None:
-        _ensure_alembic_version_width(context.connection)
+    # DDL no MySQL precisa de autocommit para aplicar antes do UPDATE de versão
+    with connection.execution_options(isolation_level="AUTOCOMMIT"):
+        connection.execute(
+            text("ALTER TABLE alembic_version MODIFY version_num VARCHAR(255) NOT NULL")
+        )
 
 
 def run_migrations_offline() -> None:
@@ -76,6 +72,10 @@ def run_migrations_online() -> None:
         )
 
         with connectable.connect() as connection:
+            def process_revision_directives(migration_context, revision, directives):
+                if directives:
+                    _ensure_alembic_version_width(connection)
+
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
