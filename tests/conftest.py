@@ -3,6 +3,15 @@ import sys
 from pathlib import Path
 
 import pytest
+from sqlalchemy import BigInteger
+from sqlalchemy.ext.compiler import compiles
+
+
+# SQLite não autoincrementa BIGINT — mapear para INTEGER nos testes
+@compiles(BigInteger, "sqlite")
+def _compile_bigint_sqlite(_type, _compiler, **_kw):
+    return "INTEGER"
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:

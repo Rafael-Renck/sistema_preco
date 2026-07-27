@@ -5,55 +5,55 @@ Revises: 20241013_01_extend_simpro_norm_fields
 Create Date: 2024-10-23 15:00:00
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
+from sqlalchemy import inspect
 
-
-# revision identifiers, used by Alembic.
-revision: str = '20241023_01_add_performance_indexes'
-down_revision: Union[str, None] = '20241013_01_extend_simpro_norm_fields'
+revision: str = "20241023_01_add_performance_indexes"
+down_revision: Union[str, None] = "20241013_01_extend_simpro_norm_fields"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _index_names(table: str) -> set[str]:
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if not insp.has_table(table):
+        return set()
+    return {idx["name"] for idx in insp.get_indexes(table)}
+
+
+def _create_index(table: str, index_name: str, columns: list[str], mysql_prefix_lengths: dict | None = None) -> None:
+    if index_name in _index_names(table):
+        return
+    op.create_index(index_name, table, columns, mysql_prefix_lengths=mysql_prefix_lengths)
+
+
+def _drop_index(table: str, index_name: str) -> None:
+    if index_name not in _index_names(table):
+        return
+    op.drop_index(index_name, table_name=table)
+
+
 def upgrade() -> None:
-    """
-    Adiciona índices para otimizar as queries de summary e versões do módulo de insumos.
+    """Índices para summary/versões do módulo de insumos (MySQL-compatible)."""
+    if "idx_bras_item_n_imported_at" not in _index_names("bras_item_n"):
+        op.execute("CREATE INDEX idx_bras_item_n_imported_at ON bras_item_n (imported_at DESC)")
 
-    Melhora performance em:
-    - Carregamento da página /insumos (queries de agregação)
-    - Busca por versões distintas
-    - Filtros de UF e alíquota
-    """
+    _create_index("bras_item_n", "idx_bras_item_n_edicao_sorted", ["edicao"])
 
-    # Índices para BrasItemNormalized (bras_item_n)
-    # Acelera MAX(imported_at) na função _insumo_summary
-    op.execute("CREATE INDEX IF NOT EXISTS idx_bras_item_n_imported_at ON bras_item_n(imported_at DESC)")
+    if "idx_simpro_item_norm_imported_at" not in _index_names("simpro_item_norm"):
+        op.execute("CREATE INDEX idx_simpro_item_norm_imported_at ON simpro_item_norm (imported_at DESC)")
 
-    # Acelera DISTINCT versao/edicao (já existe idx mas vamos garantir order otimizado)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_bras_item_n_edicao_sorted ON bras_item_n(edicao) WHERE edicao IS NOT NULL")
-
-    # Índices para SimproItemNormalized (simpro_item_norm)
-    # Acelera MAX(imported_at) na função _insumo_summary
-    op.execute("CREATE INDEX IF NOT EXISTS idx_simpro_item_norm_imported_at ON simpro_item_norm(imported_at DESC)")
-
-    # Acelera queries por versao + data_ref combinadas
-    op.execute("CREATE INDEX IF NOT EXISTS idx_simpro_item_norm_versao_data ON simpro_item_norm(versao, data_ref DESC)")
-
-    # Índice composto para buscas com UF (muito comum no módulo)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_simpro_item_norm_uf_versao ON simpro_item_norm(uf_referencia, versao)")
+    _create_index("simpro_item_norm", "idx_simpro_item_norm_versao_data", ["versao", "data_ref"])
+    _create_index("simpro_item_norm", "idx_simpro_item_norm_uf_versao", ["uf_referencia", "versao"])
 
 
 def downgrade() -> None:
-    """Remove os índices adicionados"""
-
-    # Remove índices do BrasItemNormalized
-    op.execute("DROP INDEX IF EXISTS idx_bras_item_n_imported_at ON bras_item_n")
-    op.execute("DROP INDEX IF EXISTS idx_bras_item_n_edicao_sorted ON bras_item_n")
-
-    # Remove índices do SimproItemNormalized
-    op.execute("DROP INDEX IF EXISTS idx_simpro_item_norm_imported_at ON simpro_item_norm")
-    op.execute("DROP INDEX IF EXISTS idx_simpro_item_norm_versao_data ON simpro_item_norm")
-    op.execute("DROP INDEX IF EXISTS idx_simpro_item_norm_uf_versao ON simpro_item_norm")
+    _drop_index("bras_item_n", "idx_bras_item_n_imported_at")
+    _drop_index("bras_item_n", "idx_bras_item_n_edicao_sorted")
+    _drop_index("simpro_item_norm", "idx_simpro_item_norm_imported_at")
+    _drop_index("simpro_item_norm", "idx_simpro_item_norm_versao_data")
+    _drop_index("simpro_item_norm", "idx_simpro_item_norm_uf_versao")

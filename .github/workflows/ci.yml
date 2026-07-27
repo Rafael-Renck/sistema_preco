@@ -64,7 +64,14 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: pip-audit (dependências)
-        run: pip-audit -r requirements.txt --progress-spinner=off
+        run: |
+          IGNORE_ARGS=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              vulns = tomllib.load(f)['tool']['pip-audit']['ignore-vulns']
+          print(' '.join(f'--ignore-vuln {v}' for v in vulns))
+          ")
+          pip-audit -r requirements.txt $IGNORE_ARGS --progress-spinner=off
 
       - name: Bandit (SAST)
         run: bandit -r scripts migrations -ll -c pyproject.toml
