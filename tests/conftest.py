@@ -10,6 +10,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _test_env_defaults(monkeypatch, tmp_path_factory):
+    """Evita bootstrap pesado e garante SQLite isolado em todos os testes."""
+    monkeypatch.setenv('SKIP_ENSURE_DB', '1')
+    db_dir = tmp_path_factory.mktemp('pytest_db')
+    db_path = db_dir / 'default.db'
+    monkeypatch.setenv('DATABASE_URL', f'sqlite:///{db_path}')
+
+
 @pytest.fixture
 def app_ctx(monkeypatch, tmp_path):
     db_path = tmp_path / 'test.db'

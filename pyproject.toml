@@ -1,0 +1,54 @@
+[project]
+name = "sistema-preco"
+version = "0.1.0"
+description = "Sistema de Banco de Preços — Operadora de Saúde"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+extend-exclude = "/(\\.venv|venv|\\.git|migrations/versions)/"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "S",   # bandit (subset via ruff)
+]
+ignore = [
+    "E501",  # line length — black cuida do formato
+    "S101",  # assert em testes
+    "S603",  # subprocess — scripts de deploy
+    "S607",  # partial executable path
+]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["E501", "S", "B"]
+"tests/**" = ["S101"]
+"scripts/**" = ["S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: testes que exigem MySQL ou serviços externos",
+    "smoke: testes de fumaça rápidos da API",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv"]
+skips = ["B101"]

@@ -1,0 +1,6 @@
+# Ferramentas de qualidade — usadas no CI e localmente (não entram na imagem Docker de produção)
+-r requirements.txt
+ruff>=0.8.0
+black>=24.0
+bandit>=1.7.9
+pip-audit>=2.7.3

@@ -1,0 +1,55 @@
+# Staging (homologação) — template para quando o ambiente existir.
+# Uso: docker compose -p sistema_preco_staging -f docker-compose.staging.yml up -d --build
+#
+# Antes do primeiro deploy:
+#   cp .env.staging.example .env.staging
+#   Edite DATABASE_URL, SECRET_KEY e STAGING_WEB_PORT
+version: "3.9"
+
+services:
+  web_staging:
+    build: .
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SECRET_KEY: ${SECRET_KEY:-change-me-staging}
+      PUBLIC_API_TOKENS: ${PUBLIC_API_TOKENS:-}
+      CBHPM_API_CACHE_TTL: ${CBHPM_API_CACHE_TTL:-300}
+      FLASK_APP: app
+      INSUMO_IMPORT_BACKGROUND_DISABLE: ${INSUMO_IMPORT_BACKGROUND_DISABLE:-1}
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
+    ports:
+      - "${STAGING_WEB_PORT:-8011}:8000"
+    volumes:
+      - insumo_import_data_staging:/data/insumo_async_imports
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./migrations:/app/migrations:ro
+      - ./rol_import.py:/app/rol_import.py:ro
+      - ./app.py:/app/app.py:ro
+      - ./templates:/app/templates:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health?format=json', timeout=5)\"",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  import_worker_staging:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      SECRET_KEY: ${SECRET_KEY:-change-me-staging}
+      FLASK_APP: app
+      INSUMO_IMPORT_ASYNC_DIR: /data/insumo_async_imports
+    volumes:
+      - insumo_import_data_staging:/data/insumo_async_imports
+      - ./app.py:/app/app.py:ro
+      - ./rol_import.py:/app/rol_import.py:ro
+    command: ["flask", "insumos-import-worker", "--poll-interval", "5"]
+
+volumes:
+  insumo_import_data_staging:

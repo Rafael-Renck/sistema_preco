@@ -1,0 +1,186 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_production:
+        description: "Pular deploy em produção (apenas build/validação)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: sistema-preco
+
+jobs:
+  build-artifact:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Metadados da imagem
+        id: meta
+        run: echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build imagem de release
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} .
+
+      - name: Validar import na imagem
+        run: |
+          docker run --rm \
+            -e SKIP_ENSURE_DB=1 \
+            -e DATABASE_URL=sqlite:////tmp/test.db \
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.tag }} \
+            python -c "import app; print('release image ok')"
+
+  deploy-staging:
+    name: Deploy Staging
+    runs-on: ubuntu-latest
+    needs: build-artifact
+    if: vars.STAGING_ENABLED == 'true'
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy em staging (SSH)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.STAGING_DEPLOY_PATH }}"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            export DEPLOY_SHA="${{ github.sha }}"
+            bash scripts/deploy-zero-downtime.sh staging
+
+      - name: Health check staging
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          port: ${{ secrets.STAGING_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            cd "${{ secrets.STAGING_DEPLOY_PATH }}"
+            HEALTH_URL="${{ vars.STAGING_HEALTH_URL }}"
+            bash scripts/ci-health-check.sh "$HEALTH_URL" 30 10
+
+  deploy-production:
+    name: Deploy Production
+    runs-on: ubuntu-latest
+    needs: [build-artifact, deploy-staging]
+    if: >-
+      vars.CD_DEPLOY_ENABLED == 'true' &&
+      (needs.deploy-staging.result == 'success' || needs.deploy-staging.result == 'skipped') &&
+      (github.event_name != 'workflow_dispatch' || inputs.skip_production != true)
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy em produção (SSH + zero downtime)
+        id: deploy
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PRODUCTION_SSH_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          port: ${{ secrets.PRODUCTION_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.PRODUCTION_DEPLOY_PATH }}"
+            git fetch origin main
+            git checkout main
+            git pull --ff-only origin main
+            export DEPLOY_SHA="${{ github.sha }}"
+            bash scripts/deploy-zero-downtime.sh production
+
+      - name: Health check produção
+        id: health
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PRODUCTION_SSH_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          port: ${{ secrets.PRODUCTION_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            cd "${{ secrets.PRODUCTION_DEPLOY_PATH }}"
+            HEALTH_URL="${{ vars.PRODUCTION_HEALTH_URL }}"
+            bash scripts/ci-health-check.sh "$HEALTH_URL" 60 15
+
+      - name: Rollback automático em falha
+        if: failure() && steps.health.outcome == 'failure'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.PRODUCTION_SSH_HOST }}
+          username: ${{ secrets.PRODUCTION_SSH_USER }}
+          key: ${{ secrets.PRODUCTION_SSH_KEY }}
+          port: ${{ secrets.PRODUCTION_SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.PRODUCTION_DEPLOY_PATH }}"
+            bash scripts/rollback-prod.sh
+
+      - name: Falhar workflow após rollback
+        if: failure() && steps.health.outcome == 'failure'
+        run: |
+          echo "Deploy em produção falhou. Rollback executado."
+          exit 1
+
+  cd-summary:
+    name: CD Summary
+    runs-on: ubuntu-latest
+    needs: [build-artifact, deploy-staging, deploy-production]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resumo do pipeline
+        run: |
+          {
+            echo "## CD — Sistema de Preços"
+            echo ""
+            echo "| Job | Status |"
+            echo "|-----|--------|"
+            echo "| Build | ${{ needs.build-artifact.result }} |"
+            echo "| Staging | ${{ needs.deploy-staging.result }} |"
+            echo "| Production | ${{ needs.deploy-production.result }} |"
+            echo ""
+            echo "**Commit:** \`${{ github.sha }}\`"
+            echo ""
+            if [[ "${{ vars.STAGING_ENABLED }}" != "true" ]]; then
+              echo "> Staging desabilitado — defina \`STAGING_ENABLED=true\` quando o ambiente existir."
+            fi
+            if [[ "${{ vars.CD_DEPLOY_ENABLED }}" != "true" ]]; then
+              echo "> Deploy automático desabilitado — CI validou o build; deploy manual no servidor continua disponível."
+            fi
+            echo ""
+            echo "Notificações por e-mail são enviadas pelo GitHub (Settings → Notifications → Actions)."
+          } >> "$GITHUB_STEP_SUMMARY"
