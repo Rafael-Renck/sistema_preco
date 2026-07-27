@@ -1817,14 +1817,26 @@ def _normalize_anvisa_field(record: dict[str, object | None]) -> None:
     if ' ' not in text and not re.search(r'[A-Za-z]', text):
         compact = ''.join(ch for ch in text if ch.isdigit())
         if compact:
-            normalized = compact[-13:] if len(compact) > 13 else compact
+            if len(compact) == 13:
+                normalized = compact
+            elif len(compact) > 14:
+                normalized = compact[-13:]
+            else:
+                # 14 dígitos — vigência+ean colados; fallback na linha.
+                return
             record[source_key] = normalized
             record['anvisa'] = normalized
             return
 
     compact = ''.join(ch for ch in text if ch.isdigit())
     if len(compact) >= 13:
-        normalized = compact[-13:]
+        if len(compact) == 13:
+            normalized = compact
+        elif len(compact) > 14:
+            normalized = compact[-13:]
+        else:
+            # 14 dígitos — vigência+ean colados; fallback na linha.
+            return
         record[source_key] = normalized
         record['anvisa'] = normalized
         return

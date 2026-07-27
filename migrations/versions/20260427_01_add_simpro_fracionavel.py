@@ -19,27 +19,31 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(table_name: str) -> bool:
+    bind = op.get_bind()
+    return inspect(bind).has_table(table_name)
+
+
 def _has_column(table_name: str, column_name: str) -> bool:
+    if not _has_table(table_name):
+        return False
     bind = op.get_bind()
     inspector = inspect(bind)
-    try:
-        columns = inspector.get_columns(table_name)
-    except Exception:
-        return False
+    columns = inspector.get_columns(table_name)
     return any(col.get("name") == column_name for col in columns)
 
 
 def upgrade() -> None:
-    if not _has_column("simpro_item_norm", "fracionavel"):
+    if _has_table("simpro_item_norm") and not _has_column("simpro_item_norm", "fracionavel"):
         op.add_column("simpro_item_norm", sa.Column("fracionavel", sa.String(length=1), nullable=True))
 
-    if not _has_column("mv_catalogo_vigente_simpro", "fracionavel"):
+    if _has_table("mv_catalogo_vigente_simpro") and not _has_column("mv_catalogo_vigente_simpro", "fracionavel"):
         op.add_column("mv_catalogo_vigente_simpro", sa.Column("fracionavel", sa.String(length=1), nullable=True))
 
 
 def downgrade() -> None:
-    if _has_column("mv_catalogo_vigente_simpro", "fracionavel"):
+    if _has_table("mv_catalogo_vigente_simpro") and _has_column("mv_catalogo_vigente_simpro", "fracionavel"):
         op.drop_column("mv_catalogo_vigente_simpro", "fracionavel")
 
-    if _has_column("simpro_item_norm", "fracionavel"):
+    if _has_table("simpro_item_norm") and _has_column("simpro_item_norm", "fracionavel"):
         op.drop_column("simpro_item_norm", "fracionavel")
