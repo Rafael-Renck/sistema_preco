@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -13,21 +12,21 @@ if str(PROJECT_ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def _test_env_defaults(monkeypatch, tmp_path_factory):
     """Evita bootstrap pesado e garante SQLite isolado em todos os testes."""
-    monkeypatch.setenv('SKIP_ENSURE_DB', '1')
-    db_dir = tmp_path_factory.mktemp('pytest_db')
-    db_path = db_dir / 'default.db'
-    monkeypatch.setenv('DATABASE_URL', f'sqlite:///{db_path}')
+    monkeypatch.setenv("SKIP_ENSURE_DB", "1")
+    db_dir = tmp_path_factory.mktemp("pytest_db")
+    db_path = db_dir / "default.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
 
 @pytest.fixture
 def app_ctx(monkeypatch, tmp_path):
-    db_path = tmp_path / 'test.db'
-    monkeypatch.setenv('DATABASE_URL', f'sqlite:///{db_path}')
+    db_path = tmp_path / "test.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
 
-    if 'app' in sys.modules:
-        app_module = importlib.reload(sys.modules['app'])
+    if "app" in sys.modules:
+        app_module = importlib.reload(sys.modules["app"])
     else:
-        app_module = importlib.import_module('app')
+        app_module = importlib.import_module("app")
 
     application = app_module.app
     application.config.update(TESTING=True)

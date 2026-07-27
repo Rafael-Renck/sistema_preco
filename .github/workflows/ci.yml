@@ -64,7 +64,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: pip-audit (dependências)
-        run: pip-audit -r requirements.txt --config pip-audit.toml --progress-spinner=off
+        run: pip-audit -r requirements.txt --progress-spinner=off
 
       - name: Bandit (SAST)
         run: bandit -r scripts migrations -ll -c pyproject.toml
@@ -162,14 +162,30 @@ jobs:
     needs: [lint-format, security, test, migrations, build]
     if: always()
     steps:
-      - name: Falhar se algum job obrigatório falhou
+      - name: Resumo e gate final
         run: |
-          if [[ "${{ needs.lint-format.result }}" != "success" ]] || \
-             [[ "${{ needs.security.result }}" != "success" ]] || \
-             [[ "${{ needs.test.result }}" != "success" ]] || \
-             [[ "${{ needs.migrations.result }}" != "success" ]] || \
-             [[ "${{ needs.build.result }}" != "success" ]]; then
-            echo "CI falhou — merge bloqueado pela Branch Protection."
+          echo "lint-format: ${{ needs.lint-format.result }}"
+          echo "security: ${{ needs.security.result }}"
+          echo "test: ${{ needs.test.result }}"
+          echo "migrations: ${{ needs.migrations.result }}"
+          echo "build: ${{ needs.build.result }}"
+          FAILED=0
+          for job in lint-format security test migrations build; do
+            result=""
+            case "$job" in
+              lint-format) result="${{ needs.lint-format.result }}" ;;
+              security) result="${{ needs.security.result }}" ;;
+              test) result="${{ needs.test.result }}" ;;
+              migrations) result="${{ needs.migrations.result }}" ;;
+              build) result="${{ needs.build.result }}" ;;
+            esac
+            if [[ "$result" != "success" ]]; then
+              echo "::error::Job $job falhou ($result)"
+              FAILED=1
+            fi
+          done
+          if [[ "$FAILED" -ne 0 ]]; then
+            echo "CI Gate: um ou mais jobs falharam (este job só consolida o resultado)."
             exit 1
           fi
           echo "Todos os jobs de CI passaram."

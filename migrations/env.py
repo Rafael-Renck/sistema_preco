@@ -3,10 +3,10 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, inspect, pool, text
+from sqlalchemy import engine_from_config, pool
 
 # add project root to path
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -32,22 +32,10 @@ if config.config_file_name:
 target_metadata = db.metadata
 
 
-def _ensure_alembic_version_width(connection) -> None:
-    """Alembic cria version_num como VARCHAR(32); revisões longas excedem esse limite."""
-    insp = inspect(connection)
-    if not insp.has_table("alembic_version"):
-        return
-    # DDL no MySQL precisa de autocommit para aplicar antes do UPDATE de versão
-    with connection.execution_options(isolation_level="AUTOCOMMIT"):
-        connection.execute(
-            text("ALTER TABLE alembic_version MODIFY version_num VARCHAR(255) NOT NULL")
-        )
-
-
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     with app.app_context():
-        url = app.config['SQLALCHEMY_DATABASE_URI']
+        url = app.config["SQLALCHEMY_DATABASE_URI"]
         context.configure(
             url=url,
             target_metadata=target_metadata,
@@ -64,7 +52,7 @@ def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     with app.app_context():
         configuration = config.get_section(config.config_ini_section) or {}
-        configuration["sqlalchemy.url"] = app.config['SQLALCHEMY_DATABASE_URI']
+        configuration["sqlalchemy.url"] = app.config["SQLALCHEMY_DATABASE_URI"]
         connectable = engine_from_config(
             configuration,
             prefix="sqlalchemy.",
@@ -72,16 +60,10 @@ def run_migrations_online() -> None:
         )
 
         with connectable.connect() as connection:
-            def process_revision_directives(migration_context, revision, directives):
-                if directives:
-                    _ensure_alembic_version_width(connection)
-
             context.configure(
                 connection=connection,
                 target_metadata=target_metadata,
                 compare_type=True,
-                transaction_per_migration=True,
-                process_revision_directives=process_revision_directives,
             )
 
             with context.begin_transaction():
