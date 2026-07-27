@@ -3,7 +3,7 @@ import sys
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, inspect, pool, text
 
 # add project root to path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -30,6 +30,22 @@ if config.config_file_name:
 # from myapp import mymodel
 # target_metadata = mymodel.Base.metadata
 target_metadata = db.metadata
+
+
+def _ensure_alembic_version_width(connection) -> None:
+    """Alembic cria version_num como VARCHAR(32); revisões longas excedem esse limite."""
+    insp = inspect(connection)
+    if not insp.has_table("alembic_version"):
+        return
+    connection.execute(
+        text("ALTER TABLE alembic_version MODIFY version_num VARCHAR(255) NOT NULL")
+    )
+
+
+def process_revision_directives(context, revision, directives):
+    """Amplia version_num antes de cada revisão (IDs > 32 caracteres)."""
+    if directives and context.connection is not None:
+        _ensure_alembic_version_width(context.connection)
 
 
 def run_migrations_offline() -> None:
@@ -64,6 +80,8 @@ def run_migrations_online() -> None:
                 connection=connection,
                 target_metadata=target_metadata,
                 compare_type=True,
+                transaction_per_migration=True,
+                process_revision_directives=process_revision_directives,
             )
 
             with context.begin_transaction():

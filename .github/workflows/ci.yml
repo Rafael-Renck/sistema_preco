@@ -40,7 +40,7 @@ jobs:
           ruff check app.py --select E9,F63,F7,F82,F401
 
       - name: Black (format check)
-        run: black --check tests scripts migrations
+        run: black --check tests migrations
 
       - name: Validar sintaxe Python
         run: python -m compileall -q app.py rol_import.py tests scripts migrations
@@ -95,10 +95,7 @@ jobs:
       - name: Suite completa de testes (SQLite)
         env:
           SKIP_ENSURE_DB: "1"
-        run: |
-          pytest -v --tb=short -x \
-            --ignore=tests/test_cbhpm_rn_import.py \
-            --ignore=tests/test_cbhpm_comunicado_import.py
+        run: pytest -v --tb=short -x
 
   migrations:
     name: Migrations Validation

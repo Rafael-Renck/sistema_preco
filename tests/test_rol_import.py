@@ -2,7 +2,6 @@
 import io
 from pathlib import Path
 
-import pytest
 from openpyxl import Workbook
 
 import rol_import
