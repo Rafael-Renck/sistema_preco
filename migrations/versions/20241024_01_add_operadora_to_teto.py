@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -40,14 +41,34 @@ def upgrade() -> None:
     op.execute("UPDATE cbhpm_teto SET operadora_id = 1 WHERE operadora_id IS NULL")
 
     # 3. Tornar operadora_id NOT NULL
-    op.alter_column('cbhpm_teto', 'operadora_id', nullable=False)
+    op.alter_column(
+        'cbhpm_teto',
+        'operadora_id',
+        existing_type=sa.Integer(),
+        nullable=False,
+    )
 
     # 4. Dropar PRIMARY KEY antiga e criar nova composta
     # NOTA: No MySQL, precisamos recriar a PK
     op.execute("ALTER TABLE cbhpm_teto DROP PRIMARY KEY")
     op.execute("ALTER TABLE cbhpm_teto ADD PRIMARY KEY (codigo, operadora_id)")
 
-    # 5. Adicionar FOREIGN KEY
+    # 5. Garantir tabela operadoras e seed MPF (CI / installs limpos)
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if not insp.has_table('operadoras'):
+        op.create_table(
+            'operadoras',
+            sa.Column('id', sa.Integer(), nullable=False),
+            sa.Column('nome', sa.String(length=255), nullable=False),
+            sa.Column('uf', sa.String(length=2), nullable=True),
+            sa.Column('cnpj', sa.String(length=20), nullable=True),
+            sa.Column('status', sa.String(length=50), nullable=False),
+            sa.PrimaryKeyConstraint('id'),
+        )
+    op.execute("INSERT IGNORE INTO operadoras (id, nome, status) VALUES (1, 'MPF', 'ativa')")
+
+    # 6. Adicionar FOREIGN KEY
     op.create_foreign_key(
         'fk_cbhpm_teto_operadora',
         'cbhpm_teto',

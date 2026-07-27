@@ -76,6 +76,7 @@ def test_insumos_search_filters(app_ctx, auth_client):
     session.commit()
 
     client = auth_client
+    response = client.get("/insumos/search", query_string={"origem": "BRAS", "q": "seringa"})
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["pagination"]["total"] == 1

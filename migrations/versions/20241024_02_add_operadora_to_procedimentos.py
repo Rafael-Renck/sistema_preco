@@ -43,7 +43,12 @@ def upgrade() -> None:
     op.execute("UPDATE procedimentos SET operadora_id = 1 WHERE operadora_id IS NULL")
 
     # 3. Tornar operadora_id NOT NULL
-    op.alter_column('procedimentos', 'operadora_id', nullable=False)
+    op.alter_column(
+        'procedimentos',
+        'operadora_id',
+        existing_type=sa.Integer(),
+        nullable=False,
+    )
 
     # 4. Criar foreign key para operadoras
     op.create_foreign_key(
