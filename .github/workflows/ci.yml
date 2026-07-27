@@ -102,7 +102,7 @@ jobs:
       - name: Suite completa de testes (SQLite)
         env:
           SKIP_ENSURE_DB: "1"
-        run: pytest -v --tb=short -x
+        run: pytest -v --tb=short
 
   migrations:
     name: Migrations Validation

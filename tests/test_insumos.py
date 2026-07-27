@@ -125,7 +125,7 @@ def test_insumo_detail_route(app_ctx, auth_client):
     assert "Fio cirúrgico absorvível" in data["descricao"]
     assert data["origem"] == "BRAS"
     assert data["item_id"] == bras_item.id
-    assert data["aliquota"] == "20"
+    assert float(data["aliquota"]) == 20.0
 
 
 def test_simpro_fixed_postprocess_pipeline(app_ctx):
