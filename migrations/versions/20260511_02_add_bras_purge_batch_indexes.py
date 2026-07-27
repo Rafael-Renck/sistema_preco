@@ -8,6 +8,7 @@ Create Date: 2026-05-11 17:35:00
 from typing import Sequence, Union
 
 from alembic import op
+from sqlalchemy import inspect
 
 
 revision: str = '20260511_02_bras_purge_batch_indexes'
@@ -16,21 +17,41 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(table: str) -> bool:
+    bind = op.get_bind()
+    return inspect(bind).has_table(table)
+
+
+def _index_names(table: str) -> set[str]:
+    if not _has_table(table):
+        return set()
+    bind = op.get_bind()
+    insp = inspect(bind)
+    return {idx["name"] for idx in insp.get_indexes(table)}
+
+
+def _create_index(table: str, index_name: str, columns: list[str]) -> None:
+    if not _has_table(table):
+        return
+    if index_name in _index_names(table):
+        return
+    op.create_index(index_name, table, columns, unique=False)
+
+
+def _drop_index(table: str, index_name: str) -> None:
+    if not _has_table(table):
+        return
+    if index_name not in _index_names(table):
+        return
+    op.drop_index(index_name, table_name=table)
+
+
 def upgrade() -> None:
-    op.create_index(
-        'idx_bras_item_n_edicao_id',
-        'bras_item_n',
-        ['edicao', 'id'],
-        unique=False,
-    )
-    op.create_index(
-        'idx_bras_item_cadastro_edicao_id',
-        'bras_item_cadastro',
-        ['edicao', 'id'],
-        unique=False,
-    )
+    _create_index("bras_item_n", "idx_bras_item_n_edicao_id", ["edicao", "id"])
+    # bras_item_cadastro é criada via create_all em prod; pode não existir no CI só com migrations
+    _create_index("bras_item_cadastro", "idx_bras_item_cadastro_edicao_id", ["edicao", "id"])
 
 
 def downgrade() -> None:
-    op.drop_index('idx_bras_item_cadastro_edicao_id', table_name='bras_item_cadastro')
-    op.drop_index('idx_bras_item_n_edicao_id', table_name='bras_item_n')
+    _drop_index("bras_item_cadastro", "idx_bras_item_cadastro_edicao_id")
+    _drop_index("bras_item_n", "idx_bras_item_n_edicao_id")

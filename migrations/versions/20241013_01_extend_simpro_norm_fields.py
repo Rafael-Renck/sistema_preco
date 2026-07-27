@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = '20241013_01_extend_simpro_norm_fields'
-down_revision: Union[str, None] = '20241012_02_expand_uf_storage'
+down_revision: Union[str, None] = '20241013_00_widever'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

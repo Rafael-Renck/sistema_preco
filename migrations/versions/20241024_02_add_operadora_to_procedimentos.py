@@ -22,6 +22,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 # revision identifiers, used by Alembic.
@@ -35,6 +36,12 @@ def upgrade() -> None:
     """
     Adiciona suporte multi-operadora à tabela procedimentos
     """
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if not insp.has_table("procedimentos"):
+        # CI / DB só com migrations de insumos — procedimentos vem de create_all em prod
+        return
+
     # 1. Adicionar coluna operadora_id (nullable inicialmente)
     op.add_column('procedimentos',
                   sa.Column('operadora_id', sa.Integer(), nullable=True))
@@ -43,7 +50,12 @@ def upgrade() -> None:
     op.execute("UPDATE procedimentos SET operadora_id = 1 WHERE operadora_id IS NULL")
 
     # 3. Tornar operadora_id NOT NULL
-    op.alter_column('procedimentos', 'operadora_id', nullable=False)
+    op.alter_column(
+        'procedimentos',
+        'operadora_id',
+        existing_type=sa.Integer(),
+        nullable=False,
+    )
 
     # 4. Criar foreign key para operadoras
     op.create_foreign_key(
@@ -67,6 +79,11 @@ def downgrade() -> None:
     """
     Remove suporte multi-operadora da tabela procedimentos
     """
+    bind = op.get_bind()
+    insp = inspect(bind)
+    if not insp.has_table("procedimentos"):
+        return
+
     # 1. Remover índice
     op.drop_index('idx_procedimentos_operadora', table_name='procedimentos')
 

@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 # add project root to path
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
@@ -35,7 +35,7 @@ target_metadata = db.metadata
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
     with app.app_context():
-        url = app.config['SQLALCHEMY_DATABASE_URI']
+        url = app.config["SQLALCHEMY_DATABASE_URI"]
         context.configure(
             url=url,
             target_metadata=target_metadata,
@@ -52,7 +52,7 @@ def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     with app.app_context():
         configuration = config.get_section(config.config_ini_section) or {}
-        configuration["sqlalchemy.url"] = app.config['SQLALCHEMY_DATABASE_URI']
+        configuration["sqlalchemy.url"] = app.config["SQLALCHEMY_DATABASE_URI"]
         connectable = engine_from_config(
             configuration,
             prefix="sqlalchemy.",

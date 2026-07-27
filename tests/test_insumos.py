@@ -3,126 +3,129 @@ from decimal import Decimal
 import json
 
 
-def test_insumos_search_filters(app_ctx):
+def test_insumos_search_filters(app_ctx, auth_client):
     session = app_ctx.db.session
 
     bras_item = app_ctx.BrasItemNormalized(
         id=1,
-        arquivo='Brasindice_2025',
+        arquivo="Brasindice_2025",
         linha_num=1,
-        laboratorio_codigo='LAB01',
-        laboratorio_nome='ACME',
-        produto_codigo='12345',
-        produto_nome='Seringa descartável 5ml',
-        apresentacao_codigo='AP01',
-        apresentacao_descricao='5ml',
-        ean='7891234567890',
-        registro_anvisa='789',
-        edicao='2025-01',
-        preco_pmc_pacote=Decimal('25.00'),
-        preco_pfb_pacote=Decimal('23.00'),
-        preco_pmc_unit=Decimal('12.34'),
-        preco_pfb_unit=Decimal('11.00'),
-        aliquota_ou_ipi=Decimal('18.0'),
+        laboratorio_codigo="LAB01",
+        laboratorio_nome="ACME",
+        produto_codigo="12345",
+        produto_nome="Seringa descartável 5ml",
+        apresentacao_codigo="AP01",
+        apresentacao_descricao="5ml",
+        ean="7891234567890",
+        registro_anvisa="789",
+        edicao="2025-01",
+        preco_pmc_pacote=Decimal("25.00"),
+        preco_pfb_pacote=Decimal("23.00"),
+        preco_pmc_unit=Decimal("12.34"),
+        preco_pfb_unit=Decimal("11.00"),
+        aliquota_ou_ipi=Decimal("18.0"),
         quantidade_embalagem=10,
         imported_at=datetime.utcnow(),
     )
     session.add(bras_item)
-    session.add(app_ctx.InsumoIndex(
-        origem='BRAS',
-        item_id=bras_item.id,
-        descricao='Seringa descartável 5ml',
-        preco=Decimal('12.34'),
-        aliquota=Decimal('18.0'),
-        fabricante='ACME',
-        anvisa='789',
-        versao_tabela='2025-01',
-        updated_at=datetime.utcnow(),
-    ))
+    session.add(
+        app_ctx.InsumoIndex(
+            origem="BRAS",
+            item_id=bras_item.id,
+            descricao="Seringa descartável 5ml",
+            preco=Decimal("12.34"),
+            aliquota=Decimal("18.0"),
+            fabricante="ACME",
+            anvisa="789",
+            versao_tabela="2025-01",
+            updated_at=datetime.utcnow(),
+        )
+    )
 
     simpro_item = app_ctx.SimproItem(
-        tuss='54321',
-        tiss='B2',
-        anvisa='321',
-        descricao='Agulha cirúrgica 10mm',
-        preco=Decimal('8.50'),
-        aliquota=Decimal('12.5'),
-        fabricante='Medicorp',
-        versao_tabela='2025-02',
+        tuss="54321",
+        tiss="B2",
+        anvisa="321",
+        descricao="Agulha cirúrgica 10mm",
+        preco=Decimal("8.50"),
+        aliquota=Decimal("12.5"),
+        fabricante="Medicorp",
+        versao_tabela="2025-02",
         data_atualizacao=date(2025, 2, 15),
         updated_at=datetime.utcnow(),
     )
     session.add(simpro_item)
     session.flush()
-    session.add(app_ctx.InsumoIndex(
-        origem='SIMPRO',
-        item_id=simpro_item.id,
-        tuss='54321',
-        tiss='B2',
-        anvisa='321',
-        descricao='Agulha cirúrgica 10mm',
-        preco=Decimal('8.50'),
-        aliquota=Decimal('12.5'),
-        uf_referencia='RJ',
-        fabricante='Medicorp',
-        versao_tabela='2025-02',
-        data_atualizacao=date(2025, 2, 15),
-        updated_at=datetime.utcnow(),
-    ))
+    session.add(
+        app_ctx.InsumoIndex(
+            origem="SIMPRO",
+            item_id=simpro_item.id,
+            tuss="54321",
+            tiss="B2",
+            anvisa="321",
+            descricao="Agulha cirúrgica 10mm",
+            preco=Decimal("8.50"),
+            aliquota=Decimal("12.5"),
+            uf_referencia="RJ",
+            fabricante="Medicorp",
+            versao_tabela="2025-02",
+            data_atualizacao=date(2025, 2, 15),
+            updated_at=datetime.utcnow(),
+        )
+    )
     session.commit()
 
-    client = app_ctx.app.test_client()
-
-    response = client.get('/insumos/search', query_string={'origem': 'BRAS', 'q': 'seringa'})
+    client = auth_client
+    response = client.get("/insumos/search", query_string={"origem": "BRAS", "q": "seringa"})
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload['pagination']['total'] == 1
-    assert payload['items'][0]['origem'] == 'BRAS'
-    assert 'Seringa' in payload['items'][0]['descricao']
+    assert payload["pagination"]["total"] == 1
+    assert payload["items"][0]["origem"] == "BRAS"
+    assert "Seringa" in payload["items"][0]["descricao"]
 
-    response = client.get('/insumos/search', query_string={'q': 'agulha', 'per_page': 1, 'uf_referencia': 'rj'})
+    response = client.get("/insumos/search", query_string={"q": "agulha", "per_page": 1, "uf_referencia": "rj"})
     payload = response.get_json()
-    assert payload['pagination']['total'] == 1
-    assert payload['items'][0]['origem'] == 'SIMPRO'
-    assert payload['items'][0]['uf_referencia'] == 'RJ'
-    assert payload['items'][0]['aliquota'] == '12.5'
+    assert payload["pagination"]["total"] == 1
+    assert payload["items"][0]["origem"] == "SIMPRO"
+    assert payload["items"][0]["uf_referencia"] == "RJ"
+    assert payload["items"][0]["aliquota"] == "12.5"
 
 
-def test_insumo_detail_route(app_ctx):
+def test_insumo_detail_route(app_ctx, auth_client):
     session = app_ctx.db.session
 
     bras_item = app_ctx.BrasItemNormalized(
         id=200,
-        arquivo='Brasindice_2024',
+        arquivo="Brasindice_2024",
         linha_num=1,
-        laboratorio_codigo='LAB02',
-        laboratorio_nome='Cirurgia Brasil',
-        produto_codigo='1111',
-        produto_nome='Fio cirúrgico absorvível',
-        apresentacao_codigo='AP02',
-        apresentacao_descricao='Pacote',
-        ean='ANV123',
-        registro_anvisa='ANV123',
-        edicao='2024-07',
-        preco_pmc_pacote=Decimal('45.00'),
-        preco_pfb_pacote=Decimal('40.00'),
-        preco_pmc_unit=Decimal('45.00'),
-        preco_pfb_unit=Decimal('40.00'),
-        aliquota_ou_ipi=Decimal('20'),
+        laboratorio_codigo="LAB02",
+        laboratorio_nome="Cirurgia Brasil",
+        produto_codigo="1111",
+        produto_nome="Fio cirúrgico absorvível",
+        apresentacao_codigo="AP02",
+        apresentacao_descricao="Pacote",
+        ean="ANV123",
+        registro_anvisa="ANV123",
+        edicao="2024-07",
+        preco_pmc_pacote=Decimal("45.00"),
+        preco_pfb_pacote=Decimal("40.00"),
+        preco_pmc_unit=Decimal("45.00"),
+        preco_pfb_unit=Decimal("40.00"),
+        aliquota_ou_ipi=Decimal("20"),
         quantidade_embalagem=5,
         imported_at=datetime.utcnow(),
     )
     session.add(bras_item)
     session.commit()
 
-    client = app_ctx.app.test_client()
-    response = client.get(f'/insumos/BRAS/{bras_item.id}')
+    client = auth_client
+    response = client.get(f"/insumos/BRAS/{bras_item.id}")
     assert response.status_code == 200
     data = response.get_json()
-    assert 'Fio cirúrgico absorvível' in data['descricao']
-    assert data['origem'] == 'BRAS'
-    assert data['item_id'] == bras_item.id
-    assert data['aliquota'] == '20'
+    assert "Fio cirúrgico absorvível" in data["descricao"]
+    assert data["origem"] == "BRAS"
+    assert data["item_id"] == bras_item.id
+    assert float(data["aliquota"]) == 20.0
 
 
 def test_simpro_fixed_postprocess_pipeline(app_ctx):
@@ -130,31 +133,31 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
 
     def place(segment: list[str], start: int, length: int, value: str) -> None:
         text = str(value)[:length].ljust(length)
-        segment[start - 1:start - 1 + length] = list(text)
+        segment[start - 1 : start - 1 + length] = list(text)
 
-    line_chars = [' '] * 600
-    place(line_chars, 1, 10, '1234567890')            # codigo_interno
-    place(line_chars, 16, 10, 'ALT0001111')           # codigo_alternativo
-    place(line_chars, 30, 92, 'Produto teste SIMPRO linha completa')
-    place(line_chars, 123, 8, '15032025')             # data_vigencia
-    place(line_chars, 131, 1, '1')                    # tipo_registro
-    place(line_chars, 132, 12, '000000012345')        # preco_pf
-    place(line_chars, 144, 12, '000000067890')        # preco_pmc
-    place(line_chars, 156, 12, '000000000000')        # preco_ph
-    place(line_chars, 168, 12, '000000001234')        # preco_outro
-    place(line_chars, 200, 8, 'CX10')
-    place(line_chars, 209, 6, '000010')               # qtd_unidade
-    place(line_chars, 230, 24, 'FABRICANTE TESTE')
-    place(line_chars, 250, 35, 'ANV1234567890123456')
-    place(line_chars, 301, 8, '31122026')
-    place(line_chars, 310, 16, '580076#NN7827608')
-    place(line_chars, 330, 20, 'ATIVO')
-    place(line_chars, 350, 200, '   NS12345678   NN')
-    fixed_line = ''.join(line_chars).rstrip()
+    line_chars = [" "] * 600
+    place(line_chars, 1, 10, "1234567890")  # codigo_interno
+    place(line_chars, 16, 10, "ALT0001111")  # codigo_alternativo
+    place(line_chars, 30, 92, "Produto teste SIMPRO linha completa")
+    place(line_chars, 123, 8, "15032025")  # data_vigencia
+    place(line_chars, 131, 1, "1")  # tipo_registro
+    place(line_chars, 132, 12, "000000012345")  # preco_pf
+    place(line_chars, 144, 12, "000000067890")  # preco_pmc
+    place(line_chars, 156, 12, "000000000000")  # preco_ph
+    place(line_chars, 168, 12, "000000001234")  # preco_outro
+    place(line_chars, 200, 8, "CX10")
+    place(line_chars, 209, 6, "000010")  # qtd_unidade
+    place(line_chars, 230, 24, "FABRICANTE TESTE")
+    place(line_chars, 250, 35, "ANV1234567890123456")
+    place(line_chars, 301, 8, "31122026")
+    place(line_chars, 310, 16, "580076#NN7827608")
+    place(line_chars, 330, 20, "ATIVO")
+    place(line_chars, 350, 200, "   NS12345678   NN")
+    fixed_line = "".join(line_chars).rstrip()
 
     stage = app_ctx.SimproFixedStage(
         id=1,
-        arquivo='SIMPRO_TESTE',
+        arquivo="SIMPRO_TESTE",
         linha_num=1,
         linha=fixed_line,
     )
@@ -206,59 +209,59 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     }
 
     materialized = app_ctx._materialize_simpro_items(
-        arquivo_label='SIMPRO_TESTE',
+        arquivo_label="SIMPRO_TESTE",
         map_config=map_config,
-        versao='2025-09',
-        uf_default='RJ',
+        versao="2025-09",
+        uf_default="RJ",
     )
 
     assert materialized == 1
     item = session.get(app_ctx.SimproItemNormalized, stage.id)
     assert item is not None
-    assert item.codigo_interno == '1234567890'
-    assert item.codigo_alt == 'ALT0001111'
-    assert item.codigo == '1234567890'
-    assert item.tuss_prefix == 'NN'
-    assert item.tuss_numero == '7827608'
-    assert item.status_final == 'NN'
-    assert item.descricao.startswith('Produto teste SIMPRO')
+    assert item.codigo_interno == "1234567890"
+    assert item.codigo_alt == "ALT0001111"
+    assert item.codigo == "1234567890"
+    assert item.tuss_prefix == "NN"
+    assert item.tuss_numero == "7827608"
+    assert item.status_final == "NN"
+    assert item.descricao.startswith("Produto teste SIMPRO")
     assert item.data_ref == date(2025, 3, 15)
-    assert item.preco1 == Decimal('123.45')
-    assert item.preco2 == Decimal('678.90')
-    assert item.preco3 == Decimal('0')
-    assert item.preco4 == Decimal('12.34')
+    assert item.preco1 == Decimal("123.45")
+    assert item.preco2 == Decimal("678.90")
+    assert item.preco3 == Decimal("0")
+    assert item.preco4 == Decimal("12.34")
     assert item.qtd_unidade == 10
-    assert item.fabricante.startswith('FABRICANTE TESTE')
-    assert item.anvisa == 'ANV1234567890123456'
+    assert item.fabricante.startswith("FABRICANTE TESTE")
+    assert item.anvisa == "ANV1234567890123456"
     assert item.validade_anvisa == date(2026, 12, 31)
-    assert item.ean == '580076'
-    assert item.situacao == 'ATIVO'
-    assert item.uf_referencia == 'RJ'
+    assert item.ean == "580076"
+    assert item.situacao == "ATIVO"
+    assert item.uf_referencia == "RJ"
 
     # Caso com TUSS embutido no EAN (prefixo SN) e sem sufixo dedicado.
-    line_chars_sn = [' '] * 600
-    place(line_chars_sn, 1, 10, '8888888888')
-    place(line_chars_sn, 16, 10, 'ALT9990000')
-    place(line_chars_sn, 30, 92, 'Produto com TUSS no campo EAN')
-    place(line_chars_sn, 123, 8, '01012026')
-    place(line_chars_sn, 131, 1, '1')
-    place(line_chars_sn, 132, 12, '000000050000')
-    place(line_chars_sn, 144, 12, '000000070000')
-    place(line_chars_sn, 156, 12, '000000090000')
-    place(line_chars_sn, 168, 12, '000000010000')
-    place(line_chars_sn, 200, 8, 'UNID')
-    place(line_chars_sn, 209, 6, '000001')
-    place(line_chars_sn, 230, 24, 'FABRICANTE EAN')
-    place(line_chars_sn, 250, 35, 'EAN1234567890123')
-    place(line_chars_sn, 301, 8, '01012027')
-    place(line_chars_sn, 310, 16, '7896004710471+SN')
-    place(line_chars_sn, 326, 11, '+SN90434668')
-    place(line_chars_sn, 350, 200, '')
-    fixed_line_sn = ''.join(line_chars_sn).rstrip()
+    line_chars_sn = [" "] * 600
+    place(line_chars_sn, 1, 10, "8888888888")
+    place(line_chars_sn, 16, 10, "ALT9990000")
+    place(line_chars_sn, 30, 92, "Produto com TUSS no campo EAN")
+    place(line_chars_sn, 123, 8, "01012026")
+    place(line_chars_sn, 131, 1, "1")
+    place(line_chars_sn, 132, 12, "000000050000")
+    place(line_chars_sn, 144, 12, "000000070000")
+    place(line_chars_sn, 156, 12, "000000090000")
+    place(line_chars_sn, 168, 12, "000000010000")
+    place(line_chars_sn, 200, 8, "UNID")
+    place(line_chars_sn, 209, 6, "000001")
+    place(line_chars_sn, 230, 24, "FABRICANTE EAN")
+    place(line_chars_sn, 250, 35, "EAN1234567890123")
+    place(line_chars_sn, 301, 8, "01012027")
+    place(line_chars_sn, 310, 16, "7896004710471+SN")
+    place(line_chars_sn, 326, 11, "+SN90434668")
+    place(line_chars_sn, 350, 200, "")
+    fixed_line_sn = "".join(line_chars_sn).rstrip()
 
     stage_sn = app_ctx.SimproFixedStage(
         id=2,
-        arquivo='SIMPRO_SN',
+        arquivo="SIMPRO_SN",
         linha_num=1,
         linha=fixed_line_sn,
     )
@@ -266,44 +269,44 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     session.commit()
 
     materialized_sn = app_ctx._materialize_simpro_items(
-        arquivo_label='SIMPRO_SN',
+        arquivo_label="SIMPRO_SN",
         map_config=map_config,
-        versao='2026-01',
-        uf_default='SP',
+        versao="2026-01",
+        uf_default="SP",
     )
 
     assert materialized_sn == 1
     item_sn = session.get(app_ctx.SimproItemNormalized, stage_sn.id)
     assert item_sn is not None
-    assert item_sn.codigo == '8888888888'
-    assert item_sn.tuss_prefix == 'SN'
-    assert item_sn.tuss_numero == '90434668'
-    assert item_sn.ean == '7896004710471'
+    assert item_sn.codigo == "8888888888"
+    assert item_sn.tuss_prefix == "SN"
+    assert item_sn.tuss_numero == "90434668"
+    assert item_sn.ean == "7896004710471"
 
     # Caso com ANVISA numérico estendido no campo dedicado.
-    line_chars_anvisa = [' '] * 700
-    place(line_chars_anvisa, 1, 10, '7777777777')
-    place(line_chars_anvisa, 16, 10, 'ALTANV0001')
-    place(line_chars_anvisa, 30, 92, 'Produto com ANVISA estendida')
-    place(line_chars_anvisa, 123, 8, '02022026')
-    place(line_chars_anvisa, 131, 1, '1')
-    place(line_chars_anvisa, 132, 12, '000000030000')
-    place(line_chars_anvisa, 144, 12, '000000040000')
-    place(line_chars_anvisa, 156, 12, '000000050000')
-    place(line_chars_anvisa, 168, 12, '000000060000')
-    place(line_chars_anvisa, 200, 8, 'CX01')
-    place(line_chars_anvisa, 209, 6, '000010')
-    place(line_chars_anvisa, 230, 24, 'FABRICANTE ANV')
-    place(line_chars_anvisa, 250, 35, '00054400685000000000001023510590025')
-    place(line_chars_anvisa, 301, 8, '31072029')
-    place(line_chars_anvisa, 310, 16, '7896004817477-NS')
-    place(line_chars_anvisa, 326, 11, '90328949   ')
-    place(line_chars_anvisa, 350, 200, 'NN90328949')
-    fixed_line_anvisa = ''.join(line_chars_anvisa).rstrip()
+    line_chars_anvisa = [" "] * 700
+    place(line_chars_anvisa, 1, 10, "7777777777")
+    place(line_chars_anvisa, 16, 10, "ALTANV0001")
+    place(line_chars_anvisa, 30, 92, "Produto com ANVISA estendida")
+    place(line_chars_anvisa, 123, 8, "02022026")
+    place(line_chars_anvisa, 131, 1, "1")
+    place(line_chars_anvisa, 132, 12, "000000030000")
+    place(line_chars_anvisa, 144, 12, "000000040000")
+    place(line_chars_anvisa, 156, 12, "000000050000")
+    place(line_chars_anvisa, 168, 12, "000000060000")
+    place(line_chars_anvisa, 200, 8, "CX01")
+    place(line_chars_anvisa, 209, 6, "000010")
+    place(line_chars_anvisa, 230, 24, "FABRICANTE ANV")
+    place(line_chars_anvisa, 250, 35, "00054400685000000000001023510590025")
+    place(line_chars_anvisa, 301, 8, "31072029")
+    place(line_chars_anvisa, 310, 16, "7896004817477-NS")
+    place(line_chars_anvisa, 326, 11, "90328949   ")
+    place(line_chars_anvisa, 350, 200, "NN90328949")
+    fixed_line_anvisa = "".join(line_chars_anvisa).rstrip()
 
     stage_anvisa = app_ctx.SimproFixedStage(
         id=3,
-        arquivo='SIMPRO_ANVISA',
+        arquivo="SIMPRO_ANVISA",
         linha_num=1,
         linha=fixed_line_anvisa,
     )
@@ -311,16 +314,16 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     session.commit()
 
     materialized_anvisa = app_ctx._materialize_simpro_items(
-        arquivo_label='SIMPRO_ANVISA',
+        arquivo_label="SIMPRO_ANVISA",
         map_config=map_config,
-        versao='2026-02',
-        uf_default='MG',
+        versao="2026-02",
+        uf_default="MG",
     )
 
     assert materialized_anvisa == 1
     item_anvisa = session.get(app_ctx.SimproItemNormalized, stage_anvisa.id)
     assert item_anvisa is not None
-    assert item_anvisa.anvisa == '1023510590025'
+    assert item_anvisa.anvisa == "1023510590025"
     assert len(item_anvisa.anvisa) == 13
 
     # Mapa com ANVISA truncado (janela deslocada) deve ser corrigido via fallback.
@@ -349,7 +352,7 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
 
     stage_anvisa_bad = app_ctx.SimproFixedStage(
         id=4,
-        arquivo='SIMPRO_ANVISA_BAD',
+        arquivo="SIMPRO_ANVISA_BAD",
         linha_num=1,
         linha=fixed_line_anvisa,
     )
@@ -357,228 +360,228 @@ def test_simpro_fixed_postprocess_pipeline(app_ctx):
     session.commit()
 
     materialized_anvisa_bad = app_ctx._materialize_simpro_items(
-        arquivo_label='SIMPRO_ANVISA_BAD',
+        arquivo_label="SIMPRO_ANVISA_BAD",
         map_config=map_config_trunc,
-        versao='2026-03',
-        uf_default='PR',
+        versao="2026-03",
+        uf_default="PR",
     )
 
     assert materialized_anvisa_bad == 1
     item_anvisa_bad = session.get(app_ctx.SimproItemNormalized, stage_anvisa_bad.id)
     assert item_anvisa_bad is not None
-    assert item_anvisa_bad.anvisa == '1023510590025'
+    assert item_anvisa_bad.anvisa == "1023510590025"
 
 
 def test_simpro_json_pipeline(app_ctx, tmp_path):
     session = app_ctx.db.session
 
     payload = {
-        'produtos': [
+        "produtos": [
             {
-                'codigoUsuario': '0000306808',
-                'codigoFracao': '0000306808',
-                'descricao': 'ACETATO ABIRATERONA 250MG 120CPDS',
-                'vigencia': '14/04/2026',
-                'identificacao': 'V',
-                'precoFabrica': 10270.83,
-                'precoVenda': 13777.95,
-                'precoUsuario': 11234.56,
-                'precoFabricaFracao': 85.590,
-                'precoVendaFracao': 114.816,
-                'precoUsuarioFracao': 93.621,
-                'embalagem': 'CX',
-                'fracao': 'CPDS',
-                'quantidadeEmbalagem': 120.00,
-                'quantidadeFracao': 0.00,
-                'lucro': 0.00,
-                'tipoAlteracao': 'A',
-                'fabricante': 'SUN FARMACEUTICA',
-                'codigoSimpro': '0000306808',
-                'codigoMercado': '50',
-                'desconto': 0.00,
-                'ipi': 0.00,
-                'anvisa': '1468200680013',
-                'validadeAnvisa': '30092028',
-                'codigoEAN': '7898272945166',
-                'lista': '-',
-                'hospitalar': 'N',
-                'fracionavel': 'S',
-                'codigoTUSS': '90413652',
-                'classificacao': '  ',
-                'referencia': 'ABI250',
-                'generico': 'S',
-                'diversos': 'N',
+                "codigoUsuario": "0000306808",
+                "codigoFracao": "0000306808",
+                "descricao": "ACETATO ABIRATERONA 250MG 120CPDS",
+                "vigencia": "14/04/2026",
+                "identificacao": "V",
+                "precoFabrica": 10270.83,
+                "precoVenda": 13777.95,
+                "precoUsuario": 11234.56,
+                "precoFabricaFracao": 85.590,
+                "precoVendaFracao": 114.816,
+                "precoUsuarioFracao": 93.621,
+                "embalagem": "CX",
+                "fracao": "CPDS",
+                "quantidadeEmbalagem": 120.00,
+                "quantidadeFracao": 0.00,
+                "lucro": 0.00,
+                "tipoAlteracao": "A",
+                "fabricante": "SUN FARMACEUTICA",
+                "codigoSimpro": "0000306808",
+                "codigoMercado": "50",
+                "desconto": 0.00,
+                "ipi": 0.00,
+                "anvisa": "1468200680013",
+                "validadeAnvisa": "30092028",
+                "codigoEAN": "7898272945166",
+                "lista": "-",
+                "hospitalar": "N",
+                "fracionavel": "S",
+                "codigoTUSS": "90413652",
+                "classificacao": "  ",
+                "referencia": "ABI250",
+                "generico": "S",
+                "diversos": "N",
             }
         ]
     }
 
-    file_path = tmp_path / 'simpro.json'
-    file_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    file_path = tmp_path / "simpro.json"
+    file_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     inserted = app_ctx._materialize_simpro_json_items(
-        arquivo_label='SIMPRO_JSON_TESTE',
+        arquivo_label="SIMPRO_JSON_TESTE",
         records=app_ctx._load_simpro_json_payload(file_path),
-        versao='2026-04',
-        uf_default='SP',
+        versao="2026-04",
+        uf_default="SP",
     )
 
     assert inserted == 1
 
-    item = session.query(app_ctx.SimproItemNormalized).filter_by(arquivo='SIMPRO_JSON_TESTE').one()
-    assert item.codigo == '0000306808'
-    assert item.codigo_interno == '0000306808'
-    assert item.codigo_alt == '0000306808'
-    assert item.tuss_numero == '90413652'
-    assert item.referencia == 'ABI250'
+    item = session.query(app_ctx.SimproItemNormalized).filter_by(arquivo="SIMPRO_JSON_TESTE").one()
+    assert item.codigo == "0000306808"
+    assert item.codigo_interno == "0000306808"
+    assert item.codigo_alt == "0000306808"
+    assert item.tuss_numero == "90413652"
+    assert item.referencia == "ABI250"
     assert item.status_final is None
-    assert item.anvisa == '1468200680013'
-    assert item.ean == '7898272945166'
-    assert item.fracionavel == 'S'
+    assert item.anvisa == "1468200680013"
+    assert item.ean == "7898272945166"
+    assert item.fracionavel == "S"
     assert item.data_ref == date(2026, 4, 14)
     assert item.validade_anvisa == date(2028, 9, 30)
-    assert item.preco1 == Decimal('10270.83')
-    assert item.preco2 == Decimal('11234.56')
-    assert item.preco3 == Decimal('85.5900')
-    assert item.preco4 == Decimal('93.6210')
+    assert item.preco1 == Decimal("10270.83")
+    assert item.preco2 == Decimal("11234.56")
+    assert item.preco3 == Decimal("85.5900")
+    assert item.preco4 == Decimal("93.6210")
     assert item.qtd_unidade == 120
-    assert item.uf_referencia == 'SP'
+    assert item.uf_referencia == "SP"
 
 
 def test_build_simpro_arquivo_label_adds_aliquota_fragment(app_ctx):
     label = app_ctx._build_simpro_arquivo_label(
-        arquivo_label_override='MSG_21_2025_18',
+        arquivo_label_override="MSG_21_2025_18",
         map_config={},
-        versao='2025-21',
-        fallback_name='simpro.txt',
-        uf_default='AP',
-        aliquota_default=Decimal('18.00'),
+        versao="2025-21",
+        fallback_name="simpro.txt",
+        uf_default="AP",
+        aliquota_default=Decimal("18.00"),
     )
-    assert label == 'MSG_21_2025_18_AP_ALQ18'
+    assert label == "MSG_21_2025_18_AP_ALQ18"
 
 
 def test_build_simpro_arquivo_label_without_aliquota_keeps_legacy_format(app_ctx):
     label = app_ctx._build_simpro_arquivo_label(
-        arquivo_label_override='MSG_21_2025_18',
+        arquivo_label_override="MSG_21_2025_18",
         map_config={},
-        versao='2025-21',
-        fallback_name='simpro.txt',
-        uf_default='AP',
+        versao="2025-21",
+        fallback_name="simpro.txt",
+        uf_default="AP",
         aliquota_default=None,
     )
-    assert label == 'MSG_21_2025_18_AP'
+    assert label == "MSG_21_2025_18_AP"
 
 
 def test_simpro_item_identity_key_prefers_codigo(app_ctx):
-    key = app_ctx._simpro_item_identity_key(' 90.41-3652 ', '0000306808')
-    assert key == 'SIMPRO:0000306808'
+    key = app_ctx._simpro_item_identity_key(" 90.41-3652 ", "0000306808")
+    assert key == "SIMPRO:0000306808"
 
 
 def test_simpro_item_identity_key_fallback_to_codigo(app_ctx):
-    key = app_ctx._simpro_item_identity_key(None, '0000306808')
-    assert key == 'SIMPRO:0000306808'
+    key = app_ctx._simpro_item_identity_key(None, "0000306808")
+    assert key == "SIMPRO:0000306808"
 
 
 def test_simpro_item_identity_key_fallback_to_tuss(app_ctx):
-    key = app_ctx._simpro_item_identity_key(' 90.41-3652 ', None)
-    assert key == 'TUSS:90413652'
+    key = app_ctx._simpro_item_identity_key(" 90.41-3652 ", None)
+    assert key == "TUSS:90413652"
 
 
 def test_sync_simpro_split_from_norm_creates_cadastro_and_preco(app_ctx):
     session = app_ctx.db.session
     row = app_ctx.SimproItemNormalized(
         id=1,
-        arquivo='MSG_21_2025_18_AP_ALQ18',
+        arquivo="MSG_21_2025_18_AP_ALQ18",
         linha_num=1,
-        codigo='0000306808',
-        codigo_interno='0000306808',
-        codigo_alt='0000306808',
-        descricao='ACETATO ABIRATERONA 250MG 120CPDS',
-        fabricante='SUN FARMACEUTICA',
-        referencia='ABI250',
-        anvisa='1468200680013',
-        ean='7898272945166',
-        unidade='CX',
+        codigo="0000306808",
+        codigo_interno="0000306808",
+        codigo_alt="0000306808",
+        descricao="ACETATO ABIRATERONA 250MG 120CPDS",
+        fabricante="SUN FARMACEUTICA",
+        referencia="ABI250",
+        anvisa="1468200680013",
+        ean="7898272945166",
+        unidade="CX",
         qtd_unidade=120,
-        fracionavel='S',
-        status_final='A',
-        versao='2025-21',
-        tuss_numero='90413652',
-        preco1=Decimal('10270.83'),
-        preco2=Decimal('11234.56'),
-        preco3=Decimal('85.5900'),
-        preco4=Decimal('93.6210'),
+        fracionavel="S",
+        status_final="A",
+        versao="2025-21",
+        tuss_numero="90413652",
+        preco1=Decimal("10270.83"),
+        preco2=Decimal("11234.56"),
+        preco3=Decimal("85.5900"),
+        preco4=Decimal("93.6210"),
     )
     session.add(row)
     session.commit()
 
     stats = app_ctx._sync_simpro_split_from_norm_fast(
-        arquivo_label='MSG_21_2025_18_AP_ALQ18',
-        versao='2025-21',
-        aliquota_override=Decimal('18.00'),
+        arquivo_label="MSG_21_2025_18_AP_ALQ18",
+        versao="2025-21",
+        aliquota_override=Decimal("18.00"),
     )
-    assert stats['cadastros_criados'] == 1
-    assert stats['precos_criados'] == 1
+    assert stats["cadastros_criados"] == 1
+    assert stats["precos_criados"] == 1
 
     cadastro = session.query(app_ctx.SimproItemCadastro).one()
     preco = session.query(app_ctx.SimproItemPreco).one()
-    assert cadastro.item_key == 'SIMPRO:0000306808'
+    assert cadastro.item_key == "SIMPRO:0000306808"
     assert preco.cadastro_id == cadastro.id
-    assert preco.aliquota == Decimal('18.00')
+    assert preco.aliquota == Decimal("18.00")
 
 
 def test_sync_simpro_split_deduplicates_repeated_item_key_in_same_file(app_ctx):
     session = app_ctx.db.session
     row1 = app_ctx.SimproItemNormalized(
         id=10,
-        arquivo='MSG_17_2026_AP_ALQ18',
+        arquivo="MSG_17_2026_AP_ALQ18",
         linha_num=1,
-        codigo='102854548',
-        descricao='ITEM A',
-        fabricante='FAB A',
-        versao='2026-17',
-        tuss_numero='102854548',
-        preco1=Decimal('10.00'),
-        preco2=Decimal('12.00'),
+        codigo="102854548",
+        descricao="ITEM A",
+        fabricante="FAB A",
+        versao="2026-17",
+        tuss_numero="102854548",
+        preco1=Decimal("10.00"),
+        preco2=Decimal("12.00"),
     )
     row2 = app_ctx.SimproItemNormalized(
         id=11,
-        arquivo='MSG_17_2026_AP_ALQ18',
+        arquivo="MSG_17_2026_AP_ALQ18",
         linha_num=2,
-        codigo='102854548',
-        descricao='ITEM A NOVO',
-        fabricante='FAB A',
-        versao='2026-17',
-        tuss_numero='102854548',
-        preco1=Decimal('11.00'),
-        preco2=Decimal('13.00'),
+        codigo="102854548",
+        descricao="ITEM A NOVO",
+        fabricante="FAB A",
+        versao="2026-17",
+        tuss_numero="102854548",
+        preco1=Decimal("11.00"),
+        preco2=Decimal("13.00"),
     )
     session.add_all([row1, row2])
     session.commit()
 
     stats = app_ctx._sync_simpro_split_from_norm_fast(
-        arquivo_label='MSG_17_2026_AP_ALQ18',
-        versao='2026-17',
-        aliquota_override=Decimal('18.00'),
+        arquivo_label="MSG_17_2026_AP_ALQ18",
+        versao="2026-17",
+        aliquota_override=Decimal("18.00"),
     )
-    assert stats['cadastros_criados'] == 1
-    assert stats['precos_criados'] == 1
+    assert stats["cadastros_criados"] == 1
+    assert stats["precos_criados"] == 1
 
     cadastro = session.query(app_ctx.SimproItemCadastro).one()
     preco = session.query(app_ctx.SimproItemPreco).one()
-    assert cadastro.item_key == 'SIMPRO:102854548'
-    assert cadastro.descricao == 'ITEM A NOVO'
-    assert preco.preco2 == Decimal('13.00')
+    assert cadastro.item_key == "SIMPRO:102854548"
+    assert cadastro.descricao == "ITEM A NOVO"
+    assert preco.preco2 == Decimal("13.00")
 
 
 def test_sync_simpro_split_preserves_existing_tuss_when_new_row_has_no_tuss(app_ctx):
     session = app_ctx.db.session
     existing = app_ctx.SimproItemCadastro(
         id=1,
-        versao='2026-17',
-        item_key='SIMPRO:0000166579',
-        tuss_numero='78302862',
-        codigo='0000166579',
-        descricao='CATETER 20G',
+        versao="2026-17",
+        item_key="SIMPRO:0000166579",
+        tuss_numero="78302862",
+        codigo="0000166579",
+        descricao="CATETER 20G",
         imported_at=app_ctx._now_utc(),
     )
     session.add(existing)
@@ -586,25 +589,25 @@ def test_sync_simpro_split_preserves_existing_tuss_when_new_row_has_no_tuss(app_
 
     row = app_ctx.SimproItemNormalized(
         id=20,
-        arquivo='MSG_17_2026_AM_ALQ20',
+        arquivo="MSG_17_2026_AM_ALQ20",
         linha_num=1,
-        codigo='0000166579',
-        descricao='CATETER 20GAX1,1MM INF.CI-20GX1.1',
-        fabricante='MED GOLDMAN',
-        versao='2026-17',
+        codigo="0000166579",
+        descricao="CATETER 20GAX1,1MM INF.CI-20GX1.1",
+        fabricante="MED GOLDMAN",
+        versao="2026-17",
         tuss_numero=None,
-        preco1=Decimal('0.00'),
-        preco2=Decimal('12.00'),
+        preco1=Decimal("0.00"),
+        preco2=Decimal("12.00"),
     )
     session.add(row)
     session.commit()
 
     stats = app_ctx._sync_simpro_split_from_norm_fast(
-        arquivo_label='MSG_17_2026_AM_ALQ20',
-        versao='2026-17',
-        aliquota_override=Decimal('20.00'),
+        arquivo_label="MSG_17_2026_AM_ALQ20",
+        versao="2026-17",
+        aliquota_override=Decimal("20.00"),
     )
-    assert stats['cadastros_atualizados'] == 1
+    assert stats["cadastros_atualizados"] == 1
 
     cadastro = session.query(app_ctx.SimproItemCadastro).one()
-    assert cadastro.tuss_numero == '78302862'
+    assert cadastro.tuss_numero == "78302862"
