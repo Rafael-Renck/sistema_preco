@@ -46,3 +46,38 @@ def app_ctx(monkeypatch, tmp_path):
         yield app_module
         app_module.db.session.remove()
         app_module.db.drop_all()
+
+
+@pytest.fixture
+def auth_client(app_ctx):
+    """Cliente de teste com sessão autenticada e acesso a insumos."""
+    application = app_ctx.app
+    client = application.test_client()
+    Usuario = app_ctx.Usuario
+    db = app_ctx.db
+
+    with application.app_context():
+        user = Usuario.query.filter_by(email="test@local").first()
+        if user is None:
+            user = Usuario(
+                nome="Test User",
+                email="test@local",
+                senha=app_ctx._hash_password("Test@1234"),
+                perfil="adm",
+            )
+            db.session.add(user)
+        user.acesso_insumos = True
+        user.acesso_consulta = True
+        user.acesso_contratos = True
+        user.acesso_tuss_rol = True
+        user.must_reset_senha = False
+        db.session.commit()
+        user_id = user.id
+
+    with client.session_transaction() as sess:
+        sess["user_id"] = user_id
+        sess["nome"] = "Test User"
+        sess["perfil"] = "adm"
+        sess["must_change_senha"] = False
+
+    return client

@@ -25,10 +25,10 @@ def _index_names(table: str) -> set[str]:
     return {idx["name"] for idx in insp.get_indexes(table)}
 
 
-def _create_index(table: str, index_name: str, columns: list[str], mysql_prefix_lengths: dict | None = None) -> None:
+def _create_index(table: str, index_name: str, columns: list[str]) -> None:
     if index_name in _index_names(table):
         return
-    op.create_index(index_name, table, columns, mysql_prefix_lengths=mysql_prefix_lengths)
+    op.create_index(index_name, table, columns)
 
 
 def _drop_index(table: str, index_name: str) -> None:

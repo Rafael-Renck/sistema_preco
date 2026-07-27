@@ -3,7 +3,7 @@ from decimal import Decimal
 import json
 
 
-def test_insumos_search_filters(app_ctx):
+def test_insumos_search_filters(app_ctx, auth_client):
     session = app_ctx.db.session
 
     bras_item = app_ctx.BrasItemNormalized(
@@ -75,9 +75,7 @@ def test_insumos_search_filters(app_ctx):
     )
     session.commit()
 
-    client = app_ctx.app.test_client()
-
-    response = client.get("/insumos/search", query_string={"origem": "BRAS", "q": "seringa"})
+    client = auth_client
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["pagination"]["total"] == 1
@@ -92,7 +90,7 @@ def test_insumos_search_filters(app_ctx):
     assert payload["items"][0]["aliquota"] == "12.5"
 
 
-def test_insumo_detail_route(app_ctx):
+def test_insumo_detail_route(app_ctx, auth_client):
     session = app_ctx.db.session
 
     bras_item = app_ctx.BrasItemNormalized(
@@ -119,7 +117,7 @@ def test_insumo_detail_route(app_ctx):
     session.add(bras_item)
     session.commit()
 
-    client = app_ctx.app.test_client()
+    client = auth_client
     response = client.get(f"/insumos/BRAS/{bras_item.id}")
     assert response.status_code == 200
     data = response.get_json()

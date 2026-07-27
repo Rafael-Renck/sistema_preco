@@ -53,11 +53,14 @@ def check_indexes():
 
     with app.app_context():
         for table_name, index_name in indexes_to_check:
-            result = db.session.execute(text(
-                f"SELECT COUNT(*) FROM information_schema.statistics "
-                f"WHERE table_schema = DATABASE() "
-                f"AND table_name = :table AND index_name = :idx"
-            ), {"table": table_name, "idx": index_name}).scalar()
+            result = db.session.execute(
+                text(
+                    "SELECT COUNT(*) FROM information_schema.statistics "
+                    "WHERE table_schema = DATABASE() "
+                    "AND table_name = :table AND index_name = :idx"
+                ),
+                {"table": table_name, "idx": index_name},
+            ).scalar()
 
             status = "✅ OK" if result > 0 else "❌ FALTANDO"
             print(f"{status} - {table_name}.{index_name}")
