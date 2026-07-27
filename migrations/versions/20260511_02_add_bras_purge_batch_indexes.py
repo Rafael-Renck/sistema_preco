@@ -17,21 +17,30 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _has_table(table: str) -> bool:
+    bind = op.get_bind()
+    return inspect(bind).has_table(table)
+
+
 def _index_names(table: str) -> set[str]:
+    if not _has_table(table):
+        return set()
     bind = op.get_bind()
     insp = inspect(bind)
-    if not insp.has_table(table):
-        return set()
     return {idx["name"] for idx in insp.get_indexes(table)}
 
 
 def _create_index(table: str, index_name: str, columns: list[str]) -> None:
+    if not _has_table(table):
+        return
     if index_name in _index_names(table):
         return
     op.create_index(index_name, table, columns, unique=False)
 
 
 def _drop_index(table: str, index_name: str) -> None:
+    if not _has_table(table):
+        return
     if index_name not in _index_names(table):
         return
     op.drop_index(index_name, table_name=table)
