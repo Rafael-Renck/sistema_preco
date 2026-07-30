@@ -12467,6 +12467,62 @@ def api_public_cbhpm_search():
     return jsonify(payload)
 
 
+def _serialize_public_insumo_item(raw: dict) -> dict:
+    """Item de catálogo para API pública — sem preços/alíquota."""
+    return {
+        'origem': raw.get('origem'),
+        'item_id': raw.get('item_id'),
+        'descricao': raw.get('descricao'),
+        'tuss': raw.get('tuss') or raw.get('tuss_numero'),
+        'tiss': raw.get('tiss'),
+        'anvisa': raw.get('anvisa'),
+        'fabricante': raw.get('fabricante'),
+        'versao_tabela': raw.get('versao_tabela'),
+        'uf_referencia': raw.get('uf_referencia'),
+    }
+
+
+@app.route('/api/v1/insumos/itens')
+@public_api_key_required
+def api_public_insumos_itens():
+    """
+    Busca pública de insumos (BRAS/SIMPRO) por TISS, TUSS, ANVISA ou texto.
+    Retorna apenas identidade do item — sem preços.
+    """
+    q = (request.args.get('q') or '').strip()
+    tuss = (request.args.get('tuss') or '').strip()
+    tiss = (request.args.get('tiss') or '').strip()
+    anvisa = (request.args.get('anvisa') or '').strip()
+    if not any((q, tuss, tiss, anvisa)):
+        return _api_error(
+            'invalid_input',
+            'Informe ao menos um de: q, tuss, tiss ou anvisa.',
+            400,
+        )
+    args = request.args.to_dict(flat=True)
+    if len(q) > 120:
+        args['q'] = q[:120]
+    filters = _extract_insumo_filters(args)
+
+    limit = _parse_positive_int(request.args.get('limit'), 20, maximum=50)
+    # Não força versao_unica (usa unix_timestamp MySQL); deduplica em Python.
+    payload = _catalogo_search(filters, page=1, per_page=min(limit * 3, 150))
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in payload.get('items') or []:
+        if not isinstance(raw, dict):
+            continue
+        key = (str(raw.get('origem') or '').strip().upper(), str(raw.get('item_id') or '').strip())
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        items.append(_serialize_public_insumo_item(raw))
+        if len(items) >= limit:
+            break
+
+    return jsonify({'items': items, 'total': len(items)})
+
+
 @app.route('/api/tuss-rol')
 @login_required
 @feature_required('tuss_rol')
