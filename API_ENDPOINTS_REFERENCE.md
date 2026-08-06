@@ -34,6 +34,16 @@
 | `/api/v1/cbhpm/procedimentos` | GET | Bearer (API key) | Search by code/description in the latest CBHPM; returns total value |
 | `/api/v1/cbhpm/procedimentos/<codigo>` | GET | Bearer (API key) | Fetch a specific code in the latest CBHPM; returns total value |
 
+## Public insumos API (item only, no prices)
+
+| Endpoint | Method | Auth | Purpose |
+|----------|--------|------|---------|
+| `/api/v1/insumos/itens` | GET | Bearer (API key) | Search BRAS/SIMPRO by `q`, `tuss`, `tiss` or `anvisa`; returns identity only (no prices) |
+
+Query params: `q`, `tuss`, `tiss`, `anvisa`, `origem` (`BRAS`\|`SIMPRO`), `limit` (default 20, max 50). At least one of `q`/`tuss`/`tiss`/`anvisa` is required.
+
+Response fields: `origem`, `item_id`, `descricao`, `tuss`, `tiss`, `anvisa`, `fabricante`, `versao_tabela`, `uf_referencia`.
+
 ### Como habilitar e testar rapidamente
 1) Defina o token (pode ser múltiplos separados por vírgula):
 ```bash
@@ -51,6 +61,14 @@ curl -H "Authorization: Bearer sua-chave-secreta" \
 # Detalhe por código (item único)
 curl -H "Authorization: Bearer sua-chave-secreta" \
   "http://localhost:5000/api/v1/cbhpm/procedimentos/30401011"
+
+# Insumos (item only — sem preços)
+curl -H "Authorization: Bearer sua-chave-secreta" \
+  "http://localhost:5000/api/v1/insumos/itens?q=seringa&limit=10"
+curl -H "Authorization: Bearer sua-chave-secreta" \
+  "http://localhost:5000/api/v1/insumos/itens?tuss=12345"
+curl -H "Authorization: Bearer sua-chave-secreta" \
+  "http://localhost:5000/api/v1/insumos/itens?anvisa=789"
 ```
 
 ## Smart Filters & Data Lookup APIs

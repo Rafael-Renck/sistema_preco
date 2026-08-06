@@ -546,6 +546,28 @@
   </div>
   <!-- FIM SIMPRO -->
 
+  <!-- ==================== APOSTILAMENTOS ==================== -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseApostilamentos">
+        <i class="bi bi-file-earmark-pdf me-2"></i> Apostilamentos (PDF → DTP)
+      </button>
+    </h2>
+    <div id="collapseApostilamentos" class="accordion-collapse collapse" data-bs-parent="#accordionImport">
+      <div class="accordion-body">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+          <div>
+            <p class="mb-1">Extraia termos de apostilamento em PDF e importe direto na tabela de Diárias, Taxas e Pacotes.</p>
+            <small class="text-muted">Upload múltiplo, substituição por prestador e resumo por arquivo.</small>
+          </div>
+          <a class="btn btn-primary" href="{{ url_for('admin_apostilamentos') }}">
+            <i class="bi bi-box-arrow-up-right me-1"></i> Abrir Apostilamentos
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ==================== OUTROS ==================== -->
   <div class="accordion-item">
     <h2 class="accordion-header">

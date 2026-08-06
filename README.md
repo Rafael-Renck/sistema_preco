@@ -185,10 +185,14 @@ App em produção: porta **8010** (configurável no compose).
 | Caminho | Descrição |
 |---------|-----------|
 | `app.py` | App Flask + modelos SQLAlchemy + rotas |
+| `apostilamento_extract.py` | Extração PDF→Excel de apostilamentos (DTP) |
 | `templates/` | Páginas HTML (Jinja2) |
 | `static/` | Assets estáticos (CSS, JS) |
 | `migrations/` | Migrations Alembic |
 | `tests/` | Testes pytest |
+| `scripts/extract_apostilamentos.py` | CLI de extração de apostilamentos |
+| `scripts/import_apostilamentos_dtp.py` | CLI de importação DTP |
+| `scripts/pipeline_apostilamentos.py` | Pipeline extração + importação |
 | `docker-compose.yml` | Dev (`--profile dev`) e prod (`--profile prod`) |
 | `docker-compose.prod.yml` | Produção isolada (`sistema_preco_prod`) |
 | `docker-compose.staging.yml` | Template staging (porta 8011) |
@@ -289,6 +293,38 @@ As mesmas opções de delimitador, mapa e encoding são válidas. No SIMPRO os c
 As mesmas regras valem para o formulário web (campos espelham as flags da CLI). O import de Brasíndice agora aceita também um arquivo de mapeamento JSON para largura fixa diretamente na interface.
 
 ---
+
+## Apostilamentos (DTP)
+
+Fluxo completo: **PDF de apostilamento → Excel → tabela Diárias/Taxas/Pacotes** (`procedimentos`).
+
+**Na interface (admin):** menu **Administração → Apostilamentos** (`/admin/apostilamentos`), ou o atalho em **Tabelas**.
+
+Na tela de **Contratos**, prestadores com códigos DTP aparecem na lista; é possível completar o contrato (honorários, portes, UCO, inflator/deflator **HM** e **SADT**, filme) e abrir os códigos cadastrados.
+
+Via CLI:
+
+1. Coloque os PDFs em `entrada_apostilamentos/<MES>/` (ex.: `entrada_apostilamentos/JULHO/`).
+2. Extraia para XLSX em `APOSTILAMENTOS/<MES>/`:
+
+```
+python scripts/extract_apostilamentos.py JULHO
+```
+
+3. Importe no banco:
+
+```
+python scripts/import_apostilamentos_dtp.py --dir APOSTILAMENTOS/JULHO --substituir-prestador
+```
+
+Ou rode extração + importação de uma vez:
+
+```
+python scripts/pipeline_apostilamentos.py JULHO --importar --substituir-prestador
+```
+
+Opções úteis do import: `--dry-run`, `--tabela-id`, `--operadora-id`.  
+O módulo de extração (`apostilamento_extract.py`) foi portado do projeto EMERGENCIAL.
 
 ## Simulador CBHPM: redutor individual e teto
 

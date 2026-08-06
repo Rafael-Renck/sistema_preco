@@ -592,7 +592,10 @@ class ContractSummary(db.Model):
     tabela_honorarios = db.Column(db.String(255), nullable=True)
     tabela_portes = db.Column(db.String(255), nullable=True)
     valor_uco = db.Column(db.Numeric(12, 4), nullable=True)
+    # Legado / resumo composto (HM + SADT). Preferir colunas específicas.
     inflator_deflator = db.Column(db.String(120), nullable=True)
+    inflator_deflator_hm = db.Column(db.String(60), nullable=True)
+    inflator_deflator_sadt = db.Column(db.String(60), nullable=True)
     filme_radiologico = db.Column(db.String(120), nullable=True)
     observacoes = db.Column(db.Text, nullable=True)
     # Multi-operadora: cada contrato pertence a uma operadora
@@ -603,6 +606,66 @@ class ContractSummary(db.Model):
         nullable=False,
         server_default=text('CURRENT_TIMESTAMP'),
     )
+
+
+def _compose_inflator_legacy(hm: str | None, sadt: str | None) -> str | None:
+    """Monta texto resumo para a coluna legada inflator_deflator."""
+    parts: list[str] = []
+    if hm:
+        parts.append(f'HM: {hm}')
+    if sadt:
+        parts.append(f'SADT: {sadt}')
+    return ' | '.join(parts) if parts else None
+
+
+def _split_inflator_legacy(valor: str | None) -> tuple[str | None, str | None]:
+    """Tenta extrair HM/SADT de valores legados 'HM: x | SADT: y' ou um único ajuste."""
+    raw = (valor or '').strip()
+    if not raw:
+        return None, None
+    hm = sadt = None
+    for part in re.split(r'\s*\|\s*', raw):
+        p = part.strip()
+        if not p:
+            continue
+        low = p.casefold()
+        if low.startswith('hm:'):
+            hm = p.split(':', 1)[1].strip() or None
+        elif low.startswith('sadt:'):
+            sadt = p.split(':', 1)[1].strip() or None
+    if hm or sadt:
+        return hm, sadt
+    # Valor único antigo (ex.: +10%) — não atribui a HM/SADT automaticamente
+    return None, None
+
+
+def _contrato_ajuste_kind(hm: str | None, sadt: str | None, legacy: str | None = None) -> str:
+    """Classifica o ajuste para filtro da tabela: positivo | negativo | misto | neutro."""
+    signs: list[str] = []
+    for v in (hm, sadt, legacy):
+        t = (v or '').strip()
+        if not t:
+            continue
+        # remove prefixo HM:/SADT: se vier do legado completo num único campo
+        for segment in re.split(r'\s*\|\s*', t):
+            s = segment.strip()
+            if ':' in s and s.split(':', 1)[0].strip().casefold() in {'hm', 'sadt'}:
+                s = s.split(':', 1)[1].strip()
+            if s.startswith('+'):
+                signs.append('+')
+            elif s.startswith('-'):
+                signs.append('-')
+    if not signs:
+        return 'neutro'
+    has_pos = '+' in signs
+    has_neg = '-' in signs
+    if has_pos and has_neg:
+        return 'misto'
+    if has_pos:
+        return 'positivo'
+    if has_neg:
+        return 'negativo'
+    return 'neutro'
 
 
 class ReembolsoDocumento(db.Model):
@@ -2059,10 +2122,12 @@ DECIMAL_FIELDS = {'preco', 'aliquota'}
 DATE_FIELDS = {'data_atualizacao'}
 DEFAULT_IMPORT_ENCODINGS = ['utf-8-sig', 'utf-8', 'latin-1', 'cp1252']
 TETO_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'cbhpm_teto_previews'
+APOST_PREVIEW_DIR = Path(tempfile.gettempdir()) / 'apostilamento_previews'
 INSUMO_IMPORT_ASYNC_DIR = Path(
     os.getenv('INSUMO_IMPORT_ASYNC_DIR') or (Path(tempfile.gettempdir()) / 'insumo_async_imports')
 )
 INSUMO_IMPORT_ASYNC_DIR.mkdir(parents=True, exist_ok=True)
+APOST_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 REEMBOLSO_STORAGE_DIR = Path(os.getenv('REEMBOLSO_STORAGE_DIR', Path(__file__).parent / 'data' / 'reembolsos'))
 REEMBOLSO_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -12675,7 +12740,18 @@ def contratos_resumo():
         tabela_honorarios = (form.get('tabela_honorarios') or '').strip() or None
         tabela_portes = (form.get('tabela_portes') or '').strip() or None
         valor_uco_raw = (form.get('valor_uco') or '').strip()
-        inflator_deflator = (form.get('inflator_deflator') or '').strip() or None
+        inflator_hm = (form.get('inflator_deflator_hm') or '').strip() or None
+        inflator_sadt = (form.get('inflator_deflator_sadt') or '').strip() or None
+        # Compat: formulário antigo ainda pode enviar inflator_deflator único
+        inflator_legacy_form = (form.get('inflator_deflator') or '').strip() or None
+        if not inflator_hm and not inflator_sadt and inflator_legacy_form:
+            parsed_hm, parsed_sadt = _split_inflator_legacy(inflator_legacy_form)
+            if parsed_hm or parsed_sadt:
+                inflator_hm, inflator_sadt = parsed_hm, parsed_sadt
+            else:
+                # valor genérico antigo: guarda só no legado (e nas duas vias de exibição via fallback)
+                inflator_hm = inflator_sadt = None
+        inflator_deflator = _compose_inflator_legacy(inflator_hm, inflator_sadt) or inflator_legacy_form
         filme_radiologico = (form.get('filme_radiologico') or '').strip() or None
         observacoes = (form.get('observacoes') or '').strip() or None
         operadora_id_form = (form.get('operadora_id') or '').strip()
@@ -12717,6 +12793,8 @@ def contratos_resumo():
                         resumo.tabela_honorarios = tabela_honorarios
                         resumo.tabela_portes = tabela_portes
                         resumo.valor_uco = valor_uco
+                        resumo.inflator_deflator_hm = inflator_hm
+                        resumo.inflator_deflator_sadt = inflator_sadt
                         resumo.inflator_deflator = inflator_deflator
                         resumo.filme_radiologico = filme_radiologico
                         resumo.observacoes = observacoes
@@ -12730,6 +12808,8 @@ def contratos_resumo():
                         tabela_honorarios=tabela_honorarios,
                         tabela_portes=tabela_portes,
                         valor_uco=valor_uco,
+                        inflator_deflator_hm=inflator_hm,
+                        inflator_deflator_sadt=inflator_sadt,
                         inflator_deflator=inflator_deflator,
                         filme_radiologico=filme_radiologico,
                         observacoes=observacoes,
@@ -12753,6 +12833,8 @@ def contratos_resumo():
             'tabela_portes': tabela_portes or '',
             'valor_uco': valor_uco_raw,
             'inflator_deflator': inflator_deflator or '',
+            'inflator_deflator_hm': inflator_hm or '',
+            'inflator_deflator_sadt': inflator_sadt or '',
             'filme_radiologico': filme_radiologico or '',
             'observacoes': observacoes or '',
         }
@@ -12781,6 +12863,16 @@ def contratos_resumo():
                     'tabela_portes': resumo.tabela_portes or '',
                     'valor_uco': valor_uco_display,
                     'inflator_deflator': resumo.inflator_deflator or '',
+                    'inflator_deflator_hm': (
+                        resumo.inflator_deflator_hm
+                        or _split_inflator_legacy(resumo.inflator_deflator)[0]
+                        or ''
+                    ),
+                    'inflator_deflator_sadt': (
+                        resumo.inflator_deflator_sadt
+                        or _split_inflator_legacy(resumo.inflator_deflator)[1]
+                        or ''
+                    ),
                     'filme_radiologico': resumo.filme_radiologico or '',
                     'observacoes': resumo.observacoes or '',
                     'operadora_id': resumo.operadora_id,
@@ -12790,16 +12882,155 @@ def contratos_resumo():
     query = ContractSummary.query
     if selected_operadora_id:
         query = query.filter_by(operadora_id=selected_operadora_id)
-    registros = query.order_by(ContractSummary.prestador.asc(), ContractSummary.id.asc()).all()
+    contratos_db = query.order_by(ContractSummary.prestador.asc(), ContractSummary.id.asc()).all()
 
     # Lista de operadoras (filtrada pelo usuário)
     operadoras_list = _get_user_operadoras_list()
+    operadoras_by_id = {op.id: op for op in operadoras_list}
+    # Completar nomes caso o contrato use operadora fora da lista filtrada
+    missing_ops = {
+        c.operadora_id for c in contratos_db
+        if c.operadora_id and c.operadora_id not in operadoras_by_id
+    }
+    if missing_ops:
+        for op in Operadora.query.filter(Operadora.id.in_(missing_ops)).all():
+            operadoras_by_id[op.id] = op
 
     # Lista de tabelas DTP (com IDs para JavaScript)
     dtp_list = [
         {'id': t.id, 'nome': t.nome}
         for t in Tabela.query.filter_by(tipo_tabela='diarias_taxas_pacotes').order_by(Tabela.nome).all()
     ]
+    default_dtp_tabela = dtp_list[0]['nome'] if dtp_list else ''
+
+    # Prestadores com códigos DTP (apostilamentos / importações) — entram na lista de contratos
+    dtp_agg_q = (
+        db.session.query(
+            Procedimento.prestador,
+            Procedimento.operadora_id,
+            Tabela.nome.label('tabela_nome'),
+            func.count(Procedimento.id).label('qtd'),
+        )
+        .join(Tabela, Tabela.id == Procedimento.id_tabela)
+        .filter(Tabela.tipo_tabela == 'diarias_taxas_pacotes')
+        .filter(Procedimento.prestador.isnot(None))
+        .filter(Procedimento.prestador != '')
+    )
+    if selected_operadora_id:
+        dtp_agg_q = dtp_agg_q.filter(Procedimento.operadora_id == selected_operadora_id)
+    dtp_agg_rows = dtp_agg_q.group_by(
+        Procedimento.prestador, Procedimento.operadora_id, Tabela.nome
+    ).all()
+
+    # key: (prestador_lower, operadora_id) -> {display, qtd, tabela_preferida}
+    dtp_by_key: dict[tuple[str, int | None], dict] = {}
+    for prest, op_id, tabela_nome, qtd in dtp_agg_rows:
+        display = (prest or '').strip()
+        if not display:
+            continue
+        key = (display.casefold(), int(op_id) if op_id is not None else None)
+        slot = dtp_by_key.get(key)
+        if not slot:
+            dtp_by_key[key] = {
+                'prestador': display,
+                'operadora_id': op_id,
+                'qtd': int(qtd or 0),
+                'tabela_preferida': tabela_nome or default_dtp_tabela,
+                '_max_qtd': int(qtd or 0),
+            }
+        else:
+            slot['qtd'] += int(qtd or 0)
+            # Prefere a tabela com mais itens daquele prestador
+            if int(qtd or 0) >= int(slot.get('_max_qtd') or 0):
+                slot['tabela_preferida'] = tabela_nome or slot.get('tabela_preferida') or default_dtp_tabela
+                slot['_max_qtd'] = int(qtd or 0)
+
+    def _ns_from_contrato(c: ContractSummary, dtp_info: dict | None) -> SimpleNamespace:
+        qtd = int((dtp_info or {}).get('qtd') or 0)
+        dtp_tab = (dtp_info or {}).get('tabela_preferida') or default_dtp_tabela
+        op = operadoras_by_id.get(c.operadora_id)
+        hm = (c.inflator_deflator_hm or '').strip() or None
+        sadt = (c.inflator_deflator_sadt or '').strip() or None
+        legacy = (c.inflator_deflator or '').strip() or None
+        if not hm and not sadt and legacy:
+            parsed_hm, parsed_sadt = _split_inflator_legacy(legacy)
+            hm = parsed_hm or hm
+            sadt = parsed_sadt or sadt
+            # se legado não tinha labels (ex. "+10%"), mantém como texto resumo
+        return SimpleNamespace(
+            id=c.id,
+            prestador=c.prestador,
+            tabela_honorarios=c.tabela_honorarios,
+            tabela_portes=c.tabela_portes,
+            valor_uco=c.valor_uco,
+            inflator_deflator=legacy,
+            inflator_deflator_hm=hm,
+            inflator_deflator_sadt=sadt,
+            inflator_deflator_legado_unico=(
+                legacy if (not hm and not sadt and legacy) else None
+            ),
+            ajuste_kind=_contrato_ajuste_kind(hm, sadt, legacy if (not hm and not sadt) else None),
+            filme_radiologico=c.filme_radiologico,
+            observacoes=c.observacoes,
+            operadora_id=c.operadora_id,
+            operadora=op,
+            qtd_codigos=qtd,
+            dtp_tabela=dtp_tab,
+            tem_contrato=True,
+            tem_dtp=qtd > 0,
+        )
+
+    def _ns_from_dtp(info: dict) -> SimpleNamespace:
+        op_id = info.get('operadora_id')
+        op = operadoras_by_id.get(op_id) if op_id is not None else None
+        if op is None and op_id is not None:
+            op = Operadora.query.get(op_id)
+            if op:
+                operadoras_by_id[op_id] = op
+        # Não preencher honorários/DTP nos campos de contrato — usuário edita manualmente
+        return SimpleNamespace(
+            id=None,
+            prestador=info['prestador'],
+            tabela_honorarios=None,
+            tabela_portes=None,
+            valor_uco=None,
+            inflator_deflator=None,
+            inflator_deflator_hm=None,
+            inflator_deflator_sadt=None,
+            inflator_deflator_legado_unico=None,
+            ajuste_kind='neutro',
+            filme_radiologico=None,
+            observacoes=None,
+            operadora_id=op_id if op_id is not None else selected_operadora_id,
+            operadora=op,
+            qtd_codigos=int(info.get('qtd') or 0),
+            dtp_tabela=info.get('tabela_preferida') or default_dtp_tabela,
+            tem_contrato=False,
+            tem_dtp=True,
+        )
+
+    registros: list[SimpleNamespace] = []
+    matched_dtp: set[tuple[str, int | None]] = set()
+    for c in contratos_db:
+        key = ((c.prestador or '').strip().casefold(), int(c.operadora_id) if c.operadora_id is not None else None)
+        dtp_info = dtp_by_key.get(key)
+        if dtp_info is None:
+            # tenta só pelo nome do prestador (operadora nula ou mismatch)
+            for k, v in dtp_by_key.items():
+                if k[0] == key[0]:
+                    dtp_info = v
+                    key = k
+                    break
+        if dtp_info is not None:
+            matched_dtp.add(key)
+        registros.append(_ns_from_contrato(c, dtp_info))
+
+    for key, info in dtp_by_key.items():
+        if key in matched_dtp:
+            continue
+        registros.append(_ns_from_dtp(info))
+
+    registros.sort(key=lambda r: ((r.prestador or '').casefold(), r.id or 0))
 
     # ========== DTP SEARCH LOGIC ==========
     dtp_results = []
@@ -12861,6 +13092,8 @@ def contratos_resumo():
         'tabela_portes': form_data.get('tabela_portes', ''),
         'valor_uco': form_data.get('valor_uco', ''),
         'inflator_deflator': form_data.get('inflator_deflator', ''),
+        'inflator_deflator_hm': form_data.get('inflator_deflator_hm', ''),
+        'inflator_deflator_sadt': form_data.get('inflator_deflator_sadt', ''),
         'filme_radiologico': form_data.get('filme_radiologico', ''),
         'observacoes': form_data.get('observacoes', ''),
         'operadora_id': form_data.get('operadora_id', selected_operadora_id),
@@ -13192,6 +13425,322 @@ def admin_tetos_template_download():
     response.headers['Content-Type'] = 'text/csv; charset=utf-8'
     response.headers['Content-Disposition'] = 'attachment; filename=teto_template.csv'
     return response
+
+
+def _clean_prestador_apostilamento(raw: str | None, fallback: str) -> str:
+    """Normaliza nome do prestador a partir do PDF / coluna arquivo_origem."""
+    name = (raw or '').strip()
+    if not name:
+        name = fallback
+    name = re.sub(r'(?i)\.pdf$', '', name).strip()
+    name = re.sub(r'(?i)^Apostilamento\s+N\.?\s*\d+[\./]\d+\s*[-–]?\s*', '', name).strip()
+    name = re.sub(r'\s*\(\d+\)\s*$', '', name).strip()
+    return name or fallback
+
+
+def _store_apost_preview(payload: dict) -> str:
+    token = uuid4().hex
+    file_path = APOST_PREVIEW_DIR / f'{token}.json'
+    file_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    return token
+
+
+def _load_apost_preview(token: str) -> dict | None:
+    if not token:
+        return None
+    file_path = APOST_PREVIEW_DIR / f'{token}.json'
+    if not file_path.exists():
+        return None
+    try:
+        raw = json.loads(file_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return None
+    raw['token'] = token
+    return raw
+
+
+def _discard_apost_preview(token: str) -> None:
+    if not token:
+        return
+    file_path = APOST_PREVIEW_DIR / f'{token}.json'
+    try:
+        file_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _apost_context(**extra):
+    ctx = {
+        'operadoras': Operadora.query.order_by(Operadora.nome).all(),
+        'tabelas_dtp': (
+            Tabela.query.filter_by(tipo_tabela='diarias_taxas_pacotes')
+            .order_by(Tabela.nome)
+            .all()
+        ),
+        'format_brl': _format_brl,
+    }
+    ctx.update(extra)
+    return ctx
+
+
+@app.route('/admin/apostilamentos')
+@admin_required
+def admin_apostilamentos():
+    preview = None
+    preview_token = (request.args.get('preview_token') or '').strip()
+    if preview_token:
+        preview = _load_apost_preview(preview_token)
+        if not preview:
+            flash('Pré-visualização expirada ou inválida. Envie os PDFs novamente.', 'warning')
+            return redirect(url_for('admin_apostilamentos'))
+    return render_template('admin_apostilamentos.html', **_apost_context(preview=preview))
+
+
+@app.route('/admin/apostilamentos/extrair', methods=['POST'])
+@admin_required
+def admin_apostilamentos_extrair():
+    """Extrai PDFs e gera pré-visualização editável (sem gravar no banco)."""
+    import apostilamento_extract as apost_extract
+
+    files = request.files.getlist('arquivos')
+    files = [f for f in files if f and (f.filename or '').strip()]
+    tabela_id = request.form.get('tabela_id')
+    operadora_id = request.form.get('operadora_id')
+    prestador_override = (request.form.get('prestador') or '').strip() or None
+    substituir = request.form.get('substituir_prestador') in ('on', 'true', '1', 'yes', 'sim')
+
+    if not files:
+        flash('Selecione ao menos um PDF de apostilamento.', 'danger')
+        return redirect(url_for('admin_apostilamentos'))
+    if not tabela_id or not operadora_id:
+        flash('Informe a operadora e a tabela DTP de destino.', 'danger')
+        return redirect(url_for('admin_apostilamentos'))
+
+    try:
+        tabela_id_int = int(tabela_id)
+        operadora_id_int = int(operadora_id)
+    except (TypeError, ValueError):
+        flash('Operadora ou tabela inválida.', 'danger')
+        return redirect(url_for('admin_apostilamentos'))
+
+    tab = Tabela.query.get(tabela_id_int)
+    if not tab or tab.tipo_tabela != 'diarias_taxas_pacotes':
+        flash('Tabela DTP não encontrada.', 'danger')
+        return redirect(url_for('admin_apostilamentos'))
+
+    rows: list[dict] = []
+    avisos: list[str] = []
+    arquivos_meta: list[dict] = []
+    tmp_paths: list[str] = []
+    row_id = 0
+
+    try:
+        for upload in files:
+            original = upload.filename or 'apostilamento.pdf'
+            safe = secure_filename(original) or 'apostilamento.pdf'
+            if not safe.lower().endswith('.pdf'):
+                avisos.append(f'{original}: arquivo não é PDF.')
+                arquivos_meta.append({'arquivo': original, 'status': 'erro', 'itens': 0})
+                continue
+
+            stem = Path(safe).stem or 'apostilamento'
+            named_tmp = Path(tempfile.gettempdir()) / f'apost_ui_{uuid4().hex[:8]}_{stem}.pdf'
+            tmp_paths.append(str(named_tmp))
+            upload.save(str(named_tmp))
+
+            resultado = apost_extract.processar_pdf(named_tmp)
+            itens = resultado.get('itens') or []
+            status_ext = 'sucesso'
+            msg_ext = ''
+            if resultado.get('resumo'):
+                status_ext = resultado['resumo'][0].get('status') or status_ext
+                msg_ext = resultado['resumo'][0].get('observacoes_processamento') or ''
+
+            prest_default = prestador_override or _clean_prestador_apostilamento(
+                None, Path(original).stem
+            )
+            count_ok = 0
+            for item in itens:
+                codigo = item.get('codigo')
+                descricao = item.get('descricao')
+                if not codigo and not descricao:
+                    continue
+                valor_num = item.get('valor_numero')
+                if valor_num is not None and str(valor_num).strip() != '':
+                    valor = _parse_money(valor_num)
+                else:
+                    valor = _parse_money(item.get('valor'))
+                row_id += 1
+                count_ok += 1
+                rows.append({
+                    'id': row_id,
+                    'arquivo': original,
+                    'prestador': prest_default,
+                    'codigo': str(codigo or '').strip(),
+                    'descricao': str(descricao or '').strip()[:500],
+                    'valor': (
+                        format(valor.quantize(Decimal('0.01')), 'f')
+                        if valor is not None
+                        else '0'
+                    ),
+                    'unidade': str(item.get('unidade_cobranca') or '').strip(),
+                    'secao': str(item.get('secao') or '').strip(),
+                    'pagina': item.get('pagina'),
+                    'incluir': True,
+                })
+
+            arquivos_meta.append({
+                'arquivo': original,
+                'status': status_ext,
+                'itens': count_ok,
+                'mensagem': msg_ext,
+            })
+            if count_ok == 0:
+                avisos.append(f'{original}: nenhum item extraído. {msg_ext}'.strip())
+            elif msg_ext:
+                avisos.append(f'{original}: {msg_ext}')
+    except Exception as exc:
+        app.logger.exception('Falha na extração de apostilamentos')
+        flash(f'Falha ao extrair apostilamentos: {exc}', 'danger')
+        return redirect(url_for('admin_apostilamentos'))
+    finally:
+        for path in tmp_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    if not rows:
+        for msg in avisos[:8]:
+            flash(msg, 'warning')
+        flash('Nenhum item válido para pré-visualizar.', 'warning')
+        return redirect(url_for('admin_apostilamentos'))
+
+    payload = {
+        'rows': rows,
+        'meta': {
+            'tabela_id': tabela_id_int,
+            'tabela_nome': tab.nome,
+            'operadora_id': operadora_id_int,
+            'substituir_prestador': substituir,
+            'prestador_override': prestador_override,
+            'total_itens': len(rows),
+            'arquivos': arquivos_meta,
+            'generated_at': datetime.utcnow().isoformat(),
+        },
+        'avisos': avisos,
+    }
+    token = _store_apost_preview(payload)
+    flash(
+        f'Pré-visualização pronta: {len(rows)} item(ns) de {len(arquivos_meta)} arquivo(s). '
+        'Revise, edite se necessário e confirme a importação.',
+        'success',
+    )
+    return redirect(url_for('admin_apostilamentos', preview_token=token))
+
+
+@app.route('/admin/apostilamentos/confirmar', methods=['POST'])
+@admin_required
+def admin_apostilamentos_confirmar():
+    """Confirma importação a partir da pré-visualização (possivelmente editada)."""
+    token = (request.form.get('token') or '').strip()
+    preview = _load_apost_preview(token)
+    if not preview:
+        flash('Pré-visualização expirada. Envie os PDFs novamente.', 'warning')
+        return redirect(url_for('admin_apostilamentos'))
+
+    meta = preview.get('meta') or {}
+    tabela_id_int = int(meta.get('tabela_id') or 0)
+    operadora_id_int = int(meta.get('operadora_id') or 0)
+    substituir = bool(meta.get('substituir_prestador'))
+
+    # Linhas editadas pelo usuário (JSON); fallback para preview original
+    rows_raw = request.form.get('rows_json') or ''
+    try:
+        edited_rows = json.loads(rows_raw) if rows_raw.strip() else preview.get('rows') or []
+    except json.JSONDecodeError:
+        flash('Não foi possível ler as linhas editadas. Tente novamente.', 'danger')
+        return redirect(url_for('admin_apostilamentos', preview_token=token))
+
+    tab = Tabela.query.get(tabela_id_int)
+    if not tab or tab.tipo_tabela != 'diarias_taxas_pacotes':
+        flash('Tabela DTP não encontrada.', 'danger')
+        _discard_apost_preview(token)
+        return redirect(url_for('admin_apostilamentos'))
+
+    parsed: list[tuple[str, str, str, Decimal]] = []
+    skipped = 0
+    for row in edited_rows:
+        incluir = row.get('incluir', True)
+        if incluir is False or str(incluir).lower() in ('0', 'false', 'off', 'no', ''):
+            skipped += 1
+            continue
+
+        codigo = str(row.get('codigo') or '').strip()
+        descricao = str(row.get('descricao') or '').strip()
+        prestador = str(row.get('prestador') or '').strip()
+        if not codigo or not descricao or not prestador:
+            skipped += 1
+            continue
+        valor = _parse_money(row.get('valor'))
+        parsed.append((prestador, codigo, descricao[:500], valor))
+
+    if not parsed:
+        flash('Nenhuma linha válida para importar. Ajuste a pré-visualização.', 'warning')
+        return redirect(url_for('admin_apostilamentos', preview_token=token))
+
+    total_deleted = 0
+    try:
+        if substituir:
+            prestadores = sorted({p[0] for p in parsed})
+            for p in prestadores:
+                total_deleted += (
+                    db.session.query(Procedimento)
+                    .filter(
+                        Procedimento.id_tabela == tab.id,
+                        Procedimento.operadora_id == operadora_id_int,
+                        Procedimento.prestador == p,
+                    )
+                    .delete(synchronize_session=False)
+                )
+
+        for prest, codigo, descricao, valor in parsed:
+            db.session.add(
+                Procedimento(
+                    codigo=codigo,
+                    descricao=descricao,
+                    valor=valor,
+                    prestador=prest,
+                    uf=tab.uf,
+                    id_tabela=tab.id,
+                    operadora_id=operadora_id_int,
+                )
+            )
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.exception('Falha ao confirmar apostilamentos')
+        flash(f'Falha ao gravar: {exc}', 'danger')
+        return redirect(url_for('admin_apostilamentos', preview_token=token))
+
+    _discard_apost_preview(token)
+    flash(
+        f'Importação confirmada: {len(parsed)} item(ns) em [{tab.id}] {tab.nome}'
+        + (f'; {total_deleted} removido(s) antes' if total_deleted else '')
+        + (f'; {skipped} linha(s) ignorada(s)' if skipped else '')
+        + '.',
+        'success',
+    )
+    return redirect(url_for('tabela_itens', tid=tab.id))
+
+
+@app.route('/admin/apostilamentos/descartar', methods=['POST'])
+@admin_required
+def admin_apostilamentos_descartar():
+    token = (request.form.get('token') or '').strip()
+    _discard_apost_preview(token)
+    flash('Pré-visualização descartada.', 'info')
+    return redirect(url_for('admin_apostilamentos'))
 
 
 @app.route('/admin/tetos/copy', methods=['POST'])
@@ -13900,6 +14449,20 @@ def ensure_db(max_retries: int = 20, delay_seconds: int = 3):
                 db.create_all()
                 try:
                     ContractSummary.__table__.create(bind=db.engine, checkfirst=True)
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        "ALTER TABLE contratos_resumo ADD COLUMN inflator_deflator_hm VARCHAR(60) NULL"
+                    ))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+                try:
+                    db.session.execute(text(
+                        "ALTER TABLE contratos_resumo ADD COLUMN inflator_deflator_sadt VARCHAR(60) NULL"
+                    ))
+                    db.session.commit()
                 except Exception:
                     db.session.rollback()
                 # Tentativa de migração leve para acrescentar colunas caso já exista a tabela
@@ -14620,8 +15183,13 @@ def _parse_money(v) -> Decimal:
     if not s:
         return Decimal('0')
     s = s.replace('R$', '').replace(' ', '')
-    s = s.replace('.', '')  # milhar
-    s = s.replace(',', '.')  # decimal
+    # BR: 1.234,56 → remove milhar e troca decimal
+    if ',' in s:
+        s = s.replace('.', '').replace(',', '.')
+    elif s.count('.') > 1:
+        # 1.234.567 (só milhar) → remove pontos
+        s = s.replace('.', '')
+    # else: "5277.56" ou "5277" já normalizado — não remover o ponto decimal
     try:
         return Decimal(s)
     except InvalidOperation:

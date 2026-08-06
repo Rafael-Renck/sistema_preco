@@ -9,13 +9,12 @@
     {% set stats.uco_total = stats.uco_total + (item.valor_uco|float) %}
     {% set stats.uco_count = stats.uco_count + 1 %}
   {% endif %}
-  {% if item.inflator_deflator %}
-    {% set infl = item.inflator_deflator.strip() %}
-    {% if infl.startswith('+') %}
-      {% set stats.inflator_pos = stats.inflator_pos + 1 %}
-    {% elif infl.startswith('-') %}
-      {% set stats.inflator_neg = stats.inflator_neg + 1 %}
-    {% endif %}
+  {% set kind = item.ajuste_kind if item.ajuste_kind is defined else 'neutro' %}
+  {% if kind == 'positivo' or kind == 'misto' %}
+    {% set stats.inflator_pos = stats.inflator_pos + 1 %}
+  {% endif %}
+  {% if kind == 'negativo' or kind == 'misto' %}
+    {% set stats.inflator_neg = stats.inflator_neg + 1 %}
   {% endif %}
 {% endfor %}
 {% set uco_media = (stats.uco_total / stats.uco_count) if stats.uco_count else None %}
@@ -24,9 +23,9 @@
   <div class="d-flex flex-wrap gap-3">
     <div class="card flex-grow-1 min-width-220">
       <div class="card-body">
-        <div class="mini-label text-uppercase text-muted mb-1">Contratos ativos</div>
+        <div class="mini-label text-uppercase text-muted mb-1">Prestadores na lista</div>
         <div class="fs-3 fw-bold">{{ stats.total }}</div>
-        <div class="small text-muted">Prestadores cadastrados com resumo vigente.</div>
+        <div class="small text-muted">Contratos cadastrados e prestadores com códigos DTP.</div>
       </div>
     </div>
     <div class="card flex-grow-1 min-width-220">
@@ -67,6 +66,8 @@
     'tabela_portes': '',
     'valor_uco': '',
     'inflator_deflator': '',
+    'inflator_deflator_hm': '',
+    'inflator_deflator_sadt': '',
     'filme_radiologico': '',
     'observacoes': '',
     'record_id': ''
@@ -118,7 +119,7 @@
 
   <!-- RESULTADOS DA BUSCA DTP -->
   {% if dtp_search_params %}
-  <div class="card border-info">
+  <div class="card border-info" id="dtp-resultados">
     <div class="card-header bg-light">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -217,6 +218,7 @@
           <option value="">Todos os ajustes</option>
           <option value="positivo">Com inflator (+)</option>
           <option value="negativo">Com deflator (-)</option>
+          <option value="misto">HM/SADT mistos (+ e -)</option>
           <option value="neutro">Sem ajuste indicado</option>
         </select>
       </div>
@@ -232,7 +234,10 @@
             <th>Tabela Honorários</th>
             <th>Tabela Portes</th>
             <th class="text-end">Valor UCO</th>
-            <th class="text-center">Ajuste</th>
+            <th class="text-center text-nowrap">
+              Ajuste
+              <div class="small fw-normal text-muted">HM / SADT</div>
+            </th>
             <th>Filme Radiológico</th>
             <th style="width:22%">Observações</th>
             <th class="text-end">Ações</th>
@@ -240,18 +245,22 @@
         </thead>
         <tbody>
           {% for resumo in registros %}
-            {% set infl_padrao = resumo.inflator_deflator or '' %}
-            {% set infl_trim = infl_padrao.strip() %}
-            {% set infl_class = 'badge bg-secondary-subtle text-muted' %}
-            {% if infl_trim.startswith('+') %}
-              {% set infl_class = 'badge bg-success-subtle text-success' %}
-            {% elif infl_trim.startswith('-') %}
-              {% set infl_class = 'badge bg-danger-subtle text-danger' %}
-            {% endif %}
-            <tr data-prestador="{{ resumo.prestador|lower }}" data-honorarios="{{ (resumo.tabela_honorarios or '')|lower }}" data-observacoes="{{ (resumo.observacoes or '')|lower }}" data-ajuste="{{ 'positivo' if infl_trim.startswith('+') else ('negativo' if infl_trim.startswith('-') else 'neutro') }}">
+            {% set hm_val = (resumo.inflator_deflator_hm or '')|trim %}
+            {% set sadt_val = (resumo.inflator_deflator_sadt or '')|trim %}
+            {% set leg_val = (resumo.inflator_deflator_legado_unico or '')|trim %}
+            {% set kind = resumo.ajuste_kind if resumo.ajuste_kind is defined else 'neutro' %}
+            <tr data-prestador="{{ resumo.prestador|lower }}" data-honorarios="{{ (resumo.tabela_honorarios or '')|lower }}" data-observacoes="{{ (resumo.observacoes or '')|lower }}" data-ajuste="{{ kind }}">
               <td>
                 <strong>{{ resumo.prestador }}</strong>
-                {% if resumo.observacoes %}
+                <div class="d-flex flex-wrap gap-1 mt-1">
+                  {% if resumo.tem_dtp and resumo.qtd_codigos %}
+                    <span class="badge bg-info-subtle text-info">{{ resumo.qtd_codigos }} código(s) DTP</span>
+                  {% endif %}
+                  {% if not resumo.tem_contrato %}
+                    <span class="badge bg-secondary-subtle text-secondary">só DTP</span>
+                  {% endif %}
+                </div>
+                {% if resumo.observacoes and resumo.tem_contrato %}
                   <div class="small text-muted">{{ resumo.observacoes[:50] }}{% if resumo.observacoes|length > 50 %}...{% endif %}</div>
                 {% endif %}
               </td>
@@ -262,8 +271,24 @@
               <td>{{ resumo.tabela_portes or '—' }}</td>
               <td class="text-end">{{ resumo.valor_uco|brl if resumo.valor_uco is not none else '—' }}</td>
               <td class="text-center">
-                {% if infl_trim %}
-                  <span class="{{ infl_class }}">{{ infl_trim }}</span>
+                {% if hm_val or sadt_val or leg_val %}
+                  <div class="d-flex flex-column align-items-center gap-1">
+                    {% if hm_val %}
+                      <span class="badge {% if hm_val.startswith('+') %}bg-success-subtle text-success{% elif hm_val.startswith('-') %}bg-danger-subtle text-danger{% else %}bg-secondary-subtle text-muted{% endif %}" title="Honorários Médicos">
+                        HM {{ hm_val }}
+                      </span>
+                    {% endif %}
+                    {% if sadt_val %}
+                      <span class="badge {% if sadt_val.startswith('+') %}bg-success-subtle text-success{% elif sadt_val.startswith('-') %}bg-danger-subtle text-danger{% else %}bg-secondary-subtle text-muted{% endif %}" title="Serviços de Apoio Diagnóstico e Terapêutico">
+                        SADT {{ sadt_val }}
+                      </span>
+                    {% endif %}
+                    {% if leg_val and not hm_val and not sadt_val %}
+                      <span class="badge {% if leg_val.startswith('+') %}bg-success-subtle text-success{% elif leg_val.startswith('-') %}bg-danger-subtle text-danger{% else %}bg-secondary-subtle text-muted{% endif %}" title="Ajuste geral (sem distinção HM/SADT)">
+                        {{ leg_val }}
+                      </span>
+                    {% endif %}
+                  </div>
                 {% else %}
                   <span class="badge bg-light text-muted">—</span>
                 {% endif %}
@@ -278,30 +303,41 @@
               </td>
               <td class="text-end">
                 <div class="btn-group btn-group-sm" role="group">
+                  {% if resumo.tem_dtp and resumo.dtp_tabela %}
+                  <a class="btn btn-outline-info"
+                     href="{{ url_for('contratos_resumo', dtp_search=1, dtp_tabela=resumo.dtp_tabela, dtp_prestador=resumo.prestador, operadora_id=selected_operadora_id) }}#dtp-resultados"
+                     title="Abrir códigos cadastrados">
+                    <i class="bi bi-list-ul"></i>
+                  </a>
+                  {% endif %}
                   <button type="button"
                           class="btn btn-outline-secondary js-edit-contrato"
-                          title="Editar"
-                          data-id="{{ resumo.id }}"
+                          title="{{ 'Editar contrato' if resumo.tem_contrato else 'Preencher dados do contrato' }}"
+                          data-id="{{ resumo.id or '' }}"
                           data-prestador="{{ resumo.prestador|e }}"
                           data-honorarios="{{ (resumo.tabela_honorarios or '')|e }}"
                           data-portes="{{ (resumo.tabela_portes or '')|e }}"
-                          data-uco="{{ (resumo.valor_uco if resumo.valor_uco is not none else '')|e }}"
-                          data-inflator="{{ (resumo.inflator_deflator or '')|e }}"
+                          data-uco="{% if resumo.valor_uco is not none %}{{ resumo.valor_uco }}{% endif %}"
+                          data-inflator-hm="{{ hm_val|e }}"
+                          data-inflator-sadt="{{ sadt_val|e }}"
+                          data-inflator="{{ (leg_val or resumo.inflator_deflator or '')|e }}"
                           data-filme="{{ (resumo.filme_radiologico or '')|e }}"
                           data-observacoes="{{ (resumo.observacoes or '')|e }}">
                     <i class="bi bi-pencil"></i>
                   </button>
+                  {% if resumo.tem_contrato and resumo.id %}
                   <form method="post" action="{{ url_for('contratos_resumo_excluir', cid=resumo.id) }}" onsubmit="return confirm('Confirma remover o contrato de {{ resumo.prestador }}?');">
                     <button class="btn btn-outline-danger" type="submit" title="Excluir">
                       <i class="bi bi-trash"></i>
                     </button>
                   </form>
+                  {% endif %}
                 </div>
               </td>
             </tr>
           {% else %}
             <tr>
-              <td colspan="{% if user_has_specific_operadora %}8{% else %}9{% endif %}" class="text-center text-muted py-4">Nenhum contrato cadastrado até o momento.</td>
+              <td colspan="{% if user_has_specific_operadora %}8{% else %}9{% endif %}" class="text-center text-muted py-4">Nenhum contrato nem prestador DTP cadastrado até o momento.</td>
             </tr>
           {% endfor %}
         </tbody>
@@ -352,9 +388,25 @@
             <label class="form-label">Valor UCO (R$)</label>
             <input class="form-control" name="valor_uco" id="contratoUco" placeholder="0,55">
           </div>
-          <div class="col-6 col-lg-3">
-            <label class="form-label">Inflator/Deflator (%)</label>
-            <input class="form-control" name="inflator_deflator" id="contratoInflator" placeholder="+10%">
+          <div class="col-12">
+            <div class="border rounded-2 p-3 bg-light-subtle">
+              <div class="d-flex flex-wrap align-items-start justify-content-between gap-2 mb-2">
+                <div>
+                  <div class="fw-semibold">Inflator / Deflator</div>
+                  <small class="text-muted">Pode ser <strong>diferente</strong> para HM (Honorários Médicos) e SADT (Serviços de Apoio Diagnóstico e Terapêutico). Use sinal: <code>+10%</code> ou <code>-5%</code>.</small>
+                </div>
+              </div>
+              <div class="row g-3">
+                <div class="col-12 col-md-6">
+                  <label class="form-label">Ajuste HM <span class="badge bg-primary-subtle text-primary">Honorários Médicos</span></label>
+                  <input class="form-control" name="inflator_deflator_hm" id="contratoInflatorHm" placeholder="Ex.: +10%">
+                </div>
+                <div class="col-12 col-md-6">
+                  <label class="form-label">Ajuste SADT <span class="badge bg-info-subtle text-info">Diagnóstico / Terapia</span></label>
+                  <input class="form-control" name="inflator_deflator_sadt" id="contratoInflatorSadt" placeholder="Ex.: -5% ou +8%">
+                </div>
+              </div>
+            </div>
           </div>
           <div class="col-12 col-lg-6">
             <label class="form-label">Filme Radiológico</label>
@@ -396,7 +448,8 @@ document.addEventListener('DOMContentLoaded', () => {
     tabela_honorarios: contratoForm.querySelector('#contratoHonorarios'),
     tabela_portes: contratoForm.querySelector('#contratoPortes'),
     valor_uco: contratoForm.querySelector('#contratoUco'),
-    inflator_deflator: contratoForm.querySelector('#contratoInflator'),
+    inflator_deflator_hm: contratoForm.querySelector('#contratoInflatorHm'),
+    inflator_deflator_sadt: contratoForm.querySelector('#contratoInflatorSadt'),
     filme_radiologico: contratoForm.querySelector('#contratoFilme'),
     observacoes: contratoForm.querySelector('#contratoObservacoes'),
   } : {};
@@ -436,15 +489,35 @@ document.addEventListener('DOMContentLoaded', () => {
     fieldMap.tabela_honorarios.value = payload.tabela_honorarios || '';
     fieldMap.tabela_portes.value = payload.tabela_portes || '';
     fieldMap.valor_uco.value = payload.valor_uco || '';
-    fieldMap.inflator_deflator.value = payload.inflator_deflator || '';
+    let hm = payload.inflator_deflator_hm || '';
+    let sadt = payload.inflator_deflator_sadt || '';
+    // Compat com valor legado único (ex.: "+10%")
+    if(!hm && !sadt && payload.inflator_deflator){
+      const raw = String(payload.inflator_deflator).trim();
+      const hmMatch = raw.match(/HM\s*:\s*([^|]+)/i);
+      const sadtMatch = raw.match(/SADT\s*:\s*([^|]+)/i);
+      if(hmMatch || sadtMatch){
+        hm = (hmMatch && hmMatch[1] ? hmMatch[1].trim() : '') || '';
+        sadt = (sadtMatch && sadtMatch[1] ? sadtMatch[1].trim() : '') || '';
+      } else {
+        // valor genérico: sugere em HM (mais comum em honorários) e deixa SADT em branco
+        hm = raw;
+      }
+    }
+    fieldMap.inflator_deflator_hm.value = hm;
+    fieldMap.inflator_deflator_sadt.value = sadt;
     fieldMap.filme_radiologico.value = payload.filme_radiologico || '';
     fieldMap.observacoes.value = payload.observacoes || '';
     const isEdit = !!payload.record_id;
+    const isFromList = !!payload.prestador && !isEdit;
     if(contratoLabel){
-      contratoLabel.textContent = isEdit ? 'Editar contrato' : 'Novo contrato';
+      if(isEdit) contratoLabel.textContent = 'Editar contrato';
+      else if(isFromList) contratoLabel.textContent = 'Completar contrato do prestador';
+      else contratoLabel.textContent = 'Novo contrato';
     }
     if(contratoSubmitBtn){
-      contratoSubmitBtn.innerHTML = `<i class="bi bi-save me-1"></i>${isEdit ? 'Atualizar contrato' : 'Salvar contrato'}`;
+      const label = isEdit ? 'Atualizar contrato' : 'Salvar contrato';
+      contratoSubmitBtn.innerHTML = `<i class="bi bi-save me-1"></i>${label}`;
     }
   }
 
@@ -460,6 +533,8 @@ document.addEventListener('DOMContentLoaded', () => {
         tabela_honorarios: btn.dataset.honorarios || '',
         tabela_portes: btn.dataset.portes || '',
         valor_uco: btn.dataset.uco || '',
+        inflator_deflator_hm: btn.dataset.inflatorHm || '',
+        inflator_deflator_sadt: btn.dataset.inflatorSadt || '',
         inflator_deflator: btn.dataset.inflator || '',
         filme_radiologico: btn.dataset.filme || '',
         observacoes: btn.dataset.observacoes || '',
@@ -469,7 +544,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  if(contratoModal && (modalShouldOpen || (modalData && (modalData.record_id || modalData.prestador || modalData.observacoes || modalData.valor_uco || modalData.inflator_deflator || modalData.filme_radiologico)))){
+  if(contratoModal && (modalShouldOpen || (modalData && (modalData.record_id || modalData.prestador || modalData.observacoes || modalData.valor_uco || modalData.inflator_deflator || modalData.inflator_deflator_hm || modalData.inflator_deflator_sadt || modalData.filme_radiologico)))){
     fillModal(modalData || {});
     contratoModal.show();
   }

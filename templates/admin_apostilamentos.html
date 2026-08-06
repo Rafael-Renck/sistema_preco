@@ -1,0 +1,305 @@
+{% extends 'base.html' %}
+{% block title %}Apostilamentos{% endblock %}
+{% block page_title %}Apostilamentos (DTP){% endblock %}
+{% block content %}
+<div class="row g-4">
+  {% if not preview %}
+  <div class="col-xl-7">
+    <div class="card p-3">
+      <h5 class="mb-1"><i class="bi bi-file-earmark-pdf me-1"></i> Extrair e revisar</h5>
+      <p class="text-muted small mb-3">
+        Envie os PDFs. Os itens serão extraídos para uma pré-visualização editável —
+        só entram no banco depois que você confirmar.
+      </p>
+
+      <form method="post" action="{{ url_for('admin_apostilamentos_extrair') }}" enctype="multipart/form-data" class="row g-3" id="formApostilamentos">
+        <div class="col-md-6">
+          <label class="form-label">Operadora</label>
+          <select class="form-select" name="operadora_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for op in operadoras %}
+            <option value="{{ op.id }}">{{ op.nome }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Tabela DTP destino</label>
+          <select class="form-select" name="tabela_id" required>
+            <option value="" disabled selected>Selecione…</option>
+            {% for t in tabelas_dtp %}
+            <option value="{{ t.id }}" {% if t.id == 41 %}selected{% endif %}>
+              [{{ t.id }}] {{ t.nome }}{% if t.operadora %} — {{ t.operadora.nome }}{% endif %}
+            </option>
+            {% endfor %}
+          </select>
+          {% if not tabelas_dtp %}
+          <div class="form-text text-danger">Nenhuma tabela DTP cadastrada.</div>
+          {% endif %}
+        </div>
+        <div class="col-md-8">
+          <label class="form-label">PDFs de apostilamento</label>
+          <input class="form-control" type="file" name="arquivos" accept=".pdf,application/pdf" multiple required>
+          <div class="form-text">Pode selecionar vários arquivos.</div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label">Prestador (opcional)</label>
+          <input class="form-control" name="prestador" placeholder="Se vazio, usa o nome do PDF">
+        </div>
+        <div class="col-12">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="substituir_prestador" id="apostSubstituir" checked>
+            <label class="form-check-label" for="apostSubstituir">
+              Ao confirmar, substituir itens existentes do mesmo prestador nesta tabela
+            </label>
+          </div>
+        </div>
+        <div class="col-12 d-flex gap-2">
+          <button class="btn btn-primary" type="submit" id="btnApostExtrair" {% if not tabelas_dtp %}disabled{% endif %}>
+            <i class="bi bi-eye me-1"></i> Extrair e visualizar
+          </button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('gerenciar_tabelas') }}">Voltar às tabelas</a>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="col-xl-5">
+    <div class="card p-3 h-100">
+      <h6 class="mb-2">Fluxo</h6>
+      <ol class="small text-muted mb-0 ps-3">
+        <li>Envie o(s) PDF(s) de apostilamento.</li>
+        <li>Revise a grade: edite código, descrição, valor ou prestador.</li>
+        <li>Desmarque linhas que não devem entrar.</li>
+        <li>Confirme a importação na tabela DTP.</li>
+      </ol>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if preview %}
+  <div class="col-12">
+    <div class="card p-3">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+        <div>
+          <h5 class="mb-1"><i class="bi bi-pencil-square me-1"></i> Pré-visualização</h5>
+          <div class="small text-muted">
+            Destino: <strong>[{{ preview.meta.tabela_id }}] {{ preview.meta.tabela_nome }}</strong>
+            · {{ preview.meta.total_itens }} item(ns)
+            {% if preview.meta.substituir_prestador %}
+            · <span class="text-warning">substituirá prestadores existentes</span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="d-flex flex-wrap gap-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="btnAddRow">
+            <i class="bi bi-plus"></i> Linha
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="btnAplicarPrestador">
+            Aplicar prestador em todos
+          </button>
+        </div>
+      </div>
+
+      {% if preview.avisos %}
+      <div class="alert alert-warning small py-2">
+        <ul class="mb-0 ps-3">
+          {% for a in preview.avisos[:8] %}
+          <li>{{ a }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      <div class="row g-2 mb-2 align-items-end">
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Filtro rápido</label>
+          <input type="search" class="form-control form-control-sm" id="apostFiltro" placeholder="Código, descrição, prestador…">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small mb-1">Prestador em lote</label>
+          <input type="text" class="form-control form-control-sm" id="apostPrestadorLote" placeholder="Novo nome do prestador">
+        </div>
+        <div class="col-md-4 small text-muted" id="apostContagem">
+          {{ preview.rows|length }} linha(s)
+        </div>
+      </div>
+
+      <form method="post" action="{{ url_for('admin_apostilamentos_confirmar') }}" id="formConfirmarApost">
+        <input type="hidden" name="token" value="{{ preview.token }}">
+        <input type="hidden" name="rows_json" id="rowsJson" value="">
+
+        <div class="table-responsive border rounded" style="max-height: 62vh;">
+          <table class="table table-sm table-hover align-middle mb-0" id="apostPreviewTable">
+            <thead class="table-light sticky-top">
+              <tr>
+                <th style="width:42px;" title="Incluir">
+                  <input type="checkbox" class="form-check-input" id="chkAll" checked title="Marcar/desmarcar todos">
+                </th>
+                <th style="width:140px;">Arquivo</th>
+                <th style="width:180px;">Prestador</th>
+                <th style="width:110px;">Código</th>
+                <th>Descrição</th>
+                <th style="width:110px;">Valor</th>
+                <th style="width:80px;">Unid.</th>
+                <th style="width:40px;"></th>
+              </tr>
+            </thead>
+            <tbody id="apostPreviewBody">
+              {% for row in preview.rows %}
+              <tr data-row-id="{{ row.id }}">
+                <td>
+                  <input type="checkbox" class="form-check-input chk-incluir" {% if row.incluir %}checked{% endif %}>
+                </td>
+                <td class="small text-muted text-truncate" style="max-width:140px;" title="{{ row.arquivo }}">{{ row.arquivo }}</td>
+                <td><input class="form-control form-control-sm inp-prestador" value="{{ row.prestador }}"></td>
+                <td><input class="form-control form-control-sm inp-codigo" value="{{ row.codigo }}"></td>
+                <td><input class="form-control form-control-sm inp-descricao" value="{{ row.descricao }}"></td>
+                <td><input class="form-control form-control-sm inp-valor text-end" value="{{ row.valor }}"></td>
+                <td class="small text-muted">{{ row.unidade or '—' }}</td>
+                <td>
+                  <button type="button" class="btn btn-sm btn-outline-danger btn-remove py-0 px-1" title="Remover linha">&times;</button>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mt-3">
+          <button class="btn btn-success" type="submit" id="btnConfirmar">
+            <i class="bi bi-check2-circle me-1"></i> Confirmar importação
+          </button>
+          <button class="btn btn-outline-danger" type="submit" formaction="{{ url_for('admin_apostilamentos_descartar') }}" formnovalidate id="btnDescartar">
+            Descartar
+          </button>
+          <a class="btn btn-outline-secondary" href="{{ url_for('admin_apostilamentos') }}">Nova extração</a>
+        </div>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+  const formExtrair = document.getElementById('formApostilamentos');
+  const btnExtrair = document.getElementById('btnApostExtrair');
+  if (formExtrair && btnExtrair) {
+    formExtrair.addEventListener('submit', function () {
+      btnExtrair.disabled = true;
+      btnExtrair.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Extraindo…';
+    });
+  }
+
+  const formConfirmar = document.getElementById('formConfirmarApost');
+  if (!formConfirmar) return;
+
+  const tbody = document.getElementById('apostPreviewBody');
+  const rowsJson = document.getElementById('rowsJson');
+  const filtro = document.getElementById('apostFiltro');
+  const chkAll = document.getElementById('chkAll');
+  const contagem = document.getElementById('apostContagem');
+  let nextId = {{ preview.rows|map(attribute='id')|max if preview and preview.rows else 0 }} + 1;
+
+  function collectRows() {
+    const rows = [];
+    tbody.querySelectorAll('tr').forEach(function (tr) {
+      rows.push({
+        id: Number(tr.getAttribute('data-row-id') || 0),
+        arquivo: (tr.querySelector('td:nth-child(2)') || {}).textContent || '',
+        prestador: (tr.querySelector('.inp-prestador') || {}).value || '',
+        codigo: (tr.querySelector('.inp-codigo') || {}).value || '',
+        descricao: (tr.querySelector('.inp-descricao') || {}).value || '',
+        valor: (tr.querySelector('.inp-valor') || {}).value || '',
+        unidade: ((tr.children[6] || {}).textContent || '').trim(),
+        incluir: !!(tr.querySelector('.chk-incluir') || {}).checked,
+      });
+    });
+    return rows;
+  }
+
+  function updateCount() {
+    if (!contagem) return;
+    const total = tbody.querySelectorAll('tr').length;
+    const marked = tbody.querySelectorAll('.chk-incluir:checked').length;
+    contagem.textContent = marked + ' de ' + total + ' marcada(s) para importar';
+  }
+
+  formConfirmar.addEventListener('submit', function (ev) {
+    const submitter = ev.submitter;
+    if (submitter && submitter.id === 'btnDescartar') return;
+    rowsJson.value = JSON.stringify(collectRows());
+    const btn = document.getElementById('btnConfirmar');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Gravando…';
+    }
+  });
+
+  if (chkAll) {
+    chkAll.addEventListener('change', function () {
+      tbody.querySelectorAll('.chk-incluir').forEach(function (c) { c.checked = chkAll.checked; });
+      updateCount();
+    });
+  }
+
+  tbody.addEventListener('change', function (ev) {
+    if (ev.target.classList.contains('chk-incluir')) updateCount();
+  });
+
+  tbody.addEventListener('click', function (ev) {
+    const btn = ev.target.closest('.btn-remove');
+    if (!btn) return;
+    const tr = btn.closest('tr');
+    if (tr) tr.remove();
+    updateCount();
+  });
+
+  const btnAdd = document.getElementById('btnAddRow');
+  if (btnAdd) {
+    btnAdd.addEventListener('click', function () {
+      const id = nextId++;
+      const tr = document.createElement('tr');
+      tr.setAttribute('data-row-id', String(id));
+      tr.innerHTML =
+        '<td><input type="checkbox" class="form-check-input chk-incluir" checked></td>' +
+        '<td class="small text-muted">manual</td>' +
+        '<td><input class="form-control form-control-sm inp-prestador" value=""></td>' +
+        '<td><input class="form-control form-control-sm inp-codigo" value=""></td>' +
+        '<td><input class="form-control form-control-sm inp-descricao" value=""></td>' +
+        '<td><input class="form-control form-control-sm inp-valor text-end" value="0"></td>' +
+        '<td class="small text-muted">—</td>' +
+        '<td><button type="button" class="btn btn-sm btn-outline-danger btn-remove py-0 px-1" title="Remover linha">&times;</button></td>';
+      tbody.appendChild(tr);
+      updateCount();
+      tr.querySelector('.inp-codigo').focus();
+    });
+  }
+
+  const btnPrest = document.getElementById('btnAplicarPrestador');
+  const inpPrestLote = document.getElementById('apostPrestadorLote');
+  if (btnPrest && inpPrestLote) {
+    btnPrest.addEventListener('click', function () {
+      const val = (inpPrestLote.value || '').trim();
+      if (!val) { inpPrestLote.focus(); return; }
+      tbody.querySelectorAll('.inp-prestador').forEach(function (inp) { inp.value = val; });
+    });
+  }
+
+  if (filtro) {
+    filtro.addEventListener('input', function () {
+      const q = (filtro.value || '').toLowerCase().trim();
+      tbody.querySelectorAll('tr').forEach(function (tr) {
+        const text = tr.textContent.toLowerCase();
+        tr.style.display = !q || text.indexOf(q) !== -1 ? '' : 'none';
+      });
+    });
+  }
+
+  updateCount();
+})();
+</script>
+{% endblock %}
